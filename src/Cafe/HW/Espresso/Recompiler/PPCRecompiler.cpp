@@ -239,12 +239,14 @@ PPCRecFunction_t* PPCRecompiler_recompileFunction(PPCFunctionBoundaryTracker::PP
 	bool x64GenerationSuccess = PPCRecompiler_generateX64Code(ppcRecFunc, &ppcImlGenContext);
 	if (x64GenerationSuccess == false)
 	{
+		delete ppcRecFunc;
 		return nullptr;
 	}
 #elif defined(__aarch64__)
 	bool aarch64GenerationSuccess = PPCRecompiler_generateAArch64Code(ppcRecFunc, &ppcImlGenContext);
 	if (aarch64GenerationSuccess == false)
 	{
+		delete ppcRecFunc;
 		return nullptr;
 	}
 #endif
@@ -429,13 +431,18 @@ static bool PPCRecompiler_rangesInvalidatedSince(PPCRecFunction_t* func, int sin
 // With no lock against the cores invalidating code: the function goes in the
 // store before the log of invalidations is read, and an invalidation goes in
 // the log before it looks in the store, so one of the two sees the other. One
-// that comes after the jump table is written ends the function itself.
+// that comes after the jump table is written ends the function itself. A
+// function turned down before it is stored is freed here; one stored stays on
+// the list of all of them, freed when the recompiler shuts down.
 bool PPCRecompiler_makeRecompiledFunctionActive(uint32 initialEntryPoint, PPCFunctionBoundaryTracker::PPCRange_t& range, PPCRecFunction_t* ppcRecFunc, std::vector<std::pair<MPTR, uint32>>& entryPoints, int invalSince)
 {
 	// check if the initial entrypoint is still flagged for recompilation
 	// its possible that the range has been invalidated during the time it took to translate the function
 	if (PPCRecompiler_jumpLoad(initialEntryPoint) != PPCRecompiler_leaveRecompilerCode_visited)
+	{
+		delete ppcRecFunc;
 		return false;
+	}
 
 	// the entries it will take, settled before anyone can end it
 	cemu_assert_debug(ppcRecFunc->jumpTableEntries.empty());
@@ -755,17 +762,26 @@ void PPCRecompiler_Shutdown()
     // clean up queues
     s_ppcRecompilerState.targetQueue.Clear();
     s_ppcRecompilerState.targetQueue.Free();
-    // the store emptied: nothing looks in it with the cores stopped. The
-    // functions themselves stay, as their code does (never freed).
+    // the store emptied and every function freed: nothing looks at them with
+    // the cores stopped and the thread gone. Their code memory is kept, for
+    // the next title's functions.
     {
         PPCRecFunction_t* func;
         while (lf_ring_pop(&s_ppcRecompilerState.dead, &func))
             ;
-        for (func = s_ppcRecompilerState.allFunctions; func; func = func->nextFunction)
+        for (func = s_ppcRecompilerState.allFunctions; func;)
+        {
+            PPCRecFunction_t* next = func->nextFunction;
             PPCRecompiler_unstoreFunction(func);
+            delete func;
+            func = next;
+        }
         s_ppcRecompilerState.allFunctions = nullptr;
         rec_store_collect(&s_ppcRecompilerState.store, PPCRecompiler_freeNodes, nullptr);
     }
+#if defined(ARCH_X86_64)
+    PPCRecompilerX64Gen_rewindCodeMemory();
+#endif
     // clean up memory
     uint32 numBlocks = PPCRecompiler_GetNumAddressSpaceBlocks();
     for(uint32 i=0; i<numBlocks; i++)

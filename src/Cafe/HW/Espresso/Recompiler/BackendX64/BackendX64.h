@@ -79,6 +79,8 @@ bool PPCRecompiler_generateX64Code(struct PPCRecFunction_t* PPCRecFunction, ppcI
 void PPCRecompilerX64Gen_redirectRelativeJump(x64GenContext_t* x64GenContext, sint32 jumpInstructionOffset, sint32 destinationOffset);
 
 void PPCRecompilerX64Gen_generateRecompilerInterfaceFunctions();
+// the recompiler shut down: the code memory is filled again from the start
+void PPCRecompilerX64Gen_rewindCodeMemory();
 
 void PPCRecompilerX64Gen_imlInstruction_fpr_r_name(PPCRecFunction_t* PPCRecFunction, ppcImlGenContext_t* ppcImlGenContext, x64GenContext_t* x64GenContext, IMLInstruction* imlInstruction);
 void PPCRecompilerX64Gen_imlInstruction_fpr_name_r(PPCRecFunction_t* PPCRecFunction, ppcImlGenContext_t* ppcImlGenContext, x64GenContext_t* x64GenContext, IMLInstruction* imlInstruction);

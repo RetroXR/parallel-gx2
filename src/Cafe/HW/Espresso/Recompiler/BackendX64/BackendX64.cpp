@@ -770,10 +770,11 @@ bool PPCRecompilerX64Gen_imlInstruction_r_r_r(PPCRecFunction_t* PPCRecFunction, 
 		// check if CL/ECX/RCX is available
 		if( rRegResult != X86_REG_RCX && rRegOperand1 != X86_REG_RCX && rRegOperand2 != X86_REG_RCX )
 		{
+			// operand 1 to the temp register first: when it is operand 2 too
+			// (rlwnm rA,rS,rS) the swap below would leave RCX's value there
+			x64Gen_mov_reg64_reg64(x64GenContext, REG_RESV_TEMP, rRegOperand1);
 			// swap operand 2 with RCX
 			x64Gen_xchg_reg64_reg64(x64GenContext, X86_REG_RCX, rRegOperand2);
-			// move operand 1 to temp register
-			x64Gen_mov_reg64_reg64(x64GenContext, REG_RESV_TEMP, rRegOperand1);
 			// rotate
 			x64Gen_rol_reg64Low32_cl(x64GenContext, REG_RESV_TEMP);
 			// undo swap operand 2 with RCX
@@ -1337,30 +1338,64 @@ void PPCRecompilerX64Gen_imlInstruction_name_r(PPCRecFunction_t* PPCRecFunction,
 
 }
 
-uint8* codeMemoryBlock = nullptr;
-sint32 codeMemoryBlockIndex = 0;
-sint32 codeMemoryBlockSize = 0;
+// The code memory: 4 MB blocks mapped as the recompiler fills them (larger
+// for a function that does not fit one), all of them kept when it shuts down
+// and filled again from the first by the next title's functions, rather than
+// mapped anew each title and never given back. The recompiler thread's alone,
+// as is all code generation once it runs (the glue before it is made by the
+// init that starts it), so taken with no lock.
+static constexpr size_t kCodeBlocksMax = 512;
+static constexpr sint32 kCodeBlockSize = 4 * 1024 * 1024;
+static uint8* s_codeBlocks[kCodeBlocksMax];
+static sint32 s_codeBlockSizes[kCodeBlocksMax];
+static size_t s_codeBlockCount = 0;
+static size_t s_codeBlockCurrent = 0; // valid while below s_codeBlockCount
+static sint32 s_codeBlockIndex = 0;
 
-// The recompiler thread's alone, as is all code generation once it runs (the
-// glue before it is made by the init that starts it), so taken with no lock
 uint8* PPCRecompilerX86_allocateExecutableMemory(sint32 size)
 {
-	if( codeMemoryBlockIndex+size > codeMemoryBlockSize )
+	if (s_codeBlockCurrent >= s_codeBlockCount || s_codeBlockIndex + size > s_codeBlockSizes[s_codeBlockCurrent])
 	{
-		// allocate new block
-		codeMemoryBlockSize = std::max(1024*1024*4, size+1024); // 4MB (or more if the function is larger than 4MB)
-		codeMemoryBlockIndex = 0;
-		codeMemoryBlock = (uint8*)MemMapper::AllocateMemory(nullptr, codeMemoryBlockSize, MemMapper::PAGE_PERMISSION::P_RWX);
+		// the next kept block it fits in, or a new one
+		size_t next = s_codeBlockCurrent < s_codeBlockCount ? s_codeBlockCurrent + 1 : s_codeBlockCount;
+		while (next < s_codeBlockCount && s_codeBlockSizes[next] < size)
+			next++;
+		if (next >= s_codeBlockCount)
+		{
+			if (s_codeBlockCount >= kCodeBlocksMax)
+			{
+				cemuLog_log(LogType::Force, "Recompiler: out of code memory");
+				return nullptr;
+			}
+			const sint32 blockSize = std::max(kCodeBlockSize, size + 1024);
+			uint8* block = (uint8*)MemMapper::AllocateMemory(nullptr, blockSize, MemMapper::PAGE_PERMISSION::P_RWX);
+			if (!block)
+				return nullptr;
+			next = s_codeBlockCount++;
+			s_codeBlocks[next] = block;
+			s_codeBlockSizes[next] = blockSize;
+		}
+		s_codeBlockCurrent = next;
+		s_codeBlockIndex = 0;
 	}
-	uint8* codeMem = codeMemoryBlock + codeMemoryBlockIndex;
-	codeMemoryBlockIndex += size;
+	uint8* codeBlock = s_codeBlocks[s_codeBlockCurrent];
+	uint8* codeMem = codeBlock + s_codeBlockIndex;
+	s_codeBlockIndex += size;
 	// pad to 4 byte alignment
-	while (codeMemoryBlockIndex & 3)
+	while (s_codeBlockIndex & 3)
 	{
-		codeMemoryBlock[codeMemoryBlockIndex] = 0x90;
-		codeMemoryBlockIndex++;
+		codeBlock[s_codeBlockIndex] = 0x90;
+		s_codeBlockIndex++;
 	}
 	return codeMem;
+}
+
+// The recompiler shut down: its functions are gone, their code memory is
+// filled again from the start
+void PPCRecompilerX64Gen_rewindCodeMemory()
+{
+	s_codeBlockCurrent = 0;
+	s_codeBlockIndex = 0;
 }
 
 bool PPCRecompiler_generateX64Code(PPCRecFunction_t* PPCRecFunction, ppcImlGenContext_t* ppcImlGenContext)
@@ -1551,6 +1586,8 @@ bool PPCRecompiler_generateX64Code(PPCRecFunction_t* PPCRecFunction, ppcImlGenCo
 		emitColdCode(&x64GenContext);
 	// allocate executable memory
 	uint8* executableMemory = PPCRecompilerX86_allocateExecutableMemory(x64GenContext.emitter->GetBuffer().size_bytes());
+	if (!executableMemory)
+		return false; // left to the interpreter
 	size_t baseAddress = (size_t)executableMemory;
 	// fix relocs
 	for(auto& relocIt : x64GenContext.relocateOffsetTable2)
@@ -1583,13 +1620,15 @@ bool PPCRecompiler_generateX64Code(PPCRecFunction_t* PPCRecFunction, ppcImlGenCo
 			else
 			{
 				// patch offset
-				*(uint32*)(relocInstruction + 2) = (uint32)((baseAddress + x64Offset) - (baseAddress + relocBase + 6));
+				const uint32 rel32 = (uint32)((baseAddress + x64Offset) - (baseAddress + relocBase + 6));
+				memcpy(relocInstruction + 2, &rel32, 4); // unaligned
 			}
 		}
 		else if( relocInstruction[0] == 0xE9 )
 		{
 			// JMP relativeImm32
-			*(uint32*)(relocInstruction+1) = (uint32)((baseAddress+x64Offset)-(baseAddress+relocBase+5));
+			const uint32 rel32 = (uint32)((baseAddress+x64Offset)-(baseAddress+relocBase+5));
+			memcpy(relocInstruction + 1, &rel32, 4); // unaligned
 		}
 		else
 			assert_dbg();

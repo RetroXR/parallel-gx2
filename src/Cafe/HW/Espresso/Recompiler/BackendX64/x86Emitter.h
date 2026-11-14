@@ -78,9 +78,10 @@ public:
 	std::span<u8> GetBuffer() { return m_buffer; };
 	u32 GetWriteIndex() { return (u32)m_buffer.size(); };
 	void _emitU8(u8 v) { m_buffer.emplace_back(v); };
-	void _emitU16(u16 v) { size_t writeIdx = m_buffer.size(); m_buffer.resize(writeIdx + 2); *(u16*)(m_buffer.data() + writeIdx) = v; };
-	void _emitU32(u32 v) { size_t writeIdx = m_buffer.size(); m_buffer.resize(writeIdx + 4); *(u32*)(m_buffer.data() + writeIdx) = v; };
-	void _emitU64(u64 v) { size_t writeIdx = m_buffer.size(); m_buffer.resize(writeIdx + 8); *(u64*)(m_buffer.data() + writeIdx) = v; };
+	// unaligned, as the encodings are: copied in, not stored through a cast
+	void _emitU16(u16 v) { size_t writeIdx = m_buffer.size(); m_buffer.resize(writeIdx + 2); memcpy(m_buffer.data() + writeIdx, &v, 2); };
+	void _emitU32(u32 v) { size_t writeIdx = m_buffer.size(); m_buffer.resize(writeIdx + 4); memcpy(m_buffer.data() + writeIdx, &v, 4); };
+	void _emitU64(u64 v) { size_t writeIdx = m_buffer.size(); m_buffer.resize(writeIdx + 8); memcpy(m_buffer.data() + writeIdx, &v, 8); };
 	using GPR64 = X86Reg;
 	using GPR32 = X86Reg;
 	using GPR8_REX = X86Reg;

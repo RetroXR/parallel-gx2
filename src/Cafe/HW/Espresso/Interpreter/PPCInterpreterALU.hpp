@@ -33,7 +33,7 @@ static bool checkAdditionOverflow(uint32 x, uint32 y, uint32 r)
 static void PPCInterpreter_ADD(PPCInterpreter_t* hCPU, uint32 opcode)
 {
 	PPC_OPC_TEMPL3_XO();
-	hCPU->gpr[rD] = (int)hCPU->gpr[rA] + (int)hCPU->gpr[rB];
+	hCPU->gpr[rD] = hCPU->gpr[rA] + hCPU->gpr[rB]; // wraps, as the register does
 	if (opHasRC())
 		ppc_update_cr0(hCPU, hCPU->gpr[rD]);
 	PPCInterpreter_nextInstruction(hCPU);
@@ -435,8 +435,8 @@ static void PPCInterpreter_MULHWU_(PPCInterpreter_t* hCPU, uint32 opcode)
 static void PPCInterpreter_MULLW(PPCInterpreter_t* hCPU, uint32 opcode)
 {
 	PPC_OPC_TEMPL3_XO();
-	sint64 result = (sint64)hCPU->gpr[rA] * (sint64)hCPU->gpr[rB];
-	hCPU->gpr[rD] = (uint32)result;
+	// the low word, the same signed or not (and with no signed overflow)
+	hCPU->gpr[rD] = hCPU->gpr[rA] * hCPU->gpr[rB];
 	if (opHasRC())
 		ppc_update_cr0(hCPU, hCPU->gpr[rD]);
 	PPCInterpreter_nextInstruction(hCPU);

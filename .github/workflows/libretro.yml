@@ -830,6 +830,30 @@ jobs:
           make -C test/shaders clean
           SANITIZER=address,undefined ./test/shaders/run_tests.sh
 
+  recompiler:
+    # its own job: it builds the recompiler and interpreter three times over
+    if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || contains(inputs.platforms, 'linux')
+    name: recompiler
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: "Checkout repo"
+        uses: actions/checkout@v6
+
+      - name: "Recompiler against the interpreter"
+        # random runs of integer, rotate, compare, condition register, load,
+        # store, reservation and branch instructions compiled on the
+        # recompiler's thread and run both ways must agree; its functions are
+        # freed and its code memory used again when it shuts down; plain,
+        # under ASan + UBSan (undefined behaviour fails it) and under TSan
+        run: |
+          git submodule update --init --depth 1 dependencies/fmt dependencies/glm dependencies/Vulkan-Headers
+          JOBS=4 ./test/recompiler/run_tests.sh
+          make -C test/recompiler clean
+          SANITIZER=address,undefined JOBS=4 ./test/recompiler/run_tests.sh
+          make -C test/recompiler clean
+          SANITIZER=thread JOBS=4 ./test/recompiler/run_tests.sh
+
   macos:
     if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || contains(inputs.platforms, 'macos')
     name: macos-${{ matrix.arch }}
