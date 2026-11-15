@@ -104,9 +104,10 @@ namespace coreinit
 			data.thread = OSGetCurrentThread();
 			data.threadQueue = &event->threadQueue;
 			data.hasTimeout = false;
-			auto hostAlarm = coreinit::OSHostAlarmCreate(OSGetTime() + coreinit::EspressoTime::ConvertNsToTimerTicks(timeout), 0, _OSWaitEventWithTimeoutHandler, &data);
+			os_host_alarm_t hostAlarm{};
+			coreinit::OSHostAlarmStart(&hostAlarm, OSGetTime() + coreinit::EspressoTime::ConvertNsToTimerTicks(timeout), 0, _OSWaitEventWithTimeoutHandler, &data);
 			event->threadQueue.queueAndWait(OSGetCurrentThread());
-			coreinit::OSHostAlarmDestroy(hostAlarm);
+			coreinit::OSHostAlarmStop(&hostAlarm);
 			if (data.hasTimeout)
 			{
 				__OSUnlockScheduler();

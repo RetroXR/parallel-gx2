@@ -5,6 +5,7 @@
 #include "Cafe/OS/libs/coreinit/coreinit_Alarm.h"
 #include "Cafe/HW/Espresso/Recompiler/PPCRecompiler.h"
 #include "Cafe/OS/RPL/rpl.h"
+#include "Cafe/OS/libs/coreinit/alarm_table.h"
 
 // #define ALARM_LOGGING
 
@@ -17,170 +18,47 @@ namespace coreinit
 	SysAllocator<char, 32> _g_alarmThreadName;
 
 
-	class OSHostAlarm 
+	// The host alarms, sorted by when they fire, and the title's alarms paired
+	// with theirs (alarm_table.h): fixed, nothing allocated as alarms are set,
+	// fired and cancelled. All with the scheduler lock held.
+	static os_alarm_list_t s_hostAlarms;
+	static os_guest_alarms_t s_guestAlarms;
+	static std::atomic_uint64_t s_soonestAlarm{ std::numeric_limits<uint64>::max() };
+
+	static void UpdateSoonestAlarm()
 	{
-	public:
-		OSHostAlarm(uint64 nextFire, uint64 period, void(*callbackFunc)(uint64 currentTick, void* context), void* context) : m_nextFire(nextFire), m_period(period), m_callbackFunc(callbackFunc), m_context(context)
-		{
-			cemu_assert_debug(__OSHasSchedulerLock()); // must hold lock
-			auto r = g_activeAlarmList.emplace(this);
-			cemu_assert_debug(r.second); // check if insertion was successful
-			m_isActive = true;
-			updateEarliestAlarmAtomic();
-		}
-
-		~OSHostAlarm()
-		{
-			cemu_assert_debug(__OSHasSchedulerLock()); // must hold lock
-			if (m_isActive)
-			{
-				g_activeAlarmList.erase(g_activeAlarmList.find(this));
-				updateEarliestAlarmAtomic();
-			}
-		}
-
-		uint64 getFireTick() const
-		{
-			return m_nextFire;
-		}
-
-		void triggerAlarm(uint64 currentTick)
-		{
-			m_callbackFunc(currentTick, m_context);
-		}
-
-		static void updateEarliestAlarmAtomic()
-		{
-			cemu_assert_debug(__OSHasSchedulerLock());
-			if (!g_activeAlarmList.empty())
-			{
-				auto firstAlarm = g_activeAlarmList.begin();
-				g_soonestAlarm = (*firstAlarm)->m_nextFire;
-			}
-			else
-			{
-				g_soonestAlarm = std::numeric_limits<uint64>::max();
-			}
-		}
-
-		static void updateAlarms(uint64 currentTick)
-		{
-			cemu_assert_debug(__OSHasSchedulerLock());
-			if (g_activeAlarmList.empty())
-				return;
-
-			// debug begin
-#ifdef CEMU_DEBUG_ASSERT
-			uint64 prevTick = 0;
-			auto itr = g_activeAlarmList.begin();
-			while (itr != g_activeAlarmList.end())
-			{
-				uint64 t = (*itr)->m_nextFire;
-				if (t < prevTick)
-					cemu_assert_suspicious();
-				prevTick = t;
-				++itr;
-			}
-#endif
-			// debug end
-			while (!g_activeAlarmList.empty())
-			{
-				auto firstAlarm = g_activeAlarmList.begin();
-				if (currentTick >= (*firstAlarm)->m_nextFire)
-				{
-					OSHostAlarm* alarm = *firstAlarm;
-					g_activeAlarmList.erase(firstAlarm);
-					alarm->triggerAlarm(currentTick);
-					// if periodic alarm then requeue
-					if (alarm->m_period > 0)
-					{
-						alarm->m_nextFire += alarm->m_period;
-						g_activeAlarmList.emplace(alarm);
-					}
-					else
-						alarm->m_isActive = false;
-					updateEarliestAlarmAtomic();
-				}
-				else
-					break;
-			}	
-		}
-
-		uint64 getNextFire() const 
-		{
-			return m_nextFire;
-		}
-
-		static uint64 SoonestFire()
-		{
-			return g_soonestAlarm.load(std::memory_order_relaxed);
-		}
-
-		static bool quickCheckForAlarm(uint64 currentTick)
-		{
-			// fast way to check if any alarm was triggered without requiring scheduler lock
-			return currentTick >= g_soonestAlarm;
-		}
-
-        static void Reset()
-        {
-            g_activeAlarmList.clear();
-            g_soonestAlarm = 0;
-        }
-
-	public:
-		struct ComparatorFireTime
-		{
-			bool operator ()(OSHostAlarm* const & p1, OSHostAlarm* const & p2) const
-			{
-				auto p1Fire = p1->getNextFire();
-				auto p2Fire = p2->getNextFire();
-				if (p1Fire == p2Fire)
-					return (uintptr_t)p1 < (uintptr_t)p2; // if time is equal, differ by pointer (to allow storing multiple alarms with same firing time)
-				return p1Fire < p2Fire;
-			}
-		};
-
-	private:	
-		uint64 m_nextFire;
-		uint64 m_period; // if zero then repeat is disabled 
-		bool m_isActive{ false };
-
-		void (*m_callbackFunc)(uint64 currentTick, void* context);
-		void* m_context;
-
-		static std::set<class OSHostAlarm*, ComparatorFireTime> g_activeAlarmList;
-		static std::atomic_uint64_t g_soonestAlarm;
-	};
-
-
-	std::set<class OSHostAlarm*, OSHostAlarm::ComparatorFireTime> OSHostAlarm::g_activeAlarmList;
-	std::atomic_uint64_t OSHostAlarm::g_soonestAlarm{};
-
-	OSHostAlarm* OSHostAlarmCreate(uint64 nextFire, uint64 period, void(*callbackFunc)(uint64 currentTick, void* context), void* context)
-	{
-		OSHostAlarm* hostAlarm = new OSHostAlarm(nextFire, period, callbackFunc, context);
-		return hostAlarm;
+		s_soonestAlarm.store(os_alarm_list_soonest(&s_hostAlarms), std::memory_order_relaxed);
 	}
 
-	void OSHostAlarmDestroy(OSHostAlarm* hostAlarm)
+	void OSHostAlarmStart(os_host_alarm_t* alarm, uint64 nextFire, uint64 period, os_alarm_cb_t callbackFunc, void* context)
 	{
-		delete hostAlarm;
+		cemu_assert_debug(__OSHasSchedulerLock());
+		os_alarm_list_start(&s_hostAlarms, alarm, nextFire, period, callbackFunc, context);
+		UpdateSoonestAlarm();
+	}
+
+	void OSHostAlarmStop(os_host_alarm_t* alarm)
+	{
+		cemu_assert_debug(__OSHasSchedulerLock());
+		os_alarm_list_stop(&s_hostAlarms, alarm);
+		UpdateSoonestAlarm();
 	}
 
 	uint64 alarm_soonest()
 	{
-		return OSHostAlarm::SoonestFire();
+		return s_soonestAlarm.load(std::memory_order_relaxed);
 	}
 
 	void alarm_update()
 	{	
 		cemu_assert_debug(!__OSHasSchedulerLock());
 		uint64 currentTick = coreinit::OSGetTime();
-		if (!OSHostAlarm::quickCheckForAlarm(currentTick))
+		// without the lock: nothing due yet
+		if (currentTick < s_soonestAlarm.load(std::memory_order_relaxed))
 			return;
 		__OSLockScheduler();
-		OSHostAlarm::updateAlarms(currentTick);
+		os_alarm_list_fire(&s_hostAlarms, currentTick);
+		UpdateSoonestAlarm();
 		__OSUnlockScheduler();
 	}
 
@@ -215,7 +93,17 @@ namespace coreinit
 		alarm->name = alarmName;
 	}
 
-	std::unordered_map<OSAlarm_t*, OSHostAlarm*> g_activeAlarms;
+	// the title's alarms that are set: their slot, or -1
+	static int __OSFindActiveAlarm(OSAlarm_t* alarm)
+	{
+		return os_guest_alarms_find(&s_guestAlarms, MEMPTR<OSAlarm_t>(alarm).GetMPTR());
+	}
+
+	static void __OSEndActiveAlarm(int slot)
+	{
+		OSHostAlarmStop(&s_guestAlarms.host[slot]);
+		os_guest_alarms_remove(&s_guestAlarms, slot);
+	}
 
 	// fired alarms wait in their alarm queue until they are taken out of it
 	static bool __OSIsAlarmInQueue(OSAlarm_t* alarm)
@@ -256,11 +144,10 @@ namespace coreinit
 	{
 		__OSLockScheduler();
 		bool alarmWasActive = false;
-		auto itr = g_activeAlarms.find(alarm);
-		if (itr != g_activeAlarms.end())
+		const int slot = __OSFindActiveAlarm(alarm);
+		if (slot >= 0)
 		{
-			OSHostAlarmDestroy(itr->second);
-			g_activeAlarms.erase(itr);
+			__OSEndActiveAlarm(slot);
 			alarmWasActive = true;
 		}
 		else if (__OSIsAlarmInQueue(alarm))
@@ -278,15 +165,13 @@ namespace coreinit
 		if (group == 0 || group == 0xFFFFFFFF)
 			return;
 		__OSLockScheduler();
-		for (auto itr = g_activeAlarms.begin(); itr != g_activeAlarms.end();)
+		// from the end: a slot removed takes the last one's place
+		for (unsigned i = os_guest_alarms_count(&s_guestAlarms); i-- > 0;)
 		{
-			if (itr->first->group == group)
-			{
-				OSHostAlarmDestroy(itr->second);
-				itr = g_activeAlarms.erase(itr);
-			}
-			else
-				++itr;
+			const int slot = os_guest_alarms_at(&s_guestAlarms, i);
+			OSAlarm_t* active = MEMPTR<OSAlarm_t>(s_guestAlarms.addr[slot]).GetPtr();
+			if (active->group == group)
+				__OSEndActiveAlarm(slot);
 		}
 		__OSUnlockScheduler();
 	}
@@ -353,16 +238,19 @@ namespace coreinit
 		}
 		alarm->alarmQueue = alarmQueue;
 
-		auto existingAlarmItr = g_activeAlarms.find(alarm);
-		if (existingAlarmItr != g_activeAlarms.end())
-		{
-			// delete existing alarm
+		int slot = __OSFindActiveAlarm(alarm);
+		if (slot >= 0)
 			cemuLog_logDebug(LogType::Force, "__OSInitiateAlarm() called on alarm which was already active");
-			OSHostAlarmDestroy(existingAlarmItr->second);
-			g_activeAlarms.erase(existingAlarmItr);
+		else
+		{
+			slot = os_guest_alarms_add(&s_guestAlarms, MEMPTR<OSAlarm_t>(alarm).GetMPTR());
+			if (slot < 0)
+			{
+				cemuLog_log(LogType::Force, "OSSetAlarm(): more than {} alarms set at once, alarm 0x{:08x} is not set", OS_GUEST_ALARMS, MEMPTR<OSAlarm_t>(alarm).GetMPTR());
+				return;
+			}
 		}
-
-		g_activeAlarms[alarm] = OSHostAlarmCreate(nextTime, period, __OSHostAlarmTriggered, nullptr);
+		OSHostAlarmStart(&s_guestAlarms.host[slot], nextTime, period, __OSHostAlarmTriggered, nullptr);
 	}
 
 	bool OSSetAlarm(OSAlarm_t* alarm, uint64 delayInTicks, MPTR handlerFunc)
@@ -444,19 +332,11 @@ namespace coreinit
 
 	void OSAlarm_Shutdown()
 	{
-        __OSLockScheduler();
-        if(g_activeAlarms.empty())
-        {
-            __OSUnlockScheduler();
-            return;
-        }
-        for(auto& itr : g_activeAlarms)
-        {
-            OSHostAlarmDestroy(itr.second);
-        }
-        g_activeAlarms.clear();
-        OSHostAlarm::Reset();
-        __OSUnlockScheduler();
+		__OSLockScheduler();
+		os_guest_alarms_init(&s_guestAlarms);
+		os_alarm_list_init(&s_hostAlarms);
+		s_soonestAlarm.store(0, std::memory_order_relaxed);
+		__OSUnlockScheduler();
 	}
 
 	void _OSAlarmThread(PPCInterpreter_t* hCPU)
@@ -470,30 +350,26 @@ namespace coreinit
 				// get alarm to fire
 				OSAlarm_t* alarm = nullptr;
 				__OSLockScheduler();
-				auto itr = g_activeAlarms.begin();
-				while(itr != g_activeAlarms.end())
+				// the one due soonest
+				int dueSlot = -1;
+				uint64 dueTime = 0;
+				for (unsigned i = 0; i < os_guest_alarms_count(&s_guestAlarms); i++)
 				{
-					if (currentTick >= _swapEndianU64(itr->first->nextTime))
+					const int slot = os_guest_alarms_at(&s_guestAlarms, i);
+					const uint64 nextTime = _swapEndianU64(MEMPTR<OSAlarm_t>(s_guestAlarms.addr[slot]).GetPtr()->nextTime);
+					if (currentTick >= nextTime && (dueSlot < 0 || nextTime < dueTime))
 					{
-						alarm = itr->first;
-						if (alarm->alarmQueue)
-						{
-							OSHostAlarmDestroy(itr->second);
-							g_activeAlarms.erase(itr);
-						}
-						else if (alarm->period == 0)
-						{
-							// end alarm
-							g_activeAlarms.erase(itr);
-							break;
-						}
-						else
-						{
-							alarm->nextTime = _swapEndianU64(_swapEndianU64(alarm->nextTime) + _swapEndianU64(alarm->period));
-						}
-						break;
+						dueSlot = slot;
+						dueTime = nextTime;
 					}
-					++itr;
+				}
+				if (dueSlot >= 0)
+				{
+					alarm = MEMPTR<OSAlarm_t>(s_guestAlarms.addr[dueSlot]).GetPtr();
+					if (alarm->alarmQueue || alarm->period == 0)
+						__OSEndActiveAlarm(dueSlot); // queued, or done
+					else
+						alarm->nextTime = _swapEndianU64(_swapEndianU64(alarm->nextTime) + _swapEndianU64(alarm->period));
 				}
 				if (alarm && alarm->alarmQueue)
 				{
@@ -535,6 +411,12 @@ namespace coreinit
 
 	void InitializeAlarm()
 	{
+		__OSLockScheduler();
+		os_guest_alarms_init(&s_guestAlarms);
+		os_alarm_list_init(&s_hostAlarms);
+		UpdateSoonestAlarm();
+		__OSUnlockScheduler();
+
 		// init event
 		OSInitEvent(g_alarmEvent.GetPtr(), OSEvent::EVENT_STATE::STATE_NOT_SIGNALED, OSEvent::EVENT_MODE::MODE_AUTO);
 

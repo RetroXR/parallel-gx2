@@ -26,6 +26,10 @@ namespace nsyshid
 	{
 		uint8* data;
 		uint32 length;
+		// how long the device takes to answer, in microseconds of the
+		// console's time: the transfer completes that much later (an emulated
+		// portal's report interval), where the device slept on the host clock
+		uint32 completeAfterUs = 0;
 
 		TransferCommand(uint8* data, uint32 length)
 			: data(data), length(length)

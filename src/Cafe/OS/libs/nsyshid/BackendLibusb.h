@@ -1,4 +1,5 @@
 #include "nsyshid.h"
+#include "util/helpers/EventWake.h"
 
 #if BOOST_OS_BSD
 #include <libusb.h>
@@ -38,6 +39,7 @@ namespace nsyshid::backend::libusb
 		libusb_hotplug_callback_handle m_hotplugCallbackHandle;
 		std::thread m_hotplugThread;
 		std::atomic<bool> m_hotplugThreadStop;
+		EventWake m_hotplugWake;
 
 		// called by libusb
 		static int HotplugCallback(libusb_context* ctx, libusb_device* dev,

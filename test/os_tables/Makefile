@@ -1,4 +1,4 @@
-# coreinit's virtual address range and FSA clients (src/Cafe/OS/libs/coreinit/virt_range.c, fsa_clients.c), in C89 as the C89
+# coreinit's virtual address range, FSA clients and alarm tables (src/Cafe/OS/libs/coreinit/virt_range.c, fsa_clients.c, alarm_table.c), in C89 as the C89
 # lane builds it (run_tests.sh). SANITIZER=thread or
 # SANITIZER=address,undefined for the sanitizer runs.
 LRC := ../../dependencies/libretro-common
@@ -15,9 +15,9 @@ ifneq (,$(findstring mingw,$(CC)))
 endif
 include ../file_io.mk
 LRC_SRCS := $(LRC)/rthreads/rthreads.c
-CORE_SRCS := os_tables_test.c $(SRC)/Cafe/OS/libs/coreinit/virt_range.c $(SRC)/Cafe/OS/libs/coreinit/fsa_clients.c
+CORE_SRCS := os_tables_test.c $(SRC)/Cafe/OS/libs/coreinit/virt_range.c $(SRC)/Cafe/OS/libs/coreinit/fsa_clients.c $(SRC)/Cafe/OS/libs/coreinit/alarm_table.c
 
-os_tables_test$(EXE): $(CORE_SRCS) $(LRC_SRCS) $(SRC)/Cafe/OS/libs/coreinit/virt_range.h $(SRC)/Cafe/OS/libs/coreinit/fsa_clients.h
+os_tables_test$(EXE): $(CORE_SRCS) $(LRC_SRCS) $(SRC)/Cafe/OS/libs/coreinit/virt_range.h $(SRC)/Cafe/OS/libs/coreinit/fsa_clients.h $(SRC)/Cafe/OS/libs/coreinit/alarm_table.h
 	mkdir -p obj
 	for f in $(LRC_SRCS); do $(CC) $(FLAGS) -std=gnu99 -c $$f -o obj/$$(basename $$f .c).o || exit 1; done
 	for f in $(CORE_SRCS); do $(CC) $(FLAGS) $(C89_FLAGS) -c $$f -o obj/$$(basename $$f .c).o || exit 1; done

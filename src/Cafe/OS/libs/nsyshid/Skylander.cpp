@@ -44,7 +44,7 @@ namespace nsyshid
 		memcpy(message->data, status.data(), std::min<uint32>(message->length, 64));
 		message->bytesRead = message->length;
 		// the portal answers an interrupt read every 10 ms
-		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		message->completeAfterUs = 10000;
 		return Device::ReadResult::Success;
 	}
 
@@ -162,7 +162,7 @@ namespace nsyshid
 	bool SkylanderPortalDevice::SetReport(ReportMessage* message)
 	{
 		g_skyportal.Submit(message->data, message->length);
-		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		message->completeAfterUs = 1000;
 		return true;
 	}
 

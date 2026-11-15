@@ -584,8 +584,9 @@ jobs:
           make -C test/pin_table clean
           SANITIZER=thread ./test/pin_table/run_tests.sh
       - name: "coreinit tables"
-        # the virtual address range and the FSA clients, with no lock;
-        # plain, under ASan + UBSan and under TSan
+        # the virtual address range and the FSA clients, with no lock, and
+        # the alarm tables, with nothing allocated; plain, under ASan +
+        # UBSan and under TSan
         run: |
           ./test/os_tables/run_tests.sh
           make -C test/os_tables clean

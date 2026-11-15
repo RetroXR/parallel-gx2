@@ -4,7 +4,11 @@
  * range across words given back whole when another takes part of it, and
  * in 32 byte pages as nn_fp's IPC buffers take it - and the FSA clients
  * (fsa_clients.c) - found by handle, a closed one not mistaken for the
- * next in its slot, taken out once. Under TSan and ASan,
+ * next in its slot, taken out once - and the alarm tables (alarm_table.c):
+ * host alarms fired in time order, periodic ones again a period on, a
+ * stopped or restarted one where it should be; the title's alarms found by
+ * address however their hashes collide, a removed one gone and the rest
+ * still found, a full table refusing. Under TSan and ASan,
  * threads allocate and free at once and none is handed pages another
  * holds. C89, as the C89 lane builds it. */
 
@@ -17,6 +21,7 @@
 
 #include "Cafe/OS/libs/coreinit/virt_range.h"
 #include "Cafe/OS/libs/coreinit/fsa_clients.h"
+#include "Cafe/OS/libs/coreinit/alarm_table.h"
 
 extern void (*virt_range_test_mid_alloc)(void);
 
@@ -282,6 +287,147 @@ static void test_fp_buffers(void)
    CHECK(virt_range_alloc(&s_r, FP_SIZE, 32) == FP_BASE);
 }
 
+/* --- alarm tables ------------------------------------------------------ */
+
+static int s_fired[64];
+static int s_fired_count;
+
+static void record_fire(uint64_t now, void *ctx)
+{
+   (void)now;
+   if (s_fired_count < 64)
+      s_fired[s_fired_count++] = (int)(intptr_t)ctx;
+}
+
+static os_host_alarm_t s_host[8];
+static os_alarm_list_t s_list;
+
+static void stop_self(uint64_t now, void *ctx)
+{
+   record_fire(now, ctx);
+   os_alarm_list_stop(&s_list, &s_host[(int)(intptr_t)ctx]);
+}
+
+static void test_alarm_list(void)
+{
+   int i;
+   memset(s_host, 0, sizeof(s_host));
+   os_alarm_list_init(&s_list);
+   CHECK(os_alarm_list_soonest(&s_list) == UINT64_MAX);
+   /* out of order, two due at once (lower address first) */
+   os_alarm_list_start(&s_list, &s_host[3], 300, 0, record_fire, (void *)3);
+   os_alarm_list_start(&s_list, &s_host[1], 100, 0, record_fire, (void *)1);
+   os_alarm_list_start(&s_list, &s_host[2], 200, 0, record_fire, (void *)2);
+   os_alarm_list_start(&s_list, &s_host[0], 200, 0, record_fire, (void *)0);
+   CHECK(os_alarm_list_soonest(&s_list) == 100);
+   s_fired_count = 0;
+   os_alarm_list_fire(&s_list, 99);
+   CHECK(s_fired_count == 0);
+   os_alarm_list_fire(&s_list, 200);
+   CHECK(s_fired_count == 3);
+   CHECK(s_fired[0] == 1 && s_fired[1] == 0 && s_fired[2] == 2);
+   CHECK(!s_host[1].active && s_host[3].active);
+   CHECK(os_alarm_list_soonest(&s_list) == 300);
+   /* restarted: moved, not on the list twice */
+   os_alarm_list_start(&s_list, &s_host[3], 50, 0, record_fire, (void *)3);
+   os_alarm_list_start(&s_list, &s_host[3], 400, 0, record_fire, (void *)3);
+   CHECK(os_alarm_list_soonest(&s_list) == 400);
+   os_alarm_list_stop(&s_list, &s_host[3]);
+   os_alarm_list_stop(&s_list, &s_host[3]);
+   CHECK(os_alarm_list_soonest(&s_list) == UINT64_MAX);
+   /* periodic: every period, until stopped; and one stopping itself */
+   os_alarm_list_start(&s_list, &s_host[4], 1000, 100, record_fire, (void *)4);
+   os_alarm_list_start(&s_list, &s_host[5], 1050, 100, stop_self, (void *)5);
+   s_fired_count = 0;
+   os_alarm_list_fire(&s_list, 1250);
+   /* 4 at 1000, 1100, 1200; 5 once at 1050 */
+   CHECK(s_fired_count == 4);
+   CHECK(s_fired[0] == 4 && s_fired[1] == 5 && s_fired[2] == 4 && s_fired[3] == 4);
+   CHECK(os_alarm_list_soonest(&s_list) == 1300);
+   CHECK(!s_host[5].active);
+   os_alarm_list_stop(&s_list, &s_host[4]);
+   for (i = 0; i < 8; i++)
+      CHECK(!s_host[i].active);
+   CHECK(s_list.head == NULL);
+}
+
+static os_guest_alarms_t s_guest;
+static uint32_t s_ref_addr[OS_GUEST_ALARMS + 1];
+static int s_ref_slot[OS_GUEST_ALARMS + 1];
+
+static void test_guest_alarms(void)
+{
+   unsigned n = 0;
+   unsigned step;
+   unsigned i;
+   uint32_t seed = 12345;
+   os_guest_alarms_init(&s_guest);
+   CHECK(os_guest_alarms_find(&s_guest, 0x10000000u) == -1);
+   for (step = 0; step < 200000; step++)
+   {
+      unsigned op;
+      seed = seed * 1103515245u + 12345u;
+      op = (seed >> 16) % 3;
+      if (op < 2 && n < OS_GUEST_ALARMS)
+      {
+         /* addresses from a narrow range, 0x58 apart as an array of alarms
+          * is, so plenty collide */
+         uint32_t addr;
+         int found = 0;
+         int slot;
+         seed = seed * 1103515245u + 12345u;
+         addr = 0x10000000u + ((seed >> 8) % 4096u) * 0x58u;
+         for (i = 0; i < n; i++)
+            if (s_ref_addr[i] == addr)
+               found = 1;
+         if (found)
+            continue;
+         slot = os_guest_alarms_add(&s_guest, addr);
+         CHECK(slot >= 0 && slot < OS_GUEST_ALARMS);
+         if (slot < 0)
+            break;
+         s_ref_addr[n] = addr;
+         s_ref_slot[n] = slot;
+         n++;
+      }
+      else if (n)
+      {
+         unsigned k;
+         seed = seed * 1103515245u + 12345u;
+         k = (seed >> 8) % n;
+         os_guest_alarms_remove(&s_guest, s_ref_slot[k]);
+         CHECK(os_guest_alarms_find(&s_guest, s_ref_addr[k]) == -1);
+         s_ref_addr[k] = s_ref_addr[n - 1];
+         s_ref_slot[k] = s_ref_slot[n - 1];
+         n--;
+      }
+      if ((step & 255) == 0)
+      {
+         unsigned seen = 0;
+         for (i = 0; i < n; i++)
+            CHECK(os_guest_alarms_find(&s_guest, s_ref_addr[i]) == s_ref_slot[i]);
+         CHECK(os_guest_alarms_count(&s_guest) == n);
+         for (i = 0; i < os_guest_alarms_count(&s_guest); i++)
+         {
+            int slot = os_guest_alarms_at(&s_guest, i);
+            unsigned j;
+            for (j = 0; j < n; j++)
+               if (s_ref_slot[j] == slot)
+                  seen++;
+         }
+         CHECK(seen == n);
+      }
+   }
+   /* full: every slot taken, the next refused, all still found */
+   os_guest_alarms_init(&s_guest);
+   for (i = 0; i < OS_GUEST_ALARMS; i++)
+      CHECK(os_guest_alarms_add(&s_guest, 0x20000000u + i * 0x58u) >= 0);
+   CHECK(os_guest_alarms_add(&s_guest, 0x30000000u) == -1);
+   for (i = 0; i < OS_GUEST_ALARMS; i++)
+      CHECK(os_guest_alarms_find(&s_guest, 0x20000000u + i * 0x58u) >= 0);
+   CHECK(os_guest_alarms_find(&s_guest, 0x30000000u) == -1);
+}
+
 int main(void)
 {
    test_basic();
@@ -291,6 +437,8 @@ int main(void)
    test_fp_buffers();
    test_fsa_clients();
    test_fsa_threads();
+   test_alarm_list();
+   test_guest_alarms();
    if (failures)
    {
       fprintf(stderr, "os_tables_test: %d failed\n", failures);

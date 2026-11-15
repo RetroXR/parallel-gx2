@@ -53,7 +53,9 @@ namespace nsyshid::backend::libusb
 							cemuLog_logDebug(LogType::Force,
 											 "nsyshid::BackendLibusb: hotplug thread: error handling events: {}",
 											 ret);
-							std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+							// a second before trying again, or until told to stop
+							m_hotplugWake.WaitUntil([this] { return m_hotplugThreadStop.load(); },
+								std::chrono::steady_clock::now() + std::chrono::seconds(1));
 						}
 					}
 				});
@@ -184,6 +186,9 @@ namespace nsyshid::backend::libusb
 		if (m_callbackRegistered)
 		{
 			m_hotplugThreadStop = true;
+			// out of its event wait or its back-off now, rather than at their end
+			m_hotplugWake.Notify();
+			libusb_interrupt_event_handler(m_ctx);
 			libusb_hotplug_deregister_callback(m_ctx, m_hotplugCallbackHandle);
 			m_hotplugThread.join();
 		}

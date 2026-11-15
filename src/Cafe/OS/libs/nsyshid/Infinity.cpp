@@ -42,7 +42,7 @@ namespace nsyshid
 			return Device::ReadResult::Error;
 		memcpy(message->data, status.data(), std::min<uint32>(message->length, 32));
 		message->bytesRead = message->length;
-		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		message->completeAfterUs = 1000; // the base's report interval
 		return Device::ReadResult::Success;
 	}
 

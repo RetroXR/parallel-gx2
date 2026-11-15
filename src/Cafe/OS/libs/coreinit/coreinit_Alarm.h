@@ -1,11 +1,14 @@
 #pragma once
 #include "Cafe/OS/libs/coreinit/coreinit_Thread.h"
+#include "Cafe/OS/libs/coreinit/alarm_table.h"
 
 namespace coreinit
 {
-	class OSHostAlarm;
-	OSHostAlarm* OSHostAlarmCreate(uint64 nextFire, uint64 period, void(*callbackFunc)(uint64 currentTick, void* context), void* context);
-	void OSHostAlarmDestroy(OSHostAlarm* hostAlarm);
+	// A host alarm its caller keeps (on its stack: OSSleepTicks,
+	// OSWaitEventWithTimeout), zeroed before its first start; with the
+	// scheduler lock held. Nothing is allocated.
+	void OSHostAlarmStart(os_host_alarm_t* alarm, uint64 nextFire, uint64 period, os_alarm_cb_t callbackFunc, void* context);
+	void OSHostAlarmStop(os_host_alarm_t* alarm);
 
 	struct OSAlarm_t;
 

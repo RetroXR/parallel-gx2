@@ -773,6 +773,8 @@ test-pin-table:
     - make -C test/pin_table clean
     - SANITIZER=thread ./test/pin_table/run_tests.sh
 
+# coreinit's tables: the virtual address range and the FSA clients with no
+# lock, the alarm tables with nothing allocated.
 test-os-tables:
   stage: test
   image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports

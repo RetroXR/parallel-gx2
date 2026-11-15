@@ -707,9 +707,10 @@ namespace coreinit
 		StackAllocator<OSThreadQueue> _threadQueue;
 		OSInitThreadQueue(_threadQueue.GetPointer());
 		__OSLockScheduler();
-		OSHostAlarm* hostAlarm = OSHostAlarmCreate(OSGetTime() + ticks, 0, _OSSleepTicks_alarmHandler, _threadQueue.GetPointer());
+		os_host_alarm_t hostAlarm{};
+		OSHostAlarmStart(&hostAlarm, OSGetTime() + ticks, 0, _OSSleepTicks_alarmHandler, _threadQueue.GetPointer());
 		_threadQueue.GetPointer()->queueAndWait(OSGetCurrentThread());
-		OSHostAlarmDestroy(hostAlarm);
+		OSHostAlarmStop(&hostAlarm);
 		__OSUnlockScheduler();
 	}
 

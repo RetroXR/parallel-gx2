@@ -42,7 +42,8 @@
 # lock-free list (MpscList.h) rather than past a spinlock, and the cache load
 # waits on LatteGpuWake for the compile threads, not 10 ms at a time. Nor does
 # a guest stopped for good (a fatal FS error, a return to no caller) hold its
-# core's host thread in a sleep. Online, the nex thread
+# core's host thread in a sleep, nor an emulated USB portal's transfer the
+# HID worker. Online, the nex thread
 # and the logins sleep in select() on their sockets and a wake socket
 # (nexWait.h) instead of polling every millisecond - or, registering for
 # secure access, spinning. And the emulated controllers the game reads every
@@ -208,6 +209,29 @@ check src/Cafe/HW/Latte/Core/LatteAsyncCommands.cpp '^void LatteAsyncCommands_wa
 check src/Cafe/OS/libs/coreinit/coreinit_FS.cpp 'void __FSErrorAndBlock\(' OSSuspendThread
 check src/Cafe/OS/libs/sysapp/sysapp.cpp '^void sysappExport__SYSReturnToCallerWithStandardResult\(' NotifyPPCProcessExit
 check src/Cafe/OS/libs/sysapp/sysapp.cpp '^void sysappExport__SYSReturnToCallerWithStandardResult\(' OSSuspendThread
+# The emulated USB portals answer on the console's time: a read or report
+# that takes the device a few ms completes on an alarm, where the HID worker
+# slept on the host clock; and libusb's hotplug thread backs off on a wake
+# its stop notifies
+for f in src/Cafe/OS/libs/nsyshid/Skylander.cpp src/Cafe/OS/libs/nsyshid/Infinity.cpp \
+	src/Cafe/OS/libs/nsyshid/Dimensions.cpp src/Cafe/OS/libs/nsyshid/nsyshid.cpp \
+	src/Cafe/OS/libs/nsyshid/BackendLibusb.cpp; do
+	if pp $f | grep -q 'sleep_for'; then
+		echo "$f: a USB transfer sleeps by the clock again"; fail=1
+	fi
+done
+if ! body src/Cafe/OS/libs/nsyshid/nsyshid.cpp 'static void RunRequest\(' | grep -q CompleteTransferLater; then
+	echo "nsyshid.cpp: a transfer the device answers later no longer completes on an alarm"; fail=1
+fi
+# Nor do coreinit's alarms allocate - every OSSleepTicks and timed event wait
+# set one: the host alarms are nodes their owners keep, the title's alarms a
+# fixed table (alarm_table.c)
+for f in src/Cafe/OS/libs/coreinit/coreinit_Alarm.cpp src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp \
+	src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp; do
+	if pp $f | grep -qE 'OSHostAlarmCreate|new OSHostAlarm|std::(set|map|unordered_map)<[^>]*OSAlarm'; then
+		echo "$f: an alarm allocates again"; fail=1
+	fi
+done
 MC=src/Cafe/HW/Latte/Renderer/Metal/MetalPipelineCache.cpp
 check $MC '^bool MetalPipelineCache::UpdateLoading\(' WaitForCompileProgress
 check $MC '^void MetalPipelineCache::WaitForCompileProgress\(' LatteGpuWake_WaitUntil

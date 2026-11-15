@@ -8,6 +8,9 @@
 #include "Skylander.h"
 #include "Infinity.h"
 #include "Dimensions.h"
+#include "Cafe/OS/libs/coreinit/coreinit_Alarm.h"
+#include "Cafe/OS/libs/coreinit/coreinit_Time.h"
+#include "Cafe/OS/RPL/rpl.h"
 
 namespace nsyshid
 {
@@ -249,8 +252,84 @@ namespace nsyshid
 		REQ_WRITE,
 	};
 
-	sint32 _hidReadInternalSync(Device* device, uint8* data, sint32 maxLength);
+	sint32 _hidReadInternalSync(Device* device, uint8* data, sint32 maxLength, uint32* completeAfterUs);
 	sint32 _hidWriteInternalSync(Device* device, uint8* data, sint32 maxLength);
+
+	// A transfer the device answers later (TransferCommand::completeAfterUs)
+	// completes on an alarm, on the console's time: no thread sleeps for it,
+	// and a title running slower or faster than real time sees the device's
+	// rate in its own time. One alarm per request the workers can hold.
+	struct DelayedCompletion
+	{
+		std::atomic<uint32> busy;
+		MPTR cb;
+		MPTR param;
+		uint32 handle;
+		sint32 errorCode;
+		MPTR buffer;
+		sint32 length;
+		sint32 result;
+		sint32* resultOut;
+		coreinit::OSEvent* event;
+	};
+	static DelayedCompletion s_delayed[HID_CORE_REQUESTS];
+	SysAllocator<coreinit::OSAlarm_t, HID_CORE_REQUESTS> s_delayedAlarms;
+
+	static void CompleteTransfer(MPTR cb, MPTR param, uint32 handle, sint32 errorCode, MPTR buffer, sint32 length,
+								 sint32 result, sint32* resultOut, coreinit::OSEvent* event);
+
+	// the alarm's handler, on the alarm thread: r3 the alarm
+	static void DelayedCompletionAlarm(PPCInterpreter_t* hCPU)
+	{
+		const uint32 index = (hCPU->gpr[3] - s_delayedAlarms.GetMPTR()) / sizeof(coreinit::OSAlarm_t);
+		if (index < HID_CORE_REQUESTS)
+		{
+			DelayedCompletion& d = s_delayed[index];
+			CompleteTransfer(d.cb, d.param, d.handle, d.errorCode, d.buffer, d.length, d.result, d.resultOut, d.event);
+			d.busy.store(0, std::memory_order_release);
+		}
+		osLib_returnFromFunction(hCPU, 0);
+	}
+
+	// false when every alarm is taken: the caller completes it now
+	static bool CompleteTransferLater(uint32 afterUs, MPTR cb, MPTR param, uint32 handle, sint32 errorCode, MPTR buffer,
+									  sint32 length, sint32 result, sint32* resultOut, coreinit::OSEvent* event)
+	{
+		for (uint32 i = 0; i < HID_CORE_REQUESTS; i++)
+		{
+			uint32 expected = 0;
+			if (!s_delayed[i].busy.compare_exchange_strong(expected, 1, std::memory_order_acquire))
+				continue;
+			DelayedCompletion& d = s_delayed[i];
+			d.cb = cb;
+			d.param = param;
+			d.handle = handle;
+			d.errorCode = errorCode;
+			d.buffer = buffer;
+			d.length = length;
+			d.result = result;
+			d.resultOut = resultOut;
+			d.event = event;
+			coreinit::OSAlarm_t* alarm = s_delayedAlarms.GetPtr() + i;
+			coreinit::OSCreateAlarm(alarm);
+			coreinit::OSSetAlarm(alarm, coreinit::EspressoTime::ConvertNsToTimerTicks((uint64)afterUs * 1000ull),
+								 RPLLoader_MakePPCCallable(DelayedCompletionAlarm));
+			return true;
+		}
+		return false;
+	}
+
+	// a title's module unloaded: the transfers it was waiting for are gone
+	// with it
+	static void CancelDelayedCompletions()
+	{
+		for (uint32 i = 0; i < HID_CORE_REQUESTS; i++)
+		{
+			if (s_delayed[i].busy.load(std::memory_order_acquire))
+				coreinit::OSCancelAlarm(s_delayedAlarms.GetPtr() + i);
+			s_delayed[i].busy.store(0, std::memory_order_release);
+		}
+	}
 
 	// a request's arguments: arg[0] the callback (0: synchronous, with
 	// ptr[1] the event to signal and ptr[2] where the result goes), arg[1]
@@ -266,6 +345,7 @@ namespace nsyshid
 		sint32 errorCode = 0;
 		MPTR buffer = 0;
 		sint32 length = 0;
+		uint32 completeAfterUs = 0;
 		switch (req->kind)
 		{
 		case REQ_GET_DESCRIPTOR:
@@ -281,6 +361,7 @@ namespace nsyshid
 		{
 			ReportMessage message((uint8)a2, (uint8)a3, data, a4);
 			const bool ok = device->SetReport(&message);
+			completeAfterUs = message.completeAfterUs;
 			result = ok ? (sint32)a4 : 0;
 			errorCode = ok ? 0 : -1;
 			buffer = memory_getVirtualOffsetFromPointer(data);
@@ -289,21 +370,32 @@ namespace nsyshid
 		}
 		case REQ_READ:
 		case REQ_WRITE:
-			result = req->kind == REQ_READ ? _hidReadInternalSync(device, data, (sint32)a2)
+			result = req->kind == REQ_READ ? _hidReadInternalSync(device, data, (sint32)a2, &completeAfterUs)
 										   : _hidWriteInternalSync(device, data, (sint32)a2);
 			errorCode = result < 0 ? result : 0; // don't return number of bytes in error code
 			buffer = memory_getVirtualOffsetFromPointer(data);
 			length = result > 0 ? result : 0;
 			break;
 		}
+		sint32* resultOut = cb == MPTR_NULL ? (sint32*)req->ptr[2] : nullptr;
+		coreinit::OSEvent* event = cb == MPTR_NULL ? (coreinit::OSEvent*)req->ptr[1] : nullptr;
+		if (completeAfterUs != 0 &&
+			CompleteTransferLater(completeAfterUs, cb, param, req->handle, errorCode, buffer, length, result, resultOut, event))
+			return;
+		CompleteTransfer(cb, param, req->handle, errorCode, buffer, length, result, resultOut, event);
+	}
+
+	static void CompleteTransfer(MPTR cb, MPTR param, uint32 handle, sint32 errorCode, MPTR buffer, sint32 length,
+								 sint32 result, sint32* resultOut, coreinit::OSEvent* event)
+	{
 		if (cb != MPTR_NULL)
 		{
-			DoHIDTransferCallback(cb, param, req->handle, errorCode, buffer, length);
+			DoHIDTransferCallback(cb, param, handle, errorCode, buffer, length);
 		}
 		else
 		{
-			*(sint32*)req->ptr[2] = result;
-			coreinit::OSSignalEvent((coreinit::OSEvent*)req->ptr[1]);
+			*resultOut = result;
+			coreinit::OSSignalEvent(event);
 		}
 	}
 
@@ -474,7 +566,7 @@ namespace nsyshid
 		osLib_returnFromFunction(hCPU, returnCode);
 	}
 
-	sint32 _hidReadInternalSync(Device* device, uint8* data, sint32 maxLength)
+	sint32 _hidReadInternalSync(Device* device, uint8* data, sint32 maxLength, uint32* completeAfterUs)
 	{
 		cemuLog_logDebug(LogType::Force, "HidRead Begin (Length 0x{:08x})", maxLength);
 		if (!device->IsOpened())
@@ -485,6 +577,7 @@ namespace nsyshid
 		memset(data, 0, maxLength);
 		ReadMessage message(data, maxLength, 0);
 		Device::ReadResult readResult = device->Read(&message);
+		*completeAfterUs = message.completeAfterUs;
 		switch (readResult)
 		{
 		case Device::ReadResult::Success:
@@ -745,6 +838,7 @@ namespace nsyshid
 				Whitelist::GetInstance();
 				hid_core_set_release(ReleaseDeviceHolder);
 				hid_core_clients_reset();
+				CancelDelayedCompletions();
 				// the emulated portals' queues before any transfer can reach them
 				g_skyportal.Start();
 				g_infinitybase.Start();
@@ -761,6 +855,7 @@ namespace nsyshid
 				g_infinitybase.Close();
 				g_dimensionstoypad.Close();
 				hid_core_stop();
+				CancelDelayedCompletions();
 				g_skyportal.Stop();
 				g_infinitybase.Stop();
 				g_dimensionstoypad.Stop();
