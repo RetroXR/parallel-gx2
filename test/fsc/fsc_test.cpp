@@ -29,6 +29,9 @@
 //    and a file that is not there - allocates nothing of the core's, once
 //    the pools are warm (operator new counted; a host file's stream is
 //    libretro-common's);
+//  - listing a directory - a bundle's, an archive's, two host folders'
+//    mounted as one - allocates nothing of the core's once one as long has
+//    been listed (the listings' spare state, fsc.cpp);
 //  - FSA's path translation (fsa_path.c) gives what the std::string one it
 //    replaced gave, for random paths against random working directories,
 //    and nothing for one too long.
@@ -118,6 +121,31 @@ static uint64 OpenReadAllocs(const char* path, size_t size, int n)
 		FSCVirtualFile* none = fsc_open("/none/such/file/anywhere/at/all.bin", FSC_ACCESS_FLAG::OPEN_FILE | FSC_ACCESS_FLAG::READ_PERMISSION, &st);
 		t_counting = false;
 		CHECK(read && none == nullptr);
+		if (round)
+			allocs += t_allocs;
+	}
+	return allocs;
+}
+
+// a directory listed - opened, every entry read, closed - n times: the
+// allocations it took after the first round, and every round's count right
+static uint64 ListAllocs(const char* path, int expected, int n)
+{
+	uint64 allocs = 0;
+	for (int round = 0; round <= n; round++)
+	{
+		t_allocs = 0;
+		t_counting = true;
+		sint32 st;
+		FSCVirtualFile* d = fsc_openDirIterator(path, &st);
+		FSCDirEntry e;
+		int count = 0;
+		while (d && fsc_nextDir(d, &e))
+			count++;
+		if (d)
+			fsc_close(d);
+		t_counting = false;
+		CHECK(count == expected);
 		if (round)
 			allocs += t_allocs;
 	}
@@ -331,6 +359,9 @@ int main()
 	if (d)
 		fsc_close(d);
 	CHECK(count == 4 && names.size() == 4);
+	const uint64 hostListAllocs = ListAllocs("/t/code", 4, 200);
+	std::printf("two host folders listed as one 200 times: %llu allocations of the core's\n", (unsigned long long)hostListAllocs);
+	CHECK(hostListAllocs == 0);
 	CHECK(names["game.rpx"] == std::make_pair(false, (uint64)patchRpx.size()));
 	CHECK(names["base.bin"] == std::make_pair(false, (uint64)onlyBase.size()));
 	CHECK(names["patch.bin"] == std::make_pair(false, (uint64)1));
@@ -434,6 +465,9 @@ int main()
 			if (listing)
 				fsc_close(listing);
 			CHECK(seen.size() == 11);
+			const uint64 bundleListAllocs = ListAllocs("/w/content", 11, 200);
+			std::printf("bundle directory listed 200 times: %llu allocations\n", (unsigned long long)bundleListAllocs);
+			CHECK(bundleListAllocs == 0);
 			CHECK(seen["sub"].first);
 			CHECK(seen["file3.bin"] == std::make_pair(false, (uint64)(1000 + 3 * 777)));
 			CHECK(seen.count(std::string(FSC_MAX_DIR_NAME_LENGTH - 1, 'L')) == 1);
@@ -498,6 +532,9 @@ int main()
 				fsc_close(listing);
 			CHECK(seen.size() == 4);
 			CHECK(seen["sub"].first);
+			const uint64 archiveListAllocs = ListAllocs("/z/content", 4, 200);
+			std::printf("archive directory listed 200 times: %llu allocations\n", (unsigned long long)archiveListAllocs);
+			CHECK(archiveListAllocs == 0);
 			CHECK(seen["a.bin"] == std::make_pair(false, (uint64)70000));
 			CHECK(seen["empty.bin"] == std::make_pair(false, (uint64)0));
 			for (const Entry& e : entries)

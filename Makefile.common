@@ -68,6 +68,7 @@ CORE_SOURCES_C := \
 	$(CORE_DIR)/src/Cafe/TitleList/title_detect.c \
 	$(CORE_DIR)/src/Cafe/Filesystem/host_fs.c \
 	$(CORE_DIR)/src/Cafe/IOSU/fsa/fsa_path.c \
+	$(CORE_DIR)/src/util/helpers/size_blocks.c \
 	$(CORE_DIR)/src/Cafe/IOSU/PDM/pdm_store.c \
 	$(CORE_DIR)/src/Cafe/OS/libs/nn_olv/olv_offline.c \
 	$(CORE_DIR)/src/Cemu/ncrypto/eticket.c \

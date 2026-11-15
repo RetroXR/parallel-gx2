@@ -15,9 +15,9 @@ ifneq (,$(findstring mingw,$(CC)))
 endif
 include ../file_io.mk
 LRC_SRCS := $(LRC)/rthreads/rthreads.c
-CORE_SRCS := obj_pool_test.c $(SRC)/util/helpers/obj_pool.c $(SRC)/util/helpers/lf_ring.c
+CORE_SRCS := obj_pool_test.c $(SRC)/util/helpers/obj_pool.c $(SRC)/util/helpers/lf_ring.c $(SRC)/util/helpers/size_blocks.c
 
-obj_pool_test$(EXE): $(CORE_SRCS) $(LRC_SRCS) $(SRC)/util/helpers/obj_pool.h
+obj_pool_test$(EXE): $(CORE_SRCS) $(LRC_SRCS) $(SRC)/util/helpers/obj_pool.h $(SRC)/util/helpers/size_blocks.h
 	mkdir -p obj
 	for f in $(LRC_SRCS); do $(CC) $(FLAGS) -std=gnu99 -c $$f -o obj/$$(basename $$f .c).o || exit 1; done
 	for f in $(CORE_SRCS); do $(CC) $(FLAGS) $(C89_FLAGS) -c $$f -o obj/$$(basename $$f .c).o || exit 1; done

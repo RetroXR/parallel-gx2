@@ -39,6 +39,9 @@ src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineLibrary.cpp VulkanPipelineLibrar
 src/Cafe/HW/Latte/Common/ShaderSerializer.cpp DeserializeShaderProgram
 src/Cafe/Filesystem/fsc.cpp fsc_lookupPath
 src/Cafe/Filesystem/fsc.cpp fsc_open
+src/Cafe/Filesystem/fsc.cpp PopulateIterationList
+src/Cafe/HW/Latte/Core/LatteBufferCache.cpp BufferCacheNode
+src/Cafe/HW/Latte/Core/LatteBufferCache.cpp Create
 src/Cafe/Filesystem/fscDeviceHostFS.cpp FSCVirtualFile_Host::OpenFile
 src/Cafe/IOSU/fsa/iosu_fsa.cpp __FSATranslatePath
 src/Cafe/IOSU/fsa/iosu_fsa.cpp __FSAOpenNode

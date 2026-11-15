@@ -2,6 +2,8 @@
 #include "util/ChunkedHeap/ChunkedHeap.h"
 #include "config/ActiveSettings.h"
 #include "util/helpers/AtomicPageSet.h"
+#include "util/helpers/PoolNew.h"
+#include "util/helpers/size_blocks.h"
 
 #define CACHE_PAGE_SIZE		0x400
 #define CACHE_PAGE_SIZE_M1	(CACHE_PAGE_SIZE-1)
@@ -903,10 +905,20 @@ private:
 std::unique_ptr<VHeap> g_gpuBufferHeap = nullptr;
 std::vector<uint8> s_pageUploadBuffer;
 std::vector<class BufferCacheNode*> s_allCacheNodes;
+// The ranges' page infos, in blocks kept for reuse (size_blocks.c, the GPU
+// thread's): a range made as a game streams allocates nothing once ranges
+// as long have been made
+static struct PageInfoBlocks
+{
+	size_blocks_t blocks;
+	PageInfoBlocks() { size_blocks_init(&blocks, 16, 8); }
+	~PageInfoBlocks() { size_blocks_free_all(&blocks); }
+} s_pageInfoBlocks;
 
 void LatteBufferCache_removeSingleNodeFromTree(BufferCacheNode* node);
 
-class BufferCacheNode
+// from a pool (PoolNew.h), its pages' infos from s_pageInfoBlocks
+class BufferCacheNode : public PoolNew<BufferCacheNode, 64>
 {
 	static inline constexpr uint64 c_streamoutSig0 = 0xF0F0F0F0155C5B6Aull;
 	static inline constexpr uint64 c_streamoutSig1 = 0x8BE6336411814F4Full;
@@ -914,6 +926,7 @@ class BufferCacheNode
 public:
 	~BufferCacheNode()
 	{
+		size_blocks_give(&s_pageInfoBlocks.blocks, m_pageInfo, m_pageCount);
 		if (m_hasCacheAlloc)
 			g_deallocateQueue.emplace_back(m_cacheOffset); // release after current drawcall
 		// remove from array
@@ -1001,7 +1014,7 @@ public:
 		sint32 numPages = getPageCountFromRangeAligned(rangeBegin, rangeEnd);
 		uint8* pagePtr = memory_getPointerFromPhysicalOffset(rangeBegin);
 		sint32 uploadPageBegin = -1;
-		CachePageInfo* pageInfo = m_pageInfo.data() + basePageIndex;
+		CachePageInfo* pageInfo = m_pageInfo + basePageIndex;
 		for (sint32 i = 0; i < numPages; i++)
 		{
 			if (pageInfo->hasStreamoutData)
@@ -1174,7 +1187,8 @@ private:
 	uint32 m_arrayIndex;
 	// state tracking
 	uint32 m_lastModifyCheckCronon{ g_currentCacheChronon - 1 };
-	std::vector<CachePageInfo> m_pageInfo;
+	CachePageInfo* m_pageInfo{};
+	size_t m_pageCount{};
 	bool m_hasStreamoutData{ false };
 	// invalidation
 	bool m_hasInvalidation{false};
@@ -1185,8 +1199,12 @@ private:
 	{
 		flagInUse();
 		cemu_assert_debug(rangeBegin < rangeEnd);
-		size_t numPages = getPageCountFromRangeAligned(rangeBegin, rangeEnd);
-		m_pageInfo.resize(numPages);
+		m_pageCount = getPageCountFromRangeAligned(rangeBegin, rangeEnd);
+		static_assert(sizeof(CachePageInfo) == 16 && std::is_trivially_copyable_v<CachePageInfo>);
+		// zeroed: every page's hash 0, no streamout data
+		m_pageInfo = (CachePageInfo*)size_blocks_take(&s_pageInfoBlocks.blocks, m_pageCount, nullptr);
+		if (!m_pageInfo)
+			throw std::bad_alloc();
 		// append to array
 		m_arrayIndex = (uint32)s_allCacheNodes.size();
 		s_allCacheNodes.emplace_back(this);
@@ -1242,8 +1260,8 @@ private:
 		g_renderer->bufferCache_copy(srcNode->getBufferOffset(rangeBegin), this->getBufferOffset(rangeBegin), rangeEnd - rangeBegin);
 		// copy page checksums and information
 		sint32 numPages = getPageCountFromRangeAligned(rangeBegin, rangeEnd);
-		CachePageInfo* pageInfoDst = this->m_pageInfo.data() + this->getPageIndexFromAddrAligned(rangeBegin);
-		CachePageInfo* pageInfoSrc = srcNode->m_pageInfo.data() + srcNode->getPageIndexFromAddrAligned(rangeBegin);
+		CachePageInfo* pageInfoDst = this->m_pageInfo + this->getPageIndexFromAddrAligned(rangeBegin);
+		CachePageInfo* pageInfoSrc = srcNode->m_pageInfo + srcNode->getPageIndexFromAddrAligned(rangeBegin);
 		for (sint32 i = 0; i < numPages; i++)
 		{
 			pageInfoDst[i] = pageInfoSrc[i];
@@ -1372,7 +1390,7 @@ private:
 		cemu_assert_debug((rangeBegin & 0xF) == 0);
 		cemu_assert_debug((rangeEnd & 0xF) == 0);
 
-		auto pageInfo = m_pageInfo.data() + pageIndex;
+		auto pageInfo = m_pageInfo + pageIndex;
 		pageInfo->hasStreamoutData = true;
 
 		// if the whole page is replaced we can use a cached hash

@@ -1,6 +1,7 @@
 #include "Cafe/Filesystem/fsc.h"
 #include "Cafe/Filesystem/FST/fstUtil.h"
 #include "util/helpers/PoolNew.h"
+#include "util/helpers/lf_ring.h"
 
 #include <atomic>
 
@@ -501,6 +502,39 @@ static FSCMountPathNode* fsc_lookupPathVirtualNode(const FSCMountTable* table, c
 	return nodeCurrentDir;
 }
 
+// The spare listings: a lock-free ring of a few, each with the room of the
+// listing it held kept, up to a bound (a huge one is let go)
+static constexpr unsigned kSpareDirStates = 16;
+static constexpr size_t kSpareDirEntriesMax = 4096;
+static struct SpareDirStates
+{
+	lf_ring_t ring;
+	alignas(8) uint8 cells[kSpareDirStates * LF_RING_STRIDE(sizeof(void*))] = {};
+	SpareDirStates() { lf_ring_init(&ring, cells, kSpareDirStates, sizeof(void*)); }
+	~SpareDirStates()
+	{
+		FSCVirtualFile::FSCDirIteratorState* state;
+		while (lf_ring_pop(&ring, &state))
+			delete state;
+	}
+} s_spareDirStates;
+
+FSCVirtualFile::FSCDirIteratorState* FSCVirtualFile::FSCDirIteratorState::Take()
+{
+	FSCDirIteratorState* state = nullptr;
+	if (!lf_ring_pop(&s_spareDirStates.ring, &state))
+		state = new FSCDirIteratorState();
+	state->index = 0;
+	return state;
+}
+
+void FSCVirtualFile::FSCDirIteratorState::Give(FSCDirIteratorState* state)
+{
+	state->dirEntries.clear();
+	if (state->dirEntries.capacity() > kSpareDirEntriesMax || !lf_ring_push(&s_spareDirStates.ring, &state))
+		delete state;
+}
+
 // this wraps multiple iterated directories from different devices into one unified virtual representation
 // From a pool (PoolNew.h), its path and folders in place: opening a directory
 // allocates nothing of the core's (listing it collects its entries)
@@ -568,7 +602,7 @@ private:
 	void PopulateIterationList()
 	{
 		cemu_assert_debug(!dirIterator);
-		dirIterator = new FSCVirtualFile::FSCDirIteratorState();
+		dirIterator = FSCVirtualFile::FSCDirIteratorState::Take();
 		FSCDirEntry dirEntry;
 		FSCTableRef ref;
 		for (size_t i = 0; i < m_folderCount; i++)

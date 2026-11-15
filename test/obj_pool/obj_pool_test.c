@@ -2,8 +2,11 @@
  * out once, 16-aligned and whole, taken back and handed out again rather
  * than made anew, chunks made as needed up to the most there may be and
  * single blocks past them, nothing freed while one is out - and, under TSan
- * and ASan, threads taking and giving back at once, with no lock. C89, as
- * the C89 lane builds it. */
+ * and ASan, threads taking and giving back at once, with no lock. And the
+ * size-class blocks (size_blocks.c) a GPU buffer range's pages come from:
+ * zeroed, as long as asked rounded up to a power of two, the one given back
+ * taken again, no more than keep_max kept a class. C89, as the C89 lane
+ * builds it. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,6 +17,7 @@
 #include <rthreads/rthreads.h>
 
 #include "util/helpers/obj_pool.h"
+#include "util/helpers/size_blocks.h"
 
 static int failures = 0;
 
@@ -134,9 +138,78 @@ static void test_threads(void)
    CHECK(obj_pool_free_all(&s_pool));
 }
 
+static void test_size_blocks(void)
+{
+   size_blocks_t b;
+   void *blocks[12];
+   void *prev[12];
+   unsigned char *p;
+   size_t cap = 0;
+   size_t i;
+   unsigned reused = 0;
+   int round;
+
+   size_blocks_init(&b, 16, 8);
+   /* as long as asked, rounded up, zeroed */
+   p = (unsigned char*)size_blocks_take(&b, 5, &cap);
+   CHECK(p != NULL && cap == 8);
+   for (i = 0; i < cap * 16; i++)
+      CHECK(p[i] == 0);
+   memset(p, 0xAB, cap * 16);
+   size_blocks_give(&b, p, 5);
+   CHECK(size_blocks_kept(&b, 5) == 1 && size_blocks_kept(&b, 8) == 1 && size_blocks_kept(&b, 9) == 0);
+   /* the one given back, taken again for any count of its class, zeroed */
+   CHECK(size_blocks_take(&b, 7, &cap) == p && cap == 8);
+   for (i = 0; i < cap * 16; i++)
+      CHECK(p[i] == 0);
+   CHECK(size_blocks_kept(&b, 8) == 0);
+   size_blocks_give(&b, p, 7);
+
+   /* rounds of ranges made and let go: after the first, every block reused */
+   for (round = 0; round < 4; round++)
+   {
+      for (i = 0; i < 12; i++)
+      {
+         blocks[i] = size_blocks_take(&b, (i % 4) * 100 + 1, NULL);
+         CHECK(blocks[i] != NULL);
+      }
+      if (round)
+      {
+         /* each block one of the round before's */
+         for (i = 0; i < 12; i++)
+         {
+            size_t j;
+            for (j = 0; j < 12; j++)
+               if (blocks[i] == prev[j])
+                  break;
+            reused += j < 12;
+         }
+      }
+      for (i = 0; i < 12; i++)
+         prev[i] = blocks[i];
+      for (i = 12; i-- > 0;)
+         size_blocks_give(&b, blocks[i], (i % 4) * 100 + 1);
+   }
+   CHECK(reused == 36);
+   /* no more than keep_max a class kept: the rest freed (ASan's leak check) */
+   for (i = 0; i < 12; i++)
+      blocks[i] = size_blocks_take(&b, 1000, NULL);
+   for (i = 0; i < 12; i++)
+      size_blocks_give(&b, blocks[i], 1000);
+   CHECK(size_blocks_kept(&b, 1000) == 8);
+   /* zero units asked: one */
+   p = (unsigned char*)size_blocks_take(&b, 0, &cap);
+   CHECK(p != NULL && cap == 1);
+   size_blocks_give(&b, p, 0);
+   size_blocks_free_all(&b);
+   CHECK(size_blocks_kept(&b, 1000) == 0 && size_blocks_kept(&b, 1) == 0);
+   printf("size blocks: blocks given back taken again, at most 8 kept a class\n");
+}
+
 int main(void)
 {
    test_single();
+   test_size_blocks();
    test_threads();
    if (failures)
    {

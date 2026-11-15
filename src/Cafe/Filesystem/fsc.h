@@ -91,10 +91,16 @@ public:
 
 struct FSCVirtualFile
 {
+	// A directory's entries as listed. Taken from and given back to a few
+	// kept spare (fsc.cpp), their room kept: listing a directory allocates
+	// nothing once listings as long have been made
 	struct FSCDirIteratorState
 	{
 		sint32 index;
 		std::vector<FSCDirEntry> dirEntries;
+
+		static FSCDirIteratorState* Take();
+		static void Give(FSCDirIteratorState* state);
 	};
 
 	FSCVirtualFile()
@@ -105,7 +111,7 @@ struct FSCVirtualFile
 	virtual ~FSCVirtualFile()
 	{
 		if (dirIterator)
-			delete dirIterator;
+			FSCDirIteratorState::Give(dirIterator);
 	}
 
 	virtual sint32 fscGetType()
