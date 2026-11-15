@@ -55,6 +55,22 @@ void Fiber::Switch(Fiber& targetFiber)
 	std::atomic_thread_fence(std::memory_order_seq_cst);
 }
 
+void Fiber::Restart(void(*FiberEntryPoint)(void* userParam), void* userParam)
+{
+	// the same stack and context, entered afresh
+	ucontext_t* ctx = (ucontext_t*)m_implData;
+	const size_t stackSize = 2 * 1024 * 1024;
+	getcontext(ctx);
+	ctx->uc_stack.ss_sp = m_stackPtr;
+	ctx->uc_stack.ss_size = stackSize;
+	ctx->uc_link = &ctx[0];
+#ifdef __arm64__
+	makecontext(ctx, (void(*)())FiberEntryPoint, 2, (uint64) userParam >> 32, userParam);
+#else
+	makecontext(ctx, (void(*)())FiberEntryPoint, 1, userParam);
+#endif
+}
+
 void Fiber::SetDebugName(const char* name)
 {
 	// nothing to name here: the stack is a plain allocation and this backend
@@ -64,4 +80,9 @@ void Fiber::SetDebugName(const char* name)
 void* Fiber::GetFiberPrivateData()
 {
 	return sCurrentFiber->m_privateData;
+}
+
+void* Fiber::TryGetFiberPrivateData()
+{
+	return sCurrentFiber ? sCurrentFiber->m_privateData : nullptr;
 }

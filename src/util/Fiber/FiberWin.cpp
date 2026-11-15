@@ -34,6 +34,14 @@ void Fiber::Switch(Fiber& targetFiber)
 	SwitchToFiber((HANDLE)targetFiber.m_implData);
 }
 
+void Fiber::Restart(void(*FiberEntryPoint)(void* userParam), void* userParam)
+{
+	// a Windows fiber cannot be entered afresh: a new one, its stack
+	// reserved by the system
+	DeleteFiber((HANDLE)m_implData);
+	m_implData = (void*)CreateFiber(2 * 1024 * 1024, (LPFIBER_START_ROUTINE)FiberEntryPoint, userParam);
+}
+
 void Fiber::SetDebugName(const char* name)
 {
 	// nothing to name here: the stack is a plain allocation and this backend
@@ -43,4 +51,9 @@ void Fiber::SetDebugName(const char* name)
 void* Fiber::GetFiberPrivateData()
 {
 	return sCurrentFiber->m_privateData;
+}
+
+void* Fiber::TryGetFiberPrivateData()
+{
+	return sCurrentFiber ? sCurrentFiber->m_privateData : nullptr;
 }

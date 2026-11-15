@@ -87,6 +87,26 @@ Fiber::~Fiber()
 	delete impl;
 }
 
+void Fiber::Restart(void(*FiberEntryPoint)(void* userParam), void* userParam)
+{
+	// libco has no way to enter a cothread afresh: a new one
+	FiberImpl* impl = static_cast<FiberImpl*>(m_implData);
+	if (impl->ownsThread)
+		co_delete(impl->thread);
+	impl->entryPoint = FiberEntryPoint;
+	impl->userParam = userParam;
+	impl->running = false;
+	impl->thread = co_create(kFiberStackSize, &FiberTrampoline);
+	if (!impl->thread)
+	{
+		cemuLog_log(LogType::Force, "[Fiber] out of memory for a {} KiB stack", kFiberStackSize / 1024);
+		cemuLog_waitForFlush();
+		std::abort();
+	}
+	impl->ownsThread = true;
+	m_stackPtr = impl->thread;
+}
+
 void Fiber::SetDebugName(const char* name)
 {
 	FiberImpl* impl = static_cast<FiberImpl*>(m_implData);
@@ -130,4 +150,9 @@ void Fiber::Switch(Fiber& targetFiber)
 void* Fiber::GetFiberPrivateData()
 {
 	return sCurrentFiber->m_privateData;
+}
+
+void* Fiber::TryGetFiberPrivateData()
+{
+	return sCurrentFiber ? sCurrentFiber->m_privateData : nullptr;
 }

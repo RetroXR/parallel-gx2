@@ -5,6 +5,7 @@
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/OS/libs/coreinit/coreinit_Time.h"
 #include "Cafe/OS/libs/coreinit/coreinit_Alarm.h"
+#include "Cafe/OS/libs/coreinit/host_thread_table.h"
 #include "Cafe/OS/libs/snd_core/ax.h"
 #include "Cafe/HW/Espresso/Interpreter/PPCInterpreterInternal.h"
 #include "Cafe/HW/Espresso/Recompiler/PPCRecompiler.h"
@@ -100,9 +101,17 @@ namespace coreinit
 
 	struct OSHostThread
 	{
-		OSHostThread(OSThread_t* thread) : m_thread(thread), m_fiber((void(*)(void*))__OSFiberThreadEntry, this, this)
+		OSHostThread(OSThread_t* thread, uint16 slot) : m_thread(thread), m_fiber((void(*)(void*))__OSFiberThreadEntry, this, this), m_slot(slot)
 		{
-			m_fiber.SetDebugName(fmt::format("cemu ppc thread {:08x}", memory_getVirtualOffsetFromPointer(thread)).c_str());
+		}
+
+		// for the next guest thread: its fiber entered afresh
+		void Reuse(OSThread_t* thread)
+		{
+			m_thread = thread;
+			selectedCore = 0;
+			m_ownerCore = -1;
+			m_fiber.Restart((void(*)(void*))__OSFiberThreadEntry, this);
 		}
 
 		~OSHostThread() = default;
@@ -121,9 +130,23 @@ namespace coreinit
 		// addresses TLS through fs: on every access and does not care, which is
 		// why this only shows up here.
 		sint32 m_ownerCore = -1;
+		uint16 m_slot; // in the pool
 	};
 
-	std::unordered_map<OSThread_t*, OSHostThread*> s_threadToFiber;
+	// The host side of the guest threads: one per active thread (at most
+	// activeThread's 256), kept for the title's life and handed to the next
+	// thread once one ends, where each thread allocated its own - a fiber with
+	// a 2 MB stack and 130 KB beside it - and freed it one thread later. Which
+	// one runs which thread is a fixed table (host_thread_table.c), where a
+	// hash map allocated a node per thread. With the scheduler lock.
+	static OSHostThread* s_hostThreads[HOST_THREADS];
+	static host_thread_table_t s_hostThreadTable;
+
+	static OSHostThread* __OSFindHostThread(OSThread_t* thread)
+	{
+		const int slot = host_thread_table_find(&s_hostThreadTable, memory_getVirtualOffsetFromPointer(thread));
+		return slot >= 0 ? s_hostThreads[slot] : nullptr;
+	}
 
 	bool __CemuIsMulticoreMode()
 	{
@@ -135,32 +158,34 @@ namespace coreinit
 	void __OSCreateHostThread(OSThread_t* thread)
 	{
 		cemu_assert_debug(__OSHasSchedulerLock());
-		cemu_assert_debug(s_threadToFiber.find(thread) == s_threadToFiber.end());
+		cemu_assert_debug(__OSFindHostThread(thread) == nullptr);
 
-		OSHostThread* hostThread = new OSHostThread(thread);
-		s_threadToFiber.emplace(thread, hostThread);
+		// a free one, but never the fiber running this: an ended thread's,
+		// still on its way to the scheduler
+		const OSHostThread* running = (const OSHostThread*)Fiber::TryGetFiberPrivateData();
+		int fresh = 0;
+		const int slot = host_thread_table_take(&s_hostThreadTable, memory_getVirtualOffsetFromPointer(thread), running ? (int)running->m_slot : -1, &fresh);
+		if (slot < 0)
+		{
+			cemuLog_log(LogType::Force, "__OSCreateHostThread(): more than {} guest threads at once", HOST_THREADS);
+			cemu_assert(false);
+			return;
+		}
+		if (fresh)
+			s_hostThreads[slot] = new OSHostThread(thread, (uint16)slot);
+		else
+			s_hostThreads[slot]->Reuse(thread);
 	}
 
 	// delete host thread
 	void __OSDeleteHostThread(OSThread_t* thread)
 	{
-		static OSHostThread* _deleteQueue = nullptr;
 		cemu_assert_debug(__OSHasSchedulerLock());
-
-		if (_deleteQueue)
-		{
-			delete _deleteQueue;
-			_deleteQueue = nullptr;
-		}
-
-		// delete with a delay (using queue of length 1)
-		// since the fiber might still be in use right now we have to delay the deletion
-
-		auto hostThread = s_threadToFiber[thread];
-		s_threadToFiber.erase(thread);
-		_deleteQueue = hostThread;
+		// back to the pool: its fiber may be the one running this, which
+		// __OSCreateHostThread does not hand out
+		const int slot = host_thread_table_give(&s_hostThreadTable, memory_getVirtualOffsetFromPointer(thread));
+		cemu_assert_debug(slot >= 0);
 	}
-
 
 	// add thread to active queue
 	void __OSActivateThread(OSThread_t* thread)
@@ -1091,9 +1116,8 @@ namespace coreinit
 	{
 		cemu_assert_debug(__OSHasSchedulerLock());
 		sCoreRunsThread[t_assignedCoreIndex].store(true, std::memory_order_relaxed);
-		cemu_assert_debug(s_threadToFiber.find(thread) != s_threadToFiber.end());
-
-		OSHostThread* hostThread = s_threadToFiber.find(thread)->second;
+		OSHostThread* hostThread = __OSFindHostThread(thread);
+		cemu_assert_debug(hostThread);
 		// claims the fiber for this core, or follows the thread if its affinity
 		// no longer allows the core that owned it
 		hostThread->m_ownerCore = (sint32)coreIndex;
@@ -1240,10 +1264,10 @@ namespace coreinit
 		{
 			if (!g_isMulticoreMode)
 				return true;
-			auto itr = s_threadToFiber.find(thread);
-			if (itr == s_threadToFiber.end())
+			const OSHostThread* hostThread = __OSFindHostThread(thread);
+			if (!hostThread)
 				return true;
-			const sint32 ownerCore = itr->second->m_ownerCore;
+			const sint32 ownerCore = hostThread->m_ownerCore;
 			if (ownerCore < 0 || ownerCore == (sint32)coreIndex)
 				return true;
 			if (thread->context.hasCoreAffinitySet(ownerCore))
@@ -1814,12 +1838,12 @@ namespace coreinit
 			c.store(0, std::memory_order_relaxed);
 		for (auto& c : sSchedulerPpcFiberInstructionHeartbeatCount)
 			c.store(0, std::memory_order_relaxed);
-		for (auto& it : s_threadToFiber)
+		for (auto& hostThread : s_hostThreads)
 		{
-			OSHostThread* hostThread = it.second;
 			delete hostThread;
+			hostThread = nullptr;
 		}
-		s_threadToFiber.clear();
+		host_thread_table_init(&s_hostThreadTable);
 	}
 
 	bool OSSchedulerIsActive()

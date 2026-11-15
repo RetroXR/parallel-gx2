@@ -8,7 +8,10 @@
  * host alarms fired in time order, periodic ones again a period on, a
  * stopped or restarted one where it should be; the title's alarms found by
  * address however their hashes collide, a removed one gone and the rest
- * still found, a full table refusing. Under TSan and ASan,
+ * still found, a full table refusing - and the host thread table: a guest
+ * thread's slot found while it has one, slots given back handed out again
+ * newest first (never the one to avoid), a new slot only when none is
+ * free, and no more than HOST_THREADS. Under TSan and ASan,
  * threads allocate and free at once and none is handed pages another
  * holds. C89, as the C89 lane builds it. */
 
@@ -22,6 +25,7 @@
 #include "Cafe/OS/libs/coreinit/virt_range.h"
 #include "Cafe/OS/libs/coreinit/fsa_clients.h"
 #include "Cafe/OS/libs/coreinit/alarm_table.h"
+#include "Cafe/OS/libs/coreinit/host_thread_table.h"
 
 extern void (*virt_range_test_mid_alloc)(void);
 
@@ -428,6 +432,115 @@ static void test_guest_alarms(void)
    CHECK(os_guest_alarms_find(&s_guest, 0x30000000u) == -1);
 }
 
+static host_thread_table_t s_threads;
+static uint32_t s_thr_addr[HOST_THREADS];
+static int s_thr_slot[HOST_THREADS];
+
+static void test_host_thread_table(void)
+{
+   unsigned n = 0;
+   unsigned step;
+   unsigned i;
+   int fresh;
+   int slot;
+   int slot2;
+   uint32_t seed = 777;
+   host_thread_table_init(&s_threads);
+   CHECK(host_thread_table_find(&s_threads, 0x10000000u) == -1);
+   CHECK(host_thread_table_give(&s_threads, 0x10000000u) == -1);
+   /* the first ones are new, in order */
+   slot = host_thread_table_take(&s_threads, 0x10000000u, -1, &fresh);
+   CHECK(slot == 0 && fresh);
+   slot2 = host_thread_table_take(&s_threads, 0x10000800u, -1, &fresh);
+   CHECK(slot2 == 1 && fresh);
+   /* given back and taken again, but not the one to avoid */
+   CHECK(host_thread_table_give(&s_threads, 0x10000000u) == 0);
+   CHECK(host_thread_table_find(&s_threads, 0x10000000u) == -1);
+   CHECK(host_thread_table_find(&s_threads, 0x10000800u) == 1);
+   slot = host_thread_table_take(&s_threads, 0x10001000u, 0, &fresh);
+   CHECK(slot == 2 && fresh);
+   slot = host_thread_table_take(&s_threads, 0x10001800u, -1, &fresh);
+   CHECK(slot == 0 && !fresh);
+   /* newest given back first */
+   CHECK(host_thread_table_give(&s_threads, 0x10000800u) == 1);
+   CHECK(host_thread_table_give(&s_threads, 0x10001000u) == 2);
+   slot = host_thread_table_take(&s_threads, 0x10002000u, -1, &fresh);
+   CHECK(slot == 2 && !fresh);
+   slot = host_thread_table_take(&s_threads, 0x10002800u, -1, &fresh);
+   CHECK(slot == 1 && !fresh);
+
+   /* at random, against a list: threads 0x420 bytes apart, as the title's
+    * thread structures are, so plenty collide */
+   host_thread_table_init(&s_threads);
+   for (step = 0; step < 200000; step++)
+   {
+      unsigned op;
+      seed = seed * 1103515245u + 12345u;
+      op = (seed >> 16) % 3;
+      if (op < 2 && n < HOST_THREADS)
+      {
+         uint32_t addr;
+         int found = 0;
+         int avoid;
+         int only_avoid;
+         unsigned slots_before;
+         seed = seed * 1103515245u + 12345u;
+         addr = 0x10000000u + ((seed >> 8) % 1024u) * 0x420u;
+         for (i = 0; i < n; i++)
+            if (s_thr_addr[i] == addr)
+               found = 1;
+         if (found)
+            continue;
+         seed = seed * 1103515245u + 12345u;
+         /* the running fiber's: one handed out already, or none */
+         avoid = (int)((seed >> 8) % (s_threads.slot_count + 1)) - 1;
+         slots_before = s_threads.slot_count;
+         /* every slot handed out, and the one free is the one to avoid */
+         only_avoid = slots_before == HOST_THREADS && s_threads.free_count == 1 && (int)s_threads.free_slots[0] == avoid;
+         slot = host_thread_table_take(&s_threads, addr, avoid, &fresh);
+         if (only_avoid)
+         {
+            CHECK(slot == -1);
+            continue;
+         }
+         CHECK(slot >= 0 && slot < HOST_THREADS);
+         CHECK(slot != avoid);
+         CHECK(fresh == (s_threads.slot_count == slots_before + 1));
+         /* not one in use */
+         for (i = 0; i < n; i++)
+            CHECK(s_thr_slot[i] != slot);
+         s_thr_addr[n] = addr;
+         s_thr_slot[n] = slot;
+         n++;
+      }
+      else if (n)
+      {
+         unsigned k;
+         seed = seed * 1103515245u + 12345u;
+         k = (seed >> 8) % n;
+         CHECK(host_thread_table_give(&s_threads, s_thr_addr[k]) == s_thr_slot[k]);
+         CHECK(host_thread_table_find(&s_threads, s_thr_addr[k]) == -1);
+         s_thr_addr[k] = s_thr_addr[n - 1];
+         s_thr_slot[k] = s_thr_slot[n - 1];
+         n--;
+      }
+      if ((step & 127) == 0)
+         for (i = 0; i < n; i++)
+            CHECK(host_thread_table_find(&s_threads, s_thr_addr[i]) == s_thr_slot[i]);
+   }
+   /* never more slots than the most threads at once */
+   CHECK(s_threads.slot_count <= HOST_THREADS);
+   /* full: HOST_THREADS in use, the next refused */
+   host_thread_table_init(&s_threads);
+   for (i = 0; i < HOST_THREADS; i++)
+      CHECK(host_thread_table_take(&s_threads, 0x20000000u + i * 0x420u, -1, &fresh) == (int)i);
+   CHECK(host_thread_table_take(&s_threads, 0x30000000u, -1, &fresh) == -1);
+   /* the only free one is the one to avoid: refused too */
+   CHECK(host_thread_table_give(&s_threads, 0x20000000u) == 0);
+   CHECK(host_thread_table_take(&s_threads, 0x30000000u, 0, &fresh) == -1);
+   CHECK(host_thread_table_find(&s_threads, 0x30000000u) == -1);
+}
+
 int main(void)
 {
    test_basic();
@@ -439,6 +552,7 @@ int main(void)
    test_fsa_threads();
    test_alarm_list();
    test_guest_alarms();
+   test_host_thread_table();
    if (failures)
    {
       fprintf(stderr, "os_tables_test: %d failed\n", failures);

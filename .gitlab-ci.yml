@@ -182,6 +182,26 @@ test-gpu-cothread:
     - make -C test/gpu_cothread clean
     - SANITIZER=address,undefined ./test/gpu_cothread/run_tests.sh
 
+# The guest threads' fibers, started over for the next thread rather than
+# allocated anew: ucontext and Android's libco backend. ThreadSanitizer does
+# not follow stack switches, so not under it.
+test-fiber:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+    CC: gcc-12
+    CXX: g++-12
+  script:
+    - ./test/fiber/run_tests.sh
+    - make -C test/fiber clean
+    - FIBER=libco ./test/fiber/run_tests.sh
+    - make -C test/fiber clean
+    - SANITIZER=address,undefined ./test/fiber/run_tests.sh
+    - make -C test/fiber clean
+    - FIBER=libco SANITIZER=address,undefined ./test/fiber/run_tests.sh
+
 # The lock-free handoffs between the core's threads: the recompiler's work
 # queue, the GPU thread's wake, the audio ring, RcuCell's updates (the
 # SpotPass task map, the online token caches and friend lists).
@@ -774,7 +794,7 @@ test-pin-table:
     - SANITIZER=thread ./test/pin_table/run_tests.sh
 
 # coreinit's tables: the virtual address range and the FSA clients with no
-# lock, the alarm tables with nothing allocated.
+# lock, the alarm tables and the host thread table with nothing allocated.
 test-os-tables:
   stage: test
   image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports

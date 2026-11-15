@@ -89,6 +89,7 @@ CORE_SOURCES_C := \
 	$(CORE_DIR)/src/Cafe/OS/libs/coreinit/fsa_clients.c \
 	$(CORE_DIR)/src/Cafe/OS/libs/coreinit/virt_range.c \
 	$(CORE_DIR)/src/Cafe/OS/libs/coreinit/alarm_table.c \
+	$(CORE_DIR)/src/Cafe/OS/libs/coreinit/host_thread_table.c \
 	$(CORE_DIR)/src/Cafe/OS/libs/coreinit/os_claims.c \
 	$(CORE_DIR)/src/Cafe/OS/libs/coreinit/fast_mutex.c \
 	$(CORE_DIR)/src/util/helpers/obj_pool.c \

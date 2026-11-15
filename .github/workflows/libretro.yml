@@ -162,6 +162,19 @@ jobs:
           make -C test/gpu_cothread clean
           SANITIZER=address,undefined ./test/gpu_cothread/run_tests.sh
 
+      - name: "Fibers"
+        # the guest threads' fibers, started over for the next thread rather
+        # than allocated anew: ucontext and Android's libco backend, plain and
+        # under ASan + UBSan (ThreadSanitizer does not follow stack switches)
+        run: |
+          ./test/fiber/run_tests.sh
+          make -C test/fiber clean
+          FIBER=libco ./test/fiber/run_tests.sh
+          make -C test/fiber clean
+          SANITIZER=address,undefined ./test/fiber/run_tests.sh
+          make -C test/fiber clean
+          FIBER=libco SANITIZER=address,undefined ./test/fiber/run_tests.sh
+
       - name: "Thread handoffs"
         # the recompiler's work queue, the GPU thread's wake, the audio
         # ring, RcuCell's updates (the SpotPass task map, the online token
@@ -585,8 +598,8 @@ jobs:
           SANITIZER=thread ./test/pin_table/run_tests.sh
       - name: "coreinit tables"
         # the virtual address range and the FSA clients, with no lock, and
-        # the alarm tables, with nothing allocated; plain, under ASan +
-        # UBSan and under TSan
+        # the alarm tables and the host thread table, with nothing allocated;
+        # plain, under ASan + UBSan and under TSan
         run: |
           ./test/os_tables/run_tests.sh
           make -C test/os_tables clean
@@ -911,6 +924,10 @@ jobs:
 
       - name: "Build"
         run: make -j $(nproc)
+
+      - name: "Fibers"
+        # Windows' own fibers, started over for the next guest thread
+        run: FIBER=win EXE=.exe ./test/fiber/run_tests.sh
 
       - name: "Upload artifact"
         uses: actions/upload-artifact@v6
