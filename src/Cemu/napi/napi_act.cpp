@@ -6,6 +6,7 @@
 #include "config/ActiveSettings.h"
 #include "util/helpers/StringHelpers.h"
 #include "util/highresolutiontimer/HighResolutionTimer.h"
+#include "util/helpers/RcuCell.h"
 
 namespace NAPI
 {
@@ -123,8 +124,10 @@ namespace NAPI
 		NetworkService service;
 	};
 
-	std::vector<OAuthTokenCacheEntry> g_oauthTokenCache;
-	std::mutex g_oauthTokenCacheMtx;
+	// The token caches are read by the friend service's thread and the account
+	// service's, and replaced whole when a token is added (RcuCell.h): no lock.
+	// Expired tokens are skipped by readers and dropped by the next add.
+	RcuCell<std::vector<OAuthTokenCacheEntry>> g_oauthTokenCache;
 
 	// look up oauth token in cache, otherwise request from server
 	ACTOauthToken ACT_GetOauthToken_WithCache(AuthInfo& authInfo, uint64 titleId, uint16 titleVersion)
@@ -133,26 +136,19 @@ namespace NAPI
 		
 		// check cache first
 		NetworkService service = authInfo.GetService();
-		g_oauthTokenCacheMtx.lock();
-		auto cacheItr = g_oauthTokenCache.begin();
-		while (cacheItr != g_oauthTokenCache.end())
 		{
-			if (cacheItr->CheckIfSameAccount(authInfo) && cacheItr->service == service)
+			auto cache = g_oauthTokenCache.Read();
+			for (const auto& entry : *cache)
 			{
-				if (cacheItr->CheckIfExpired())
+				if (entry.CheckIfSameAccount(authInfo) && entry.service == service && !entry.CheckIfExpired())
 				{
-					cacheItr = g_oauthTokenCache.erase(cacheItr);
-					continue;
+					result.token = entry.token;
+					result.refreshToken = entry.refreshToken;
+					result.apiError = NAPI_RESULT::SUCCESS;
+					return result;
 				}
-				result.token = cacheItr->token;
-				result.refreshToken = cacheItr->refreshToken;
-				result.apiError = NAPI_RESULT::SUCCESS;
-				g_oauthTokenCacheMtx.unlock();
-				return result;
 			}
-			cacheItr++;
 		}
-		g_oauthTokenCacheMtx.unlock();
 		// token not cached, request from server via oauth2
 		HttpRequestHelper req;
 
@@ -230,9 +226,15 @@ namespace NAPI
 		// update cache
 		if (expiration > 0)
 		{
-			g_oauthTokenCacheMtx.lock();
-			g_oauthTokenCache.emplace_back(authInfo.accountId, authInfo.passwordHash, result.token, result.refreshToken, expiration, service);
-			g_oauthTokenCacheMtx.unlock();
+			OAuthTokenCacheEntry added(authInfo.accountId, authInfo.passwordHash, result.token, result.refreshToken, expiration, service);
+			g_oauthTokenCache.Update([&added](const std::vector<OAuthTokenCacheEntry>& current) {
+				std::vector<OAuthTokenCacheEntry> next;
+				for (const auto& entry : current)
+					if (!entry.CheckIfExpired())
+						next.push_back(entry);
+				next.push_back(added);
+				return next;
+			});
 		}
 		return result;
 	}
@@ -270,26 +272,24 @@ namespace NAPI
 		ACTNexToken nexToken;
 	};
 
-	std::vector<NexTokenCacheEntry> g_nexTokenCache;
-	std::mutex g_nexTokenCacheMtx;
+	RcuCell<std::vector<NexTokenCacheEntry>> g_nexTokenCache;
 
 	ACTGetNexTokenResult ACT_GetNexToken_WithCache(AuthInfo& authInfo, uint64 titleId, uint16 titleVersion, uint32 serverId)
 	{
 		ACTGetNexTokenResult result{};
 		// check cache
-		g_nexTokenCacheMtx.lock();
-		for (auto& itr : g_nexTokenCache)
 		{
-			if (itr.IsMatch(authInfo, serverId))
+			auto cache = g_nexTokenCache.Read();
+			for (const auto& entry : *cache)
 			{
-				result.nexToken = itr.nexToken;
-				result.apiError = NAPI_RESULT::SUCCESS;
-				g_nexTokenCacheMtx.unlock();
-				return result;
-
+				if (entry.IsMatch(authInfo, serverId))
+				{
+					result.nexToken = entry.nexToken;
+					result.apiError = NAPI_RESULT::SUCCESS;
+					return result;
+				}
 			}
 		}
-		g_nexTokenCacheMtx.unlock();
 		// get Nex token
 		ACTOauthToken oauthToken = ACT_GetOauthToken_WithCache(authInfo, titleId, titleVersion);
 		if (!oauthToken.isValid())
@@ -384,9 +384,12 @@ namespace NAPI
 			result.nexToken.token[i] = token[i];
 		result.nexToken.port = (uint16)StringHelpers::ToInt(port);
 		result.apiError = NAPI_RESULT::SUCCESS;
-		g_nexTokenCacheMtx.lock();
-		g_nexTokenCache.emplace_back(authInfo.accountId, authInfo.passwordHash, authInfo.GetService(), serverId, result.nexToken);
-		g_nexTokenCacheMtx.unlock();
+		NexTokenCacheEntry added(authInfo.accountId, authInfo.passwordHash, authInfo.GetService(), serverId, result.nexToken);
+		g_nexTokenCache.Update([&added](const std::vector<NexTokenCacheEntry>& current) {
+			std::vector<NexTokenCacheEntry> next = current;
+			next.push_back(added);
+			return next;
+		});
 		return result;
 	}
 
@@ -416,33 +419,25 @@ namespace NAPI
 		std::string independentToken;
 	};
 
-	std::vector<IndependentTokenCacheEntry> g_IndependentTokenCache;
-	std::mutex g_IndependentTokenCacheMtx;
+	RcuCell<std::vector<IndependentTokenCacheEntry>> g_IndependentTokenCache;
 
 	ACTGetIndependentTokenResult ACT_GetIndependentToken_WithCache(AuthInfo& authInfo, uint64 titleId, uint16 titleVersion, std::string_view clientId)
 	{
 		ACTGetIndependentTokenResult result{};
 		// check cache
-		g_IndependentTokenCacheMtx.lock();
-		auto itr = g_IndependentTokenCache.begin();
-		while(itr != g_IndependentTokenCache.end())
 		{
-			if (itr->CheckIfExpired())
+			auto cache = g_IndependentTokenCache.Read();
+			for (const auto& entry : *cache)
 			{
-				itr = g_IndependentTokenCache.erase(itr);
-				continue;
+				if (!entry.CheckIfExpired() && entry.IsMatch(authInfo, clientId))
+				{
+					result.token = entry.independentToken;
+					result.expiresIn = std::max(entry.expires - (sint64)HighResolutionTimer::now().getTickInSeconds(), (sint64)0);
+					result.apiError = NAPI_RESULT::SUCCESS;
+					return result;
+				}
 			}
-			else if (itr->IsMatch(authInfo, clientId))
-			{
-				result.token = itr->independentToken;
-				result.expiresIn = std::max(itr->expires - (sint64)HighResolutionTimer::now().getTickInSeconds(), (sint64)0);
-				result.apiError = NAPI_RESULT::SUCCESS;
-				g_IndependentTokenCacheMtx.unlock();
-				return result;
-			}
-			itr++;
 		}
-		g_IndependentTokenCacheMtx.unlock();
 		// get Independent token
 		ACTOauthToken oauthToken = ACT_GetOauthToken_WithCache(authInfo, titleId, titleVersion);
 		if (!oauthToken.isValid())
@@ -505,9 +500,15 @@ namespace NAPI
 		result.token = token;
 		result.apiError = NAPI_RESULT::SUCCESS;
 
-		g_IndependentTokenCacheMtx.lock();
-		g_IndependentTokenCache.emplace_back(authInfo.accountId, authInfo.passwordHash, authInfo.GetService(), clientId, result.token, 3600);
-		g_IndependentTokenCacheMtx.unlock();
+		IndependentTokenCacheEntry added(authInfo.accountId, authInfo.passwordHash, authInfo.GetService(), clientId, result.token, 3600);
+		g_IndependentTokenCache.Update([&added](const std::vector<IndependentTokenCacheEntry>& current) {
+			std::vector<IndependentTokenCacheEntry> next;
+			for (const auto& entry : current)
+				if (!entry.CheckIfExpired())
+					next.push_back(entry);
+			next.push_back(added);
+			return next;
+		});
 		return result;
 	}
 

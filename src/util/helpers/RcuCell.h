@@ -54,6 +54,18 @@ public:
 		delete (T*)rcu_write_publish(&m_cell, fresh);
 	}
 
+	// As Write, with make(current) building the new value from the one in
+	// place - so two writers each changing part of it (a map's entries) both
+	// land, the second building on the first's
+	template<typename TMake>
+	void Update(TMake make)
+	{
+		rcu_write_begin(&m_cell);
+		const T& current = *(const T*)rcu_write_current(&m_cell);
+		T* fresh = new T(make(current));
+		delete (T*)rcu_write_publish(&m_cell, fresh);
+	}
+
 private:
 	rcu_cell_t m_cell;
 };

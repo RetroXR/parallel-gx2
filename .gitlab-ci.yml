@@ -183,7 +183,8 @@ test-gpu-cothread:
     - SANITIZER=address,undefined ./test/gpu_cothread/run_tests.sh
 
 # The lock-free handoffs between the core's threads: the recompiler's work
-# queue, the GPU thread's wake, the audio ring.
+# queue, the GPU thread's wake, the audio ring, RcuCell's updates (the
+# SpotPass task map, the online token caches and friend lists).
 test-handoff:
   stage: test
   image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports

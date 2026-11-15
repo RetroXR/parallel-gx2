@@ -132,11 +132,14 @@ check src/Cafe/IOSU/legacy/iosu_nim.cpp 'void nim_backgroundThread\(\)' iosuAct_
 check src/Cafe/IOSU/legacy/iosu_act.cpp '^void iosuAct_loadAccounts\(\)' 'sActAccountDataLoaded->Notify'
 check src/Cafe/IOSU/nn/boss/boss_service.cpp 'void BossDaemonThread\(\)' 'BossWake().WaitUntil'
 check src/Cafe/IOSU/nn/boss/boss_service.cpp 'void Stop\(\)' 'BossWake().WaitUntil'
-check src/Cafe/IOSU/nn/boss/boss_service.cpp 'void SetStateLocked\(' 'BossWake().Notify'
+check src/Cafe/IOSU/nn/boss/boss_service.cpp 'void SetState\(' 'BossWake().Notify'
+if ! body src/Cafe/IOSU/nn/boss/boss_service.cpp 'nnResult TaskDoRequest\(\)' | grep -q 'BossWake().Notify'; then
+	echo "boss_service.cpp: a task starts running without notifying"; fail=1
+fi
 if pp src/Cafe/IOSU/nn/boss/boss_service.cpp | grep -q 'sleep_for'; then
 	echo "boss_service.cpp still sleeps by the clock"; fail=1
 fi
-if pp src/Cafe/IOSU/nn/boss/boss_service.cpp | grep -q 'm_taskState = TaskState::'; then
+if [ "$(pp src/Cafe/IOSU/nn/boss/boss_service.cpp | grep -c 'm_state.store(')" != 1 ]; then
 	echo "boss_service.cpp: a task changes state without notifying"; fail=1
 fi
 for f in src/Cemu/Logging/CemuLogging.cpp src/Cemu/Logging/LogFileSink.h \

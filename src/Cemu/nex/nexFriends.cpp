@@ -14,108 +14,113 @@ static const int NOTIFICATION_SRV_FRIEND_ADDED = 0x1E; // not sent when friend r
 
 void NexFriends::processServerNotification_friendOffline(uint32 pid)
 {
-	std::unique_lock listLock(mtx_lists);
-	for (auto& it : list_friends)
-	{
-		if (it.nnaInfo.principalInfo.principalId == pid)
+	EditLists([&](FriendLists& L, const FriendLists&) {
+		for (auto& it : L.list_friends)
 		{
-			it.presence.isOnline = 0;
-			generateNotification(NOTIFICATION_TYPE_FRIEND_LOGOFF, pid);
-			return;
+			if (it.nnaInfo.principalInfo.principalId == pid)
+			{
+				it.presence.isOnline = 0;
+				generateNotification(NOTIFICATION_TYPE_FRIEND_LOGOFF, pid);
+				return;
+			}
 		}
-	}
+	});
 }
 
 void NexFriends::processServerNotification_presenceChange(uint32 pid, nexPresenceV2& presence)
 {
-	std::unique_lock listLock(mtx_lists);
-	for (auto& it : list_friends)
-	{
-		if (it.nnaInfo.principalInfo.principalId == pid)
+	EditLists([&](FriendLists& L, const FriendLists&) {
+		for (auto& it : L.list_friends)
 		{
-			bool isOnlineChange = (presence.isOnline != it.presence.isOnline);
-			it.presence = presence;
-			if (isOnlineChange)
-				generateNotification((presence.isOnline!=0)?NOTIFICATION_TYPE_FRIEND_LOGIN:NOTIFICATION_TYPE_FRIEND_LOGOFF, pid);
-			generateNotification(NOTIFICATION_TYPE_FRIEND_PRESENCE_CHANGE, pid);
-			return;
+			if (it.nnaInfo.principalInfo.principalId == pid)
+			{
+				bool isOnlineChange = (presence.isOnline != it.presence.isOnline);
+				it.presence = presence;
+				if (isOnlineChange)
+					generateNotification((presence.isOnline!=0)?NOTIFICATION_TYPE_FRIEND_LOGIN:NOTIFICATION_TYPE_FRIEND_LOGOFF, pid);
+				generateNotification(NOTIFICATION_TYPE_FRIEND_PRESENCE_CHANGE, pid);
+				return;
+			}
 		}
-	}
+	});
 }
 
 void NexFriends::processServerNotification_removeFriendOrFriendRequest(uint32 pid)
 {
-	std::unique_lock listLock(mtx_lists);
-	for (auto it = list_friends.begin(); it != list_friends.end();)
-	{
-		if (it->nnaInfo.principalInfo.principalId == pid)
+	EditLists([&](FriendLists& L, const FriendLists&) {
+		for (auto it = L.list_friends.begin(); it != L.list_friends.end();)
 		{
-			list_friends.erase(it);
-			generateNotification(NOTIFICATION_TYPE_REMOVED_FRIEND, pid);
-			return;
+			if (it->nnaInfo.principalInfo.principalId == pid)
+			{
+				L.list_friends.erase(it);
+				generateNotification(NOTIFICATION_TYPE_REMOVED_FRIEND, pid);
+				return;
+			}
+			it++;
 		}
-		it++;
-	}
-	for (auto it = list_friendReqIncoming.begin(); it != list_friendReqIncoming.end();)
-	{
-		if (it->principalInfo.principalId == pid)
+		for (auto it = L.list_friendReqIncoming.begin(); it != L.list_friendReqIncoming.end();)
 		{
-			list_friendReqIncoming.erase(it);
-			generateNotification(NOTIFICATION_TYPE_REMOVED_INCOMING_REQUEST, pid);
-			return;
+			if (it->principalInfo.principalId == pid)
+			{
+				L.list_friendReqIncoming.erase(it);
+				generateNotification(NOTIFICATION_TYPE_REMOVED_INCOMING_REQUEST, pid);
+				return;
+			}
+			it++;
 		}
-		it++;
-	}
+	});
 }
 
 void NexFriends::processServerNotification_incomingFriendRequest(uint32 pid, nexFriendRequest& friendRequest)
 {
-	std::unique_lock listLock(mtx_lists);
-	// check for duplicate
-	for (auto& it : list_friendReqIncoming)
-	{
-		if (it.principalInfo.principalId == pid)
-			return;
-	}
-	// add friend request and send notification
-	list_friendReqIncoming.push_back(friendRequest);
-	generateNotification(NOTIFICATION_TYPE_ADDED_INCOMING_REQUEST, pid);
+	EditLists([&](FriendLists& L, const FriendLists&) {
+		// check for duplicate
+		for (auto& it : L.list_friendReqIncoming)
+		{
+			if (it.principalInfo.principalId == pid)
+				return;
+		}
+		// add friend request and send notification
+		L.list_friendReqIncoming.push_back(friendRequest);
+		generateNotification(NOTIFICATION_TYPE_ADDED_INCOMING_REQUEST, pid);
+	});
 }
 
 void NexFriends::processServerNotification_addedFriend(uint32 pid, nexFriend& frd)
 {
-	std::unique_lock listLock(mtx_lists);
-	// remove any related incoming friend request
-	for (auto it = list_friendReqIncoming.begin(); it != list_friendReqIncoming.end();)
-	{
-		if (it->principalInfo.principalId == pid)
+	EditLists([&](FriendLists& L, const FriendLists&) {
+		// remove any related incoming friend request
+		for (auto it = L.list_friendReqIncoming.begin(); it != L.list_friendReqIncoming.end();)
 		{
-			list_friendReqIncoming.erase(it);
-			generateNotification(NOTIFICATION_TYPE_REMOVED_INCOMING_REQUEST, pid);
-			break;
+			if (it->principalInfo.principalId == pid)
+			{
+				L.list_friendReqIncoming.erase(it);
+				generateNotification(NOTIFICATION_TYPE_REMOVED_INCOMING_REQUEST, pid);
+				break;
+			}
+			it++;
 		}
-		it++;
-	}
-	// remove any related outgoing friend request
-	for (auto it = list_friendReqOutgoing.begin(); it != list_friendReqOutgoing.end();)
-	{
-		if (it->principalInfo.principalId == pid)
+		// remove any related outgoing friend request
+		for (auto it = L.list_friendReqOutgoing.begin(); it != L.list_friendReqOutgoing.end();)
 		{
-			list_friendReqOutgoing.erase(it);
-			generateNotification(NOTIFICATION_TYPE_REMOVED_OUTGOING_REQUEST, pid);
-			break;
+			if (it->principalInfo.principalId == pid)
+			{
+				L.list_friendReqOutgoing.erase(it);
+				generateNotification(NOTIFICATION_TYPE_REMOVED_OUTGOING_REQUEST, pid);
+				break;
+			}
+			it++;
 		}
-		it++;
-	}
-	// check for duplicate
-	for (auto& it : list_friendReqIncoming)
-	{
-		if (it.principalInfo.principalId == pid)
-			return;
-	}
-	// add friend
-	list_friends.push_back(frd);
-	generateNotification(NOTIFICATION_TYPE_ADDED_FRIEND, pid);
+		// check for duplicate
+		for (auto& it : L.list_friendReqIncoming)
+		{
+			if (it.principalInfo.principalId == pid)
+				return;
+		}
+		// add friend
+		L.list_friends.push_back(frd);
+		generateNotification(NOTIFICATION_TYPE_ADDED_FRIEND, pid);
+	});
 }
 
 void NexFriends::processServerNotification(uint32 notificationType, uint32 pid, nexPacketBuffer* notificationData)
@@ -239,10 +244,10 @@ void NexFriends::doAsyncLogin()
 
 	nexCon->registerProtocolRequestHandler(0x64, nexFriends_protocolNotification_processRequest, this);
 	nexCon->registerForAsyncProcessing();
-	this->isCurrentlyConnected = true;
 	this->firstInformationRequest = true;
-	this->loginInProcess = false;
 	this->numSuccessfulLogins++;
+	this->isCurrentlyConnected = true;
+	this->loginInProcess = false; // last: update() goes on from here
 	requestGetAllInformation();
 }
 
@@ -252,17 +257,10 @@ void NexFriends::initiateLogin()
 		return;
 	if (this->loginInProcess)
 		return;
-	std::unique_lock loginLock(mtx_login);
 	this->lastLoginAttemptTime = prudpGetMSTimestamp();
 	this->loginInProcess = true;
 	// reset all data
-	std::unique_lock listLock(mtx_lists);
-	list_friends.resize(0);
-	list_friendReqIncoming.resize(0);
-	list_friendReqOutgoing.resize(0);
-	previousState.list_friends.resize(0);
-	previousState.list_friendReqIncoming.resize(0);
-	previousState.list_friendReqOutgoing.resize(0);
+	EditLists([](FriendLists& L, const FriendLists&) { L = FriendLists(); });
 	this->hasData = false;
 	// start login attempt
 	cemuLog_logDebug(LogType::Force, "Attempt to log into friend server...");
@@ -284,34 +282,38 @@ void NexFriends::handleResponse_getAllInformation(nexServiceResponse_t* response
 	session->myComment = comment;
 	if (response->data.hasReadOutOfBounds())
 		return;
-	// acquire lock on lists
-	std::unique_lock listLock(session->mtx_lists);
-	// remember current state of lists for change tracking
-	session->previousState.list_friends = session->list_friends;
-	session->previousState.list_friendReqIncoming = session->list_friendReqIncoming;
-	session->previousState.list_friendReqOutgoing = session->list_friendReqOutgoing;
-	// parse response and update lists
+	// parse response into new lists, published whole once read (no reader
+	// sees them half read, and a response read past its end changes nothing)
+	FriendLists received;
 	// friends
 	uint32 friendCount = response->data.readU32();
-	session->list_friends.resize(friendCount);
+	if (response->data.hasReadOutOfBounds())
+		return;
+	received.list_friends.resize(friendCount);
 	for (uint32 i = 0; i < friendCount; i++)
-		session->list_friends[i].readData(&response->data);
+		received.list_friends[i].readData(&response->data);
 	// friend requests (outgoing)
 	uint32 friendRequestsOutCount = response->data.readU32();
 	if (response->data.hasReadOutOfBounds())
 		return;
-	session->list_friendReqOutgoing.resize(friendRequestsOutCount);
+	received.list_friendReqOutgoing.resize(friendRequestsOutCount);
 	for (uint32 i = 0; i < friendRequestsOutCount; i++)
-		session->list_friendReqOutgoing[i].readData(&response->data);
+		received.list_friendReqOutgoing[i].readData(&response->data);
 	// friend requests (incoming)
 	uint32 friendRequestsInCount = response->data.readU32();
 	if (response->data.hasReadOutOfBounds())
 		return;
-	session->list_friendReqIncoming.resize(friendRequestsInCount);
+	received.list_friendReqIncoming.resize(friendRequestsInCount);
 	for (uint32 i = 0; i < friendRequestsInCount; i++)
-		session->list_friendReqIncoming[i].readData(&response->data);
+		received.list_friendReqIncoming[i].readData(&response->data);
 	if (response->data.hasReadOutOfBounds())
 		return;
+	// the previous lists, for change tracking
+	FriendLists previous;
+	session->EditLists([&](FriendLists& L, const FriendLists& current) {
+		previous = current;
+		L = received;
+	});
 	// blacklist
 	uint32 blacklistCount = response->data.readU32();
 	for (uint32 i = 0; i < blacklistCount; i++)
@@ -337,7 +339,7 @@ void NexFriends::handleResponse_getAllInformation(nexServiceResponse_t* response
 	}
 
 	if (session->firstInformationRequest == false)
-		session->trackNotifications();
+		session->trackNotifications(previous, received);
 	else
 	{
 		// first request after login -> send online notification
@@ -444,21 +446,48 @@ void NexFriends::setNotificationHandler(void(*notificationHandler)(NOTIFICATION_
 	this->notificationHandler = notificationHandler;
 }
 
+// what EditLists' edit notifies, sent once the new lists are in place
+static thread_local std::vector<std::pair<NexFriends::NOTIFICATION_TYPE, uint32>>* t_notificationsDuringEdit = nullptr;
+
 void NexFriends::generateNotification(NOTIFICATION_TYPE notificationType, uint32 pid)
 {
+	if (t_notificationsDuringEdit)
+	{
+		t_notificationsDuringEdit->emplace_back(notificationType, pid);
+		return;
+	}
 	if (this->notificationHandler == nullptr)
 		return;
 	this->notificationHandler(notificationType, pid);
 }
 
+// The lists are read by the friend service's thread (and the notification
+// handler) and replaced whole (RcuCell.h) by the nex thread as the server
+// reports changes, and by a new login: no lock. edit(next, current) changes
+// next, a copy of what is in place; what it notifies goes out once next is.
+template<typename TEdit>
+void NexFriends::EditLists(TEdit edit)
+{
+	std::vector<std::pair<NOTIFICATION_TYPE, uint32>> notifications;
+	m_lists.Update([&](const FriendLists& current) {
+		FriendLists next = current;
+		t_notificationsDuringEdit = &notifications;
+		edit(next, current);
+		t_notificationsDuringEdit = nullptr;
+		return next;
+	});
+	for (const auto& n : notifications)
+		generateNotification(n.first, n.second);
+}
+
 // compare previous and current state of friend(-request) lists and generate change-notifications
-void NexFriends::trackNotifications()
+void NexFriends::trackNotifications(const FriendLists& previous, const FriendLists& current)
 {
 	// search for changed and added friend entries
-	for (auto& frNew : list_friends)
+	for (auto& frNew : current.list_friends)
 	{
 		bool entryFound = false;
-		for (auto& frPrevious : previousState.list_friends)
+		for (auto& frPrevious : previous.list_friends)
 		{
 			if (frNew.nnaInfo.principalInfo.principalId == frPrevious.nnaInfo.principalInfo.principalId)
 			{
@@ -474,10 +503,10 @@ void NexFriends::trackNotifications()
 		}
 	}
 	// search for removed friends
-	for (auto& frPrevious : previousState.list_friends)
+	for (auto& frPrevious : previous.list_friends)
 	{
 		bool entryFound = false;
-		for (auto& frNew : list_friends)
+		for (auto& frNew : current.list_friends)
 		{
 			if (frNew.nnaInfo.principalInfo.principalId == frPrevious.nnaInfo.principalInfo.principalId)
 			{
@@ -492,10 +521,10 @@ void NexFriends::trackNotifications()
 		}
 	}
 	// search for added friend requests (incoming)
-	for (auto& frqNew : list_friendReqIncoming)
+	for (auto& frqNew : current.list_friendReqIncoming)
 	{
 		bool entryFound = false;
-		for (auto& frqPrevious : previousState.list_friendReqIncoming)
+		for (auto& frqPrevious : previous.list_friendReqIncoming)
 		{
 			if (frqNew.principalInfo.principalId == frqPrevious.principalInfo.principalId)
 			{
@@ -510,10 +539,10 @@ void NexFriends::trackNotifications()
 		}
 	}
 	// search for removed friend requests (incoming)
-	for (auto& frqPrevious : previousState.list_friendReqIncoming)
+	for (auto& frqPrevious : previous.list_friendReqIncoming)
 	{
 		bool entryFound = false;
-		for (auto& frqNew : list_friendReqIncoming)
+		for (auto& frqNew : current.list_friendReqIncoming)
 		{
 			if (frqNew.principalInfo.principalId == frqPrevious.principalInfo.principalId)
 			{
@@ -528,10 +557,10 @@ void NexFriends::trackNotifications()
 		}
 	}
 	// search for added friend requests (outgoing)
-	for (auto& frqNew : list_friendReqOutgoing)
+	for (auto& frqNew : current.list_friendReqOutgoing)
 	{
 		bool entryFound = false;
-		for (auto& frqPrevious : previousState.list_friendReqOutgoing)
+		for (auto& frqPrevious : previous.list_friendReqOutgoing)
 		{
 			if (frqNew.principalInfo.principalId == frqPrevious.principalInfo.principalId)
 			{
@@ -546,10 +575,10 @@ void NexFriends::trackNotifications()
 		}
 	}
 	// search for removed friend requests (outgoing)
-	for (auto& frqPrevious : previousState.list_friendReqOutgoing)
+	for (auto& frqPrevious : previous.list_friendReqOutgoing)
 	{
 		bool entryFound = false;
-		for (auto& frqNew : list_friendReqOutgoing)
+		for (auto& frqNew : current.list_friendReqOutgoing)
 		{
 			if (frqNew.principalInfo.principalId == frqPrevious.principalInfo.principalId)
 			{
@@ -590,8 +619,8 @@ void NexFriends::getFriendPIDs(uint32* pidList, uint32* pidCount, sint32 offset,
 	}
 	// parse response and update lists
 	std::vector<uint32> allPids;
-	std::unique_lock listLock(this->mtx_lists);
-	for (auto& it : this->list_friends)
+	auto lists = m_lists.Read();
+	for (auto& it : lists->list_friends)
 	{
 		uint32 pid = it.nnaInfo.principalInfo.principalId;
 		addUniquePidToList(allPids, pid);
@@ -599,7 +628,7 @@ void NexFriends::getFriendPIDs(uint32* pidList, uint32* pidCount, sint32 offset,
 	if (includeFriendRequests)
 	{
 		// incoming friend requests are not included
-		for (auto& it : this->list_friendReqOutgoing)
+		for (auto& it : lists->list_friendReqOutgoing)
 		{
 			uint32 pid = it.principalInfo.principalId;
 			addUniquePidToList(allPids, pid);
@@ -624,10 +653,10 @@ void NexFriends::getFriendRequestPIDs(uint32* pidList, uint32* pidCount, sint32 
 	}
 	// parse response and update lists
 	std::vector<uint32> allPids;
-	std::unique_lock listLock(this->mtx_lists);
+	auto lists = m_lists.Read();
 	if (includeIncoming)
 	{
-		for (auto& it : this->list_friendReqIncoming)
+		for (auto& it : lists->list_friendReqIncoming)
 		{
 			uint32 pid = it.principalInfo.principalId;
 			addUniquePidToList(allPids, pid);
@@ -635,7 +664,7 @@ void NexFriends::getFriendRequestPIDs(uint32* pidList, uint32* pidCount, sint32 
 	}
 	if (includeOutgoing)
 	{
-		for (auto& it : this->list_friendReqOutgoing)
+		for (auto& it : lists->list_friendReqOutgoing)
 		{
 			uint32 pid = it.principalInfo.principalId;
 			addUniquePidToList(allPids, pid);
@@ -669,15 +698,15 @@ std::string NexFriends::getAccountNameByPid(uint32 principalId)
 
 int NexFriends::getPendingFriendRequestCount()
 {
-	std::unique_lock listLock(this->mtx_lists);
-	return (int)this->list_friendReqIncoming.size();
+	auto lists = m_lists.Read();
+	return (int)lists->list_friendReqIncoming.size();
 }
 
 
 bool NexFriends::getFriendByPID(nexFriend& friendData, uint32 searchedPid)
 {
-	std::unique_lock listLock(this->mtx_lists);
-	for (auto& it : this->list_friends)
+	auto lists = m_lists.Read();
+	for (auto& it : lists->list_friends)
 	{
 		uint32 pid = it.nnaInfo.principalInfo.principalId;
 		if (pid == searchedPid)
@@ -691,8 +720,8 @@ bool NexFriends::getFriendByPID(nexFriend& friendData, uint32 searchedPid)
 
 bool NexFriends::getFriendRequestByPID(nexFriendRequest& friendRequestData, bool* isIncoming, uint32 searchedPid)
 {
-	std::unique_lock listLock(this->mtx_lists);
-	for (auto& it : this->list_friendReqIncoming)
+	auto lists = m_lists.Read();
+	for (auto& it : lists->list_friendReqIncoming)
 	{
 		uint32 pid = it.principalInfo.principalId;
 		if (pid == searchedPid)
@@ -703,7 +732,7 @@ bool NexFriends::getFriendRequestByPID(nexFriendRequest& friendRequestData, bool
 			return true;
 		}
 	}
-	for (auto& it : this->list_friendReqOutgoing)
+	for (auto& it : lists->list_friendReqOutgoing)
 	{
 		uint32 pid = it.principalInfo.principalId;
 		if (pid == searchedPid)
@@ -719,8 +748,8 @@ bool NexFriends::getFriendRequestByPID(nexFriendRequest& friendRequestData, bool
 
 bool NexFriends::getFriendRequestByMessageId(nexFriendRequest& friendRequestData, bool* isIncoming, uint64 messageId)
 {
-	std::unique_lock listLock(this->mtx_lists);
-	for (auto& it : this->list_friendReqIncoming)
+	auto lists = m_lists.Read();
+	for (auto& it : lists->list_friendReqIncoming)
 	{
 		uint64 mid = it.message.messageId;
 		if(mid == 0)
@@ -732,7 +761,7 @@ bool NexFriends::getFriendRequestByMessageId(nexFriendRequest& friendRequestData
 			return true;
 		}
 	}
-	for (auto& it : this->list_friendReqOutgoing)
+	for (auto& it : lists->list_friendReqOutgoing)
 	{
 		uint64 mid = it.message.messageId;
 		if (mid == 0)
@@ -963,9 +992,9 @@ void NexFriends::updateMyPresence(nexPresenceV2& myPresence)
 	nexCon->callMethod(NEX_PROTOCOL_FRIENDS_WIIU, 13, &packetBuffer, +[](nexServiceResponse_t* nexResponse){}, false);
 }
 
+// Runs on: the friend service's thread, alone
 void NexFriends::update()
 {
-	std::unique_lock loginLock(mtx_login);
 	if (!isCurrentlyConnected)
 	{
 		if (loginInProcess)

@@ -70,7 +70,8 @@
 //  - RcuCell (the emulated controllers and their mappings): readers never see
 //    a value freed or half-built, however many are inside when a writer
 //    replaces it, and a writer is never held up by readers that came after
-//    it;
+//    it; writers on several threads that each build on the value in place
+//    (Update: the boss task map, the online token caches) lose no change;
 //  - the thread-started flag the IOSU services start their threads with lets
 //    the starter go as soon as the thread says so, not on a clock;
 //  - RetroArch's audio thread, pulling from an empty ring, sleeps until the
@@ -119,6 +120,7 @@
 #include "libretro/LibretroAudioRing.h"
 
 #include <atomic>
+#include <map>
 #include <chrono>
 #include <cstdio>
 #include <memory>
@@ -1605,6 +1607,54 @@ static void TestRcuCell()
 	CHECK(cell.Read()->items[0] == 5000);
 }
 
+// RcuCell::Update, as the boss daemon's task map and the online token
+// caches use it: writers on several threads each add and take out their own
+// entries, building on what is in place, and none of the changes is lost;
+// readers meanwhile only ever see whole maps
+static void TestRcuCellUpdate()
+{
+	RcuCell<std::map<int, int>> cell;
+	std::atomic_bool stop{false}, bad{false};
+	std::thread reader([&] {
+		while (!stop.load(std::memory_order_relaxed))
+		{
+			const auto m = cell.Read();
+			for (const auto& kv : *m)
+				if (kv.second != kv.first * 3)
+					bad.store(true);
+		}
+	});
+	std::vector<std::thread> writers;
+	for (int w = 0; w < 4; w++)
+		writers.emplace_back([&cell, w] {
+			for (int i = 0; i < 500; i++)
+			{
+				const int key = w * 1000 + i;
+				cell.Update([key](const std::map<int, int>& current) {
+					std::map<int, int> next = current;
+					next.emplace(key, key * 3);
+					return next;
+				});
+				if (i % 2)
+					cell.Update([key](const std::map<int, int>& current) {
+						std::map<int, int> next = current;
+						next.erase(key);
+						return next;
+					});
+			}
+		});
+	for (auto& t : writers)
+		t.join();
+	stop.store(true);
+	reader.join();
+	CHECK(!bad.load());
+	const auto m = cell.Read();
+	CHECK(m->size() == 4 * 250);
+	for (int w = 0; w < 4; w++)
+		for (int i = 0; i < 500; i++)
+			CHECK(m->count(w * 1000 + i) == (i % 2 ? 0u : 1u));
+}
+
 // --- thread-started flag ------------------------------------------------
 
 static void TestThreadStartedFlag()
@@ -2175,6 +2225,7 @@ int main()
 	TestClaimTicket();
 	TestNexWait();
 	TestRcuCell();
+	TestRcuCellUpdate();
 	TestConfigValueString();
 	TestDoneQueue();
 	TestFetchShaderRegistry();

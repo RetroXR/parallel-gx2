@@ -139,7 +139,8 @@ jobs:
         # pipeline cache's compile threads, the worker queues or the shader
         # compile pool, the emulated controllers' reads, the IOSU ioctl
         # queues, the IOSU kernel's IPC or the shader cache writer; nor does
-        # the nex thread poll
+        # the nex thread poll; nor do the Metal renderer's pools, a SpotPass
+        # task's state or a guest stopped for good
         run: ./tools/check_gpu_waits.sh
 
       - name: "HTTP transfers against local servers"
@@ -163,7 +164,9 @@ jobs:
 
       - name: "Thread handoffs"
         # the recompiler's work queue, the GPU thread's wake, the audio
-        # ring: plain, under ThreadSanitizer, under ASan + UBSan
+        # ring, RcuCell's updates (the SpotPass task map, the online token
+        # caches and friend lists): plain, under ThreadSanitizer, under
+        # ASan + UBSan
         run: |
           ./test/handoff/run_tests.sh
           make -C test/handoff clean

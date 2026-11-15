@@ -2,6 +2,7 @@
 #include "Common/FileStream.h"
 #include "util/helpers/MappedFile.h"
 #include "util/helpers/helpers.h"
+#include "util/helpers/RcuCell.h"
 #include "util/helpers/EventWake.h"
 
 #include "Cafe/IOSU/iosu_types_common.h"
@@ -337,63 +338,60 @@ namespace iosu::boss
 
 		nnResult Run()
 		{
-			std::unique_lock _l(m_mutex);
-			cemu_assert_debug(m_taskState == TaskState::Initial || m_taskState == TaskState::Done);
-			m_taskTurnState = TaskTurnState::Ready;
-			SetStateLocked(TaskState::Ready);
+			cemu_assert_debug(GetState() == TaskState::Initial || GetState() == TaskState::Done);
+			SetState(TaskState::Ready, TaskTurnState::Ready);
 			return RESULT_SUCCESS;
 		}
 
-		// with m_mutex held, as every change of state is
-		void SetStateLocked(TaskState state)
+		// The state and the turn state change together, in one word, so a
+		// waiter that sees Done reads the turn state it ended with; the HTTP
+		// status and content length are stored before it. Every change notifies
+		// the daemon and HandleTaskWait.
+		void SetState(TaskState state, TaskTurnState turnState)
 		{
-			m_taskState = state;
-			BossWake().Notify(); // the daemon, and HandleTaskWait
+			m_state.store(PackState(state, turnState), std::memory_order_release);
+			BossWake().Notify();
 		}
 
-		TaskState GetState()
+		TaskState GetState() const
 		{
-			std::unique_lock _l(m_mutex);
-			return m_taskState;
+			return (TaskState)(m_state.load(std::memory_order_acquire) & 0xFF);
 		}
 
-		TaskTurnState GetTurnState()
+		TaskTurnState GetTurnState() const
 		{
-			std::unique_lock _l(m_mutex);
-			return m_taskTurnState;
+			return (TaskTurnState)(m_state.load(std::memory_order_acquire) >> 8);
 		}
 
 		sint32 GetHttpStatusCode() const
 		{
-			return m_httpStatusCode;
+			return m_httpStatusCode.load(std::memory_order_relaxed);
 		}
 
 		uint32 GetContentLength() const
 		{
-			return m_contentLength;
+			return m_contentLength.load(std::memory_order_relaxed);
 		}
 
 		uint32 GetProcessedLength() const
 		{
-			return m_contentLength; // todo - unlike content length, this value is getting updated as the download happens. But for now we just return the content length
+			return GetContentLength(); // todo - unlike content length, this value is getting updated as the download happens. But for now we just return the content length
 		}
 
 		nnResult TaskDoRequest()
 		{
-			std::unique_lock _l(m_mutex);
-			if (m_taskState != TaskState::Ready)
+			// Ready to Running, by this thread alone
+			uint32 ready = PackState(TaskState::Ready, TaskTurnState::Ready);
+			if (!m_state.compare_exchange_strong(ready, PackState(TaskState::Running, TaskTurnState::Running), std::memory_order_acq_rel))
 			{
-				cemuLog_log(LogType::Force, "Task {} is not ready to run, current state: {}", m_taskId.id.c_str(), static_cast<uint32>(m_taskState));
+				cemuLog_log(LogType::Force, "Task {} is not ready to run, current state: {}", m_taskId.id.c_str(), static_cast<uint32>(GetState()));
 				return BUILD_NN_RESULT(NN_RESULT_LEVEL_FATAL, NN_RESULT_MODULE_NN_BOSS, 0);
 			}
-			SetStateLocked(TaskState::Running);
-			m_taskTurnState = TaskTurnState::Running;
-			m_contentLength = 0;
-			_l.unlock();
+			BossWake().Notify();
+			m_contentLength.store(0, std::memory_order_relaxed);
 			if (!ActiveSettings::IsOnlineEnabled())
 			{
-				SetStateLocked(TaskState::Done);
-				m_taskTurnState = TaskTurnState::DoneError;
+				SetState(TaskState::Done, TaskTurnState::DoneError);
 				return BUILD_NN_RESULT(NN_RESULT_LEVEL_SUCCESS, NN_RESULT_MODULE_NN_BOSS, 0);
 			}
 			uint64 titleId = CafeSystem::GetForegroundTitleId();
@@ -467,11 +465,9 @@ namespace iosu::boss
 				requestUrl.append(fmt::format(fmt::runtime("/{}/{}/{}?c={}&l={}"), "1", m_taskSettings.nbdl.bossCode.c_str(), m_taskId.id.c_str(), countryCode, languageCode));
 				cemu_assert_unimplemented();
 				cemuLog_logDebug(LogType::Force, "IOSU-BOSS: Unsupported task type: {}", static_cast<uint32>(m_taskSettings.taskType.value()));
-				_l.lock();
-				SetStateLocked(TaskState::Done);
-				m_taskTurnState = TaskTurnState::DoneError;
-				m_contentLength = 0;
-				m_httpStatusCode = 0;
+				m_contentLength.store(0, std::memory_order_relaxed);
+				m_httpStatusCode.store(0, std::memory_order_relaxed);
+				SetState(TaskState::Done, TaskTurnState::DoneError);
 				return BUILD_NN_RESULT(NN_RESULT_LEVEL_SUCCESS, NN_RESULT_MODULE_NN_BOSS, 0);
 			}
 			else if (m_taskSettings.taskType == TaskType::NbdlTaskSetting)
@@ -484,21 +480,17 @@ namespace iosu::boss
 			else if (m_taskSettings.taskType == TaskType::PlayReportSetting)
 			{
 				cemuLog_logDebug(LogType::Force, "IOSU-BOSS: PlayReport tasks are not implemented yet");
-				_l.lock();
-				SetStateLocked(TaskState::Done);
-				m_taskTurnState = TaskTurnState::DoneError;
-				m_contentLength = 0;
-				m_httpStatusCode = 200;
+				m_contentLength.store(0, std::memory_order_relaxed);
+				m_httpStatusCode.store(200, std::memory_order_relaxed);
+				SetState(TaskState::Done, TaskTurnState::DoneError);
 				return BUILD_NN_RESULT(NN_RESULT_LEVEL_SUCCESS, NN_RESULT_MODULE_NN_BOSS, 0);
 			}
 			else
 			{
 				cemuLog_logDebug(LogType::Force, "IOSU-BOSS: Unknown task type: {}", static_cast<uint32>(m_taskSettings.taskType.value()));
-				_l.lock();
-				SetStateLocked(TaskState::Done);
-				m_taskTurnState = TaskTurnState::DoneError;
-				m_contentLength = 0;
-				m_httpStatusCode = 0;
+				m_contentLength.store(0, std::memory_order_relaxed);
+				m_httpStatusCode.store(0, std::memory_order_relaxed);
+				SetState(TaskState::Done, TaskTurnState::DoneError);
 				return BUILD_NN_RESULT(NN_RESULT_LEVEL_SUCCESS, NN_RESULT_MODULE_NN_BOSS, 0);
 			}
 
@@ -516,14 +508,12 @@ namespace iosu::boss
 			if (!request.submitRequest(false))
 			{
 				cemuLog_log(LogType::Force, fmt::format("Failed BOSS request"));
-				_l.lock();
-				SetStateLocked(TaskState::Done);
-				m_taskTurnState = TaskTurnState::DoneError;
+				SetState(TaskState::Done, TaskTurnState::DoneError);
 				return BUILD_NN_RESULT(NN_RESULT_LEVEL_FATAL, NN_RESULT_MODULE_NN_BOSS, 0);
 			}
 			sint32 httpStatusCode = request.GetHTTPStatusCode();
-			m_httpStatusCode = httpStatusCode;
-			m_contentLength = request.getReceivedData().size(); // note - for Nbdl tasks which length is returned?
+			m_httpStatusCode.store(httpStatusCode, std::memory_order_relaxed);
+			m_contentLength.store((uint32)request.getReceivedData().size(), std::memory_order_relaxed); // note - for Nbdl tasks which length is returned?
 
 			{
 				if (httpStatusCode != 200)
@@ -533,9 +523,7 @@ namespace iosu::boss
 				}
 				if (httpStatusCode == 404)
 				{
-					_l.lock();
-					SetStateLocked(TaskState::Done);
-					m_taskTurnState = TaskTurnState::DoneError;
+					SetState(TaskState::Done, TaskTurnState::DoneError);
 					cemuLog_logDebug(LogType::Force, "BOSS task_run: Received 404 Not Found for URL: {}", requestUrl);
 					return BUILD_NN_RESULT(NN_RESULT_LEVEL_FATAL, NN_RESULT_MODULE_NN_BOSS, 0);
 				}
@@ -556,16 +544,16 @@ namespace iosu::boss
 			{
 				cemu_assert_unimplemented();
 			}
-			{
-				_l.lock();
-				SetStateLocked(TaskState::Done);
-				m_taskTurnState = TaskTurnState::DoneSuccess;
-			}
+			SetState(TaskState::Done, TaskTurnState::DoneSuccess);
 			return BUILD_NN_RESULT(NN_RESULT_LEVEL_SUCCESS, NN_RESULT_MODULE_NN_BOSS, 0);
 		}
 
-		std::recursive_mutex& GetMutex() { return m_mutex; }
 	private:
+		static uint32 PackState(TaskState state, TaskTurnState turnState)
+		{
+			return (uint32)state | ((uint32)turnState << 8);
+		}
+
 		struct NbdlQueuedFile
 		{
 			NbdlQueuedFile(std::string_view url, std::string_view fileName, uint32 dataId, uint32 fileType, uint32 size)
@@ -842,11 +830,9 @@ namespace iosu::boss
 		TaskId m_taskId;
 		uint32 m_persistentId;
 		TaskSettingCore m_taskSettings;
-		std::recursive_mutex m_mutex;
-		TaskState m_taskState{ TaskState::Initial };
-		TaskTurnState m_taskTurnState{ TaskTurnState::Ukn };
-		sint32 m_httpStatusCode{ 0 };
-		uint32 m_contentLength{ 0 }; // content length of the last request
+		std::atomic<uint32> m_state{ PackState(TaskState::Initial, TaskTurnState::Ukn) }; // PackState
+		std::atomic<sint32> m_httpStatusCode{ 0 };
+		std::atomic<uint32> m_contentLength{ 0 }; // content length of the last request
 	};
 
 	class BossDaemon
@@ -881,34 +867,35 @@ namespace iosu::boss
 
 		void RegisterTask(const TaskSettingCore& taskSetting)
 		{
-			std::unique_lock _l(m_taskMtx);
-			if (m_registeredTasks.find(taskSetting.taskId) != m_registeredTasks.end())
+			if (TaskIsRegistered(0, taskSetting.taskId))
 			{
 				// task already registered. Return error?
 				cemuLog_logDebug(LogType::Force, "IOSU-Boss: Task {} is already registered", taskSetting.taskId.id.c_str());
 				return;
 			}
-			m_registeredTasks.try_emplace(taskSetting.taskId, std::make_shared<RegisteredTask>(taskSetting.taskId, taskSetting));
+			std::shared_ptr<RegisteredTask> task = std::make_shared<RegisteredTask>(taskSetting.taskId, taskSetting);
+			m_registeredTasks.Update([&](const TaskMap& current) {
+				TaskMap next = current;
+				next.try_emplace(taskSetting.taskId, task);
+				return next;
+			});
 		}
 
 		void UnregisterTask(uint32 persistentId, const TaskId& taskId)
 		{
-			std::unique_lock _l(m_taskMtx);
-			auto it = m_registeredTasks.find(taskId);
-			if (it != m_registeredTasks.end())
-			{
-				m_registeredTasks.erase(it);
-			}
-			else
-			{
-				// todo - return error
-			}
+			if (!TaskIsRegistered(persistentId, taskId))
+				return; // todo - return error
+			m_registeredTasks.Update([&](const TaskMap& current) {
+				TaskMap next = current;
+				next.erase(taskId);
+				return next;
+			});
 		}
 
 		bool TaskIsRegistered(uint32 persistentId, const TaskId& taskId)
 		{
-			std::unique_lock _l(m_taskMtx);
-			return m_registeredTasks.find(taskId) != m_registeredTasks.end();
+			auto tasks = m_registeredTasks.Read();
+			return tasks->find(taskId) != tasks->end();
 		}
 
 		void TaskRun(uint32 persistentId, const TaskId& taskId)
@@ -961,9 +948,9 @@ namespace iosu::boss
 
 		std::shared_ptr<RegisteredTask> GetRegisteredTask2(const uint32 persistentId, const TaskId& taskId)
 		{
-			std::unique_lock _l(m_taskMtx);
-			auto it = m_registeredTasks.find(taskId); // todo - check persistentId as well (make it part of the key?)
-			if (it != m_registeredTasks.end())
+			auto tasks = m_registeredTasks.Read();
+			auto it = tasks->find(taskId); // todo - check persistentId as well (make it part of the key?)
+			if (it != tasks->end())
 				return it->second;
 			return nullptr;
 		}
@@ -1003,8 +990,8 @@ namespace iosu::boss
 
 		std::shared_ptr<RegisteredTask> GetNextRunableTask()
 		{
-			std::unique_lock _l(m_taskMtx);
-			for (auto& task : m_registeredTasks)
+			auto tasks = m_registeredTasks.Read();
+			for (auto& task : *tasks)
 			{
 				if (task.second->GetState() == TaskState::Ready)
 					return task.second;
@@ -1015,9 +1002,10 @@ namespace iosu::boss
 		std::thread m_bossDaemonThread;
 		std::atomic_bool m_threadRunning{ false };
 		std::atomic_bool m_threadExited{ true };
-		// task list
-		std::mutex m_taskMtx;
-		std::map<TaskId, std::shared_ptr<RegisteredTask>> m_registeredTasks;
+		// task list: read by the daemon and the service thread, replaced whole
+		// when a task is registered or unregistered (RcuCell.h), no lock
+		using TaskMap = std::map<TaskId, std::shared_ptr<RegisteredTask>>;
+		RcuCell<TaskMap> m_registeredTasks;
 	}s_bossDaemon;
 
 	class BossMainService : public iosu::nn::IPCService

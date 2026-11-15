@@ -6,11 +6,8 @@
 # lock-free, and a lock must not come back there or anywhere else.
 cd "$(dirname "$0")/.." || exit 2
 
-allowed='src/Cafe/IOSU/nn/boss/boss_service.cpp
-src/Cafe/OS/libs/coreinit/coreinit_Scheduler.cpp
-src/Cemu/napi/napi_act.cpp
-src/Cemu/nex/nexFriends.cpp
-src/Cemu/nex/nexFriends.h'
+# the guest scheduler lock, the emulated cores' one big lock, is the last
+allowed='src/Cafe/OS/libs/coreinit/coreinit_Scheduler.cpp'
 
 pattern='std::(recursive_|shared_|timed_)?mutex|std::condition_variable|std::(lock_guard|unique_lock|scoped_lock|shared_lock)|slock_(new|lock)|scond_(new|wait)|pthread_(mutex|rwlock|cond)_|AcquireSRWLock|EnterCriticalSection'
 

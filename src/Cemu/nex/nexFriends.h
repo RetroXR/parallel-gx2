@@ -1,5 +1,8 @@
 #pragma once
 
+#include <atomic>
+#include "util/helpers/RcuCell.h"
+
 #ifndef FFL_SIZE
 #define FFL_SIZE	0x60
 #endif
@@ -584,8 +587,16 @@ private:
 	static void handleResponse_acceptFriendRequest(nexService* nex, nexServiceResponse_t* response);
 	static void handleResponse_getAllInformation(nexServiceResponse_t* response, NexFriends* nexFriends, std::function<void(uint32)> cb);
 
+	struct FriendLists
+	{
+		std::vector<nexFriend> list_friends;
+		std::vector<nexFriendRequest> list_friendReqOutgoing;
+		std::vector<nexFriendRequest> list_friendReqIncoming;
+	};
+	template<typename TEdit>
+	void EditLists(TEdit edit);
 	void generateNotification(NOTIFICATION_TYPE notificationType, uint32 pid);
-	void trackNotifications();
+	void trackNotifications(const FriendLists& previous, const FriendLists& current);
 
 	// notification-service handlers
 	void processServerNotification_friendOffline(uint32 pid);
@@ -596,21 +607,23 @@ private:
 
 private:
 	void(*notificationHandler)(NOTIFICATION_TYPE notificationType, uint32 pid);
-	bool isCurrentlyConnected;
-	bool hasData; // set after connect when information request response was received
-	bool firstInformationRequest;
+	// set by the login thread, read by the friend service's
+	std::atomic<bool> isCurrentlyConnected;
+	std::atomic<bool> hasData; // set after connect when information request response was received
+	std::atomic<bool> firstInformationRequest;
 	nexService* nexCon;
 	uint8 miiData[FFL_SIZE];
 	std::string miiNickname;
 	char nnid[96];
 	uint32 pid;
 	uint8 countryCode;
-	// login tracking
-	std::recursive_mutex mtx_login;
-	bool loginInProcess;
+	// login tracking: update() and the login it starts are the friend
+	// service's thread's; the login thread clears loginInProcess last, after
+	// nexCon and the rest are in place
+	std::atomic<bool> loginInProcess;
 	uint32 lastLoginAttemptTime;
-	uint32 numFailedLogins;
-	uint32 numSuccessfulLogins;
+	std::atomic<uint32> numFailedLogins;
+	std::atomic<uint32> numSuccessfulLogins;
 	// auth
 	struct
 	{
@@ -625,14 +638,5 @@ private:
 	nexPrincipalPreference myPreference;
 	nexComment myComment;
 
-	std::recursive_mutex mtx_lists;
-	std::vector<nexFriend> list_friends;
-	std::vector<nexFriendRequest> list_friendReqOutgoing;
-	std::vector<nexFriendRequest> list_friendReqIncoming;
-	struct
-	{
-		std::vector<nexFriend> list_friends;
-		std::vector<nexFriendRequest> list_friendReqOutgoing;
-		std::vector<nexFriendRequest> list_friendReqIncoming;
-	}previousState;
+	RcuCell<FriendLists> m_lists;
 };
