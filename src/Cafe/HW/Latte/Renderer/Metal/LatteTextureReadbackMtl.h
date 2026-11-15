@@ -2,8 +2,10 @@
 
 #include "Cafe/HW/Latte/Renderer/Metal/MetalCommon.h"
 #include "Cafe/HW/Latte/Core/LatteTextureReadbackInfo.h"
+#include "util/helpers/PoolNew.h"
 
-class LatteTextureReadbackInfoMtl : public LatteTextureReadbackInfo
+// from a pool (PoolNew.h), as Vulkan's
+class LatteTextureReadbackInfoMtl : public LatteTextureReadbackInfo, public PoolNew<LatteTextureReadbackInfoMtl, 64>
 {
 public:
 	LatteTextureReadbackInfoMtl(class MetalRenderer* mtlRenderer, LatteTextureView* textureView, uint32 bufferOffset) : LatteTextureReadbackInfo(textureView), m_mtlr{mtlRenderer}, m_bufferOffset{bufferOffset} {}

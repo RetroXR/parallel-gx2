@@ -13,7 +13,34 @@ struct LatteTextureReadbackQueueEntry
 };
 
 std::vector<LatteTextureReadbackQueueEntry> sTextureScheduledReadbacks; // readbacks that have been queued but the actual transfer has not yet been started
-std::queue<LatteTextureReadbackInfo*> sTextureActiveReadbackQueue; // readbacks in flight
+// The readbacks in flight, oldest first: a vector and the index of its
+// oldest, moved down in place once half of it is taken, so that once it has
+// been as long as a game keeps it nothing more is allocated (a std::queue
+// allocated and freed a block every so many)
+struct ReadbackFifo
+{
+	std::vector<LatteTextureReadbackInfo*> items;
+	size_t head = 0;
+
+	bool empty() const { return head == items.size(); }
+	LatteTextureReadbackInfo* front() const { return items[head]; }
+	void push(LatteTextureReadbackInfo* info) { items.push_back(info); }
+	void pop()
+	{
+		head++;
+		if (head == items.size())
+		{
+			items.clear();
+			head = 0;
+		}
+		else if (head >= 16 && head * 2 >= items.size())
+		{
+			items.erase(items.begin(), items.begin() + head);
+			head = 0;
+		}
+	}
+};
+ReadbackFifo sTextureActiveReadbackQueue; // readbacks in flight
 
 void LatteTextureReadback_StartTransfer(LatteTextureView* textureView)
 {

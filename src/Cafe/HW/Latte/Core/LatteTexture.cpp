@@ -173,11 +173,12 @@ void LatteTexture_Invalidate(uint32 physAddr, uint32 size)
 {
 	if (size == 0xFFFFFFFF)
 		return; // full cache invalidation for all textures is too expensive, so for now lets ignore it. Most likely games don't use this anyway when they are modifying a single texture
-	std::vector<LatteTexture*> textures;
-	LatteTC_LookupTexturesByPhysAddr(physAddr, textures);
-	uint32 invalidationVal = LatteGPUState.frameCounter - 1;
-	for (LatteTexture* texture : textures)
-		texture->lastDataUpdateFrameCounter = invalidationVal;
+	// each texture at the address marked, without collecting them first (a
+	// vector for every invalidation a game sends, which is several a frame)
+	const uint32 invalidationVal = LatteGPUState.frameCounter - 1;
+	LatteTC_ForEachTextureAtPhysAddr(physAddr, [](LatteTexture* texture, void* ctx) {
+		texture->lastDataUpdateFrameCounter = *(const uint32*)ctx;
+	}, (void*)&invalidationVal);
 }
 
 // calculate the actually accessed data range
@@ -1131,6 +1132,21 @@ LatteTextureView* LatteTC_LookupTextureByData(MPTR physAddr, sint32 width, sint3
 	}
 
 	return nullptr;
+}
+
+void LatteTC_ForEachTextureAtPhysAddr(MPTR physAddr, void (*fn)(LatteTexture* texture, void* ctx), void* ctx)
+{
+	loopItrMemOccupancyBuckets(physAddr, physAddr + 1)
+	{
+		for (sint32 i = 0; i < list_texMemOccupancyBucket[bucketIndex].size(); i++)
+		{
+			if (list_texMemOccupancyBucket[bucketIndex][i].addrStart != physAddr)
+				continue;
+			LatteTexture* tex = list_texMemOccupancyBucket[bucketIndex][i].sliceMipInfo->texture;
+			if (tex->physAddress == physAddr)
+				fn(tex, ctx);
+		}
+	}
 }
 
 void LatteTC_LookupTexturesByPhysAddr(MPTR physAddr, std::vector<LatteTexture*>& list_textures)

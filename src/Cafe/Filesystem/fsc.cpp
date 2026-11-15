@@ -1,5 +1,6 @@
 #include "Cafe/Filesystem/fsc.h"
 #include "Cafe/Filesystem/FST/fstUtil.h"
+#include "util/helpers/PoolNew.h"
 
 #include <atomic>
 
@@ -501,7 +502,9 @@ static FSCMountPathNode* fsc_lookupPathVirtualNode(const FSCMountTable* table, c
 }
 
 // this wraps multiple iterated directories from different devices into one unified virtual representation
-class FSCVirtualFileDirectoryIterator : public FSCVirtualFile
+// From a pool (PoolNew.h), its path and folders in place: opening a directory
+// allocates nothing of the core's (listing it collects its entries)
+class FSCVirtualFileDirectoryIterator : public FSCVirtualFile, public PoolNew<FSCVirtualFileDirectoryIterator, 16>
 {
 public:
 	sint32 fscGetType() override
@@ -510,16 +513,20 @@ public:
 	}
 
 	FSCVirtualFileDirectoryIterator(std::string_view path, std::span<FSCVirtualFile*> mappedFolders)
-		: m_path(path), m_folders(mappedFolders.begin(), mappedFolders.end())
 	{
 		dirIterator = nullptr;
+		const size_t len = std::min(path.size(), sizeof(m_path) - 1);
+		std::memcpy(m_path, path.data(), len);
+		m_path[len] = '\0';
+		m_folderCount = std::min(mappedFolders.size(), std::size(m_folders));
+		std::copy_n(mappedFolders.begin(), m_folderCount, m_folders);
 	}
 
 	~FSCVirtualFileDirectoryIterator()
 	{
 		// dirIterator is deleted in base constructor
-		for (auto& itr : m_folders)
-			delete itr;
+		for (size_t i = 0; i < m_folderCount; i++)
+			delete m_folders[i];
 	}
 
 	bool fscDirNext(FSCDirEntry* dirEntry) override
@@ -564,14 +571,14 @@ private:
 		dirIterator = new FSCVirtualFile::FSCDirIteratorState();
 		FSCDirEntry dirEntry;
 		FSCTableRef ref;
-		for (auto& itr : m_folders)
+		for (size_t i = 0; i < m_folderCount; i++)
 		{
-			while (itr->fscDirNext(&dirEntry))
+			while (m_folders[i]->fscDirNext(&dirEntry))
 				addUniqueDirEntry(dirEntry);
 		}
 		for (sint32 prio = FSC_PRIORITY_COUNT - 1; prio >= 0; prio--)
 		{
-			FSCMountPathNode* nodeVirtualPath = fsc_lookupPathVirtualNode(ref.get(), m_path.c_str(), prio);
+			FSCMountPathNode* nodeVirtualPath = fsc_lookupPathVirtualNode(ref.get(), m_path, prio);
 			if (nodeVirtualPath)
 			{
 				for (auto& itr : nodeVirtualPath->subnodes)
@@ -588,8 +595,9 @@ private:
 	}
 
 private:
-	std::string m_path;
-	std::vector<FSCVirtualFile*> m_folders; // list of all folders mapped to the same directory (at different priorities)
+	char m_path[1300]; // as long as FSA translates a path (FSA_TRANSLATED_PATH_MAX)
+	FSCVirtualFile* m_folders[FSC_PRIORITY_COUNT]; // all folders mapped to the same directory (at different priorities)
+	size_t m_folderCount = 0;
 };
 
 // Open file or directory from virtual file system

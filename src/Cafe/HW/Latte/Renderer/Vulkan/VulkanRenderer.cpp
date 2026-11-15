@@ -3682,7 +3682,10 @@ VKRObjectRenderPass::VKRObjectRenderPass(AttachmentInfo_t& attachmentInfo, sint3
 	m_hashForPipeline = stateHash;
 
 	// setup Vulkan renderpass
-	std::vector<VkAttachmentDescription> attachments_descriptions;
+	// the color attachments and depth, in place: a new render pass allocates
+	// nothing of the core's
+	VkAttachmentDescription attachmentDescriptions[Latte::GPU_LIMITS::NUM_COLOR_ATTACHMENTS + 1];
+	uint32 attachmentCount = 0;
 	std::array<VkAttachmentReference, Latte::GPU_LIMITS::NUM_COLOR_ATTACHMENTS> color_attachments_references{};
 	cemu_assert(colorAttachmentCount <= color_attachments_references.size());
 	sint32 numColorAttachments = 0;
@@ -3696,7 +3699,7 @@ VKRObjectRenderPass::VKRObjectRenderPass(AttachmentInfo_t& attachmentInfo, sint3
 		}
 		m_colorAttachmentFormat[i] = attachmentInfo.colorAttachment[i].format;
 
-		color_attachments_references[i].attachment = (uint32)attachments_descriptions.size();
+		color_attachments_references[i].attachment = attachmentCount;
 		color_attachments_references[i].layout = attachmentLayout;
 
 		VkAttachmentDescription entry{};
@@ -3708,7 +3711,7 @@ VKRObjectRenderPass::VKRObjectRenderPass(AttachmentInfo_t& attachmentInfo, sint3
 		entry.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 		entry.initialLayout = attachmentLayout;
 		entry.finalLayout = attachmentLayout;
-		attachments_descriptions.emplace_back(entry);
+		attachmentDescriptions[attachmentCount++] = entry;
 
 		numColorAttachments = i + 1;
 	}
@@ -3723,7 +3726,7 @@ VKRObjectRenderPass::VKRObjectRenderPass(AttachmentInfo_t& attachmentInfo, sint3
 	else
 	{
 		hasDepthStencilAttachment = true;
-		depth_stencil_attachments_references.attachment = (uint32)attachments_descriptions.size();
+		depth_stencil_attachments_references.attachment = attachmentCount;
 		depth_stencil_attachments_references.layout = attachmentLayout;
 		m_depthAttachmentFormat = attachmentInfo.depthAttachment.format;
 
@@ -3744,7 +3747,7 @@ VKRObjectRenderPass::VKRObjectRenderPass(AttachmentInfo_t& attachmentInfo, sint3
 		}
 		entry.initialLayout = attachmentLayout;
 		entry.finalLayout = attachmentLayout;
-		attachments_descriptions.emplace_back(entry);
+		attachmentDescriptions[attachmentCount++] = entry;
 	}
 
 	// todo - use numColorAttachments instead of .size() or colorAttachmentCount (needs adjusting in many places)
@@ -3759,8 +3762,8 @@ VKRObjectRenderPass::VKRObjectRenderPass(AttachmentInfo_t& attachmentInfo, sint3
 
 	VkRenderPassCreateInfo renderPassInfo{};
 	renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-	renderPassInfo.attachmentCount = (uint32)attachments_descriptions.size();
-	renderPassInfo.pAttachments = attachments_descriptions.data();
+	renderPassInfo.attachmentCount = attachmentCount;
+	renderPassInfo.pAttachments = attachmentDescriptions;
 	renderPassInfo.subpassCount = 1;
 	renderPassInfo.pSubpasses = &subpass;
 

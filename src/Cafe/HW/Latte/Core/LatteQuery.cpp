@@ -4,12 +4,15 @@
 
 #include "Cafe/HW/Latte/Core/LatteQueryObject.h"
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
+#include "util/helpers/PoolNew.h"
 
 #define GPU7_QUERY_TYPE_OCCLUSION	(1)
 
 uint64 queryEventCounter = 1;
 
-struct LatteGX2QueryInformation
+// from a pool (PoolNew.h): an occlusion query a game begins - many a frame
+// in some - allocates nothing (malloc'd one at a time before)
+struct LatteGX2QueryInformation : PoolNew<LatteGX2QueryInformation, 64>
 {
 	MPTR queryMPTR;
 	uint64 queryEventStart;
@@ -98,7 +101,7 @@ void LatteQuery_UpdateFinishedQueries()
 		if (gx2Query->queryEnded && latestQueryFinishedEventId >= gx2Query->queryEventEnd)
 		{
 			LatteQuery_finishGX2Query(gx2Query);
-			free(gx2Query);
+			delete gx2Query;
 			list_activeGX2Queries2.erase(list_activeGX2Queries2.begin() + i);
 			i--;
 		}
@@ -153,8 +156,7 @@ void LatteQuery_BeginOcclusionQuery(MPTR queryMPTR)
 	// end any currently active query
 	LatteQuery_endActiveRendererQuery(currentEventId);
 	// create GX2 query binding
-	LatteGX2QueryInformation* queryBinding = (LatteGX2QueryInformation*)malloc(sizeof(LatteGX2QueryInformation));
-	memset(queryBinding, 0x00, sizeof(LatteGX2QueryInformation));
+	LatteGX2QueryInformation* queryBinding = new LatteGX2QueryInformation();
 	queryBinding->queryEventStart = currentEventId;
 	queryBinding->queryMPTR = queryMPTR;
 	list_activeGX2Queries2.emplace_back(queryBinding);

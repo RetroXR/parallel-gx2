@@ -794,7 +794,9 @@ void LatteRenderTarget_itHLEClearColorDepthStencil(uint32 clearMask,
 	// clear depth or stencil buffer (if flag set)
 	if ((hasDepthClear || hasStencilClear) && depthBufferMPTR != MPTR_NULL)
 	{
-		std::vector<LatteTexture*> list_depthClearTextures;
+		// the GPU thread's own, kept: a depth clear - every frame - allocates nothing
+		static std::vector<LatteTexture*> list_depthClearTextures;
+		list_depthClearTextures.clear();
 		LatteTC_LookupTexturesByPhysAddr(depthBufferMPTR, list_depthClearTextures);
 		bool foundMatchingDepthBuffer = false;
 		// todo - support for clearing depth mips?

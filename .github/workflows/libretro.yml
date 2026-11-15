@@ -126,6 +126,11 @@ jobs:
         # now, and the list of those that still do only shrinks
         run: ./tools/check_host_locks.sh
 
+      - name: "No allocation while a game plays, where listed"
+        # the functions listed that run per frame, per draw, per new state
+        # or per guest call allocate nothing; the list only grows
+        run: ./tools/check_play_allocs.sh
+
       - name: "GPU thread waits woken, not timed or spun"
         # an idle GPU thread sleeps until the CPU submits; the GPU thread's
         # start, the title start, the graphic packs, the GPU's init, GX2Init

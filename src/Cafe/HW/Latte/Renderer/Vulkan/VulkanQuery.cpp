@@ -1,6 +1,7 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
 
-class LatteQueryObjectVk : public LatteQueryObject
+// kept for reuse once made (list_cachedQueries), from a pool (PoolNew.h)
+class LatteQueryObjectVk : public LatteQueryObject, public PoolNew<LatteQueryObjectVk, 64>
 {
 	friend class VulkanRenderer;
 

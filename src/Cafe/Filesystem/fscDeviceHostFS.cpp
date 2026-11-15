@@ -91,11 +91,6 @@ void FSCVirtualFile_Host::fscFlush()
 	host_fs_flush(m_node);
 }
 
-FSCVirtualFile* FSCVirtualFile_Host::OpenFile(const fs::path& path, FSC_ACCESS_FLAG accessFlags, sint32& fscStatus)
-{
-	return OpenFile(_pathToUtf8(path).c_str(), accessFlags, fscStatus);
-}
-
 FSCVirtualFile* FSCVirtualFile_Host::OpenFile(const char* utf8Path, FSC_ACCESS_FLAG accessFlags, sint32& fscStatus)
 {
 	if (!HAS_FLAG(accessFlags, FSC_ACCESS_FLAG::OPEN_FILE) && !HAS_FLAG(accessFlags, FSC_ACCESS_FLAG::OPEN_DIR))

@@ -1,8 +1,10 @@
 #pragma once
 #include "Cafe/HW/Latte/Core/LatteTextureReadbackInfo.h"
 #include "Common/GLInclude/GLInclude.h"
+#include "util/helpers/PoolNew.h"
 
-class LatteTextureReadbackInfoGL : public LatteTextureReadbackInfo
+// from a pool (PoolNew.h), as Vulkan's
+class LatteTextureReadbackInfoGL : public LatteTextureReadbackInfo, public PoolNew<LatteTextureReadbackInfoGL, 64>
 {
 public:
 	LatteTextureReadbackInfoGL(LatteTextureView* textureView);

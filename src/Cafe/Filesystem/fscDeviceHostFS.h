@@ -7,7 +7,6 @@
 class FSCVirtualFile_Host : public FSCVirtualFile, public PoolNew<FSCVirtualFile_Host>
 {
 public:
-	static FSCVirtualFile* OpenFile(const fs::path& path, FSC_ACCESS_FLAG accessFlags, sint32& fscStatus);
 	// utf8, as the device has its paths
 	static FSCVirtualFile* OpenFile(const char* utf8Path, FSC_ACCESS_FLAG accessFlags, sint32& fscStatus);
 	~FSCVirtualFile_Host() override;

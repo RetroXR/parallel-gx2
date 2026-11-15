@@ -1,7 +1,10 @@
 #pragma once
 #include "Cafe/HW/Latte/Core/LatteTextureReadbackInfo.h"
+#include "util/helpers/PoolNew.h"
 
-class LatteTextureReadbackInfoVk : public LatteTextureReadbackInfo
+// from a pool (PoolNew.h): a readback, which some games start every frame,
+// allocates nothing
+class LatteTextureReadbackInfoVk : public LatteTextureReadbackInfo, public PoolNew<LatteTextureReadbackInfoVk, 64>
 {
 public:
 	LatteTextureReadbackInfoVk(VkDevice device, LatteTextureView* textureView);

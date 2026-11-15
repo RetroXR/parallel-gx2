@@ -362,6 +362,9 @@ LatteTextureView* LatteTexture_CreateMapping(MPTR physAddr, MPTR physMipAddr, si
 
 LatteTextureView* LatteTC_LookupTextureByData(MPTR physAddr, sint32 width, sint32 height, sint32 pitch, sint32 firstMip, sint32 numMip, sint32 firstSlice, sint32 numSlice, sint32* searchIndex);
 void LatteTC_LookupTexturesByPhysAddr(MPTR physAddr, std::vector<LatteTexture*>& list_textures);
+// fn for each texture based at physAddr, once for each of its slices and mips
+// there (no list collected)
+void LatteTC_ForEachTextureAtPhysAddr(MPTR physAddr, void (*fn)(LatteTexture* texture, void* ctx), void* ctx);
 
 LatteTextureView* LatteTC_GetTextureSliceViewOrTryCreate(MPTR srcImagePtr, MPTR srcMipPtr, Latte::E_GX2SURFFMT srcFormat, Latte::E_HWTILEMODE srcTileMode, uint32 srcWidth, uint32 srcHeight, uint32 srcDepth, uint32 srcPitch, uint32 srcSwizzle, uint32 srcSlice, uint32 srcMip, const bool requireExactResolution = false);
 
