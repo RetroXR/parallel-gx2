@@ -14,7 +14,8 @@
 //    up again, and the heap allocations and bytes allocated to read them
 //    back (those on Linux only: the stream is per platform);
 //  - the register file a cached shader or pipeline is rebuilt with at boot:
-//    the heap allocations and bytes allocated to rebuild 1000;
+//    the heap allocations and bytes allocated to rebuild 1000; and the
+//    programs a cached shader is inflated into: those to inflate 1000;
 //  - the pipelines a replayed draw sequence makes (the Vulkan renderer's
 //    pipeline key, VulkanPipelineKey_Graphics), with each set of state the
 //    device can leave to the draw: a frame's shape from a seed, shader sets
@@ -53,6 +54,7 @@
 #include "Cemu/FileCache/FileCache.h"
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/HW/Latte/Common/RegisterSerializer.h"
+#include "Cafe/HW/Latte/Common/ShaderSerializer.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineRecord.h"
 #include "util/helpers/MappedFile.h"
@@ -226,6 +228,38 @@ static void MeasureFileCache()
 	// per 1000 entries, so a fraction of an allocation per entry still counts
 	s_metrics[std::string("filecache.") + platform + " allocations per 1000 entries read"] = s_allocs.load();
 	s_metrics[std::string("filecache.") + platform + " bytes allocated per 1000 entries read"] = s_allocBytes.load();
+}
+
+// as LatteShaderCache_readSeparable*Shader inflate an entry's programs
+static void MeasureProgramInflate()
+{
+	Latte::InitShaderSerializer();
+	MemStreamWriter writer(0);
+	std::vector<uint32> program(1024);
+	for (size_t i = 0; i < program.size(); i++)
+		program[i] = (uint32)(i * 2654435761u) & 0xFF00FF0F;
+	Latte::SerializeShaderProgram(program.data(), (uint32)(program.size() * 4), writer);
+	const std::span<uint8> entry = writer.getResult();
+	auto inflate = [&] {
+		MemStreamReader reader(entry.data(), entry.size());
+		std::vector<uint8>& out = Latte::ShaderProgramScratch(1);
+		return Latte::DeserializeShaderProgram(out, reader) && std::memcmp(out.data(), program.data(), out.size()) == 0;
+	};
+	inflate(); // the thread's decoder and buffer, made once
+	s_allocs = 0;
+	s_allocBytes = 0;
+	s_counting = true;
+	bool ok = true;
+	for (int i = 0; i < 1000; i++)
+		ok &= inflate();
+	s_counting = false;
+	if (!ok)
+	{
+		std::printf("FAIL: a cached program inflated wrong\n");
+		s_failures++;
+	}
+	s_metrics["cache entry programs: allocations per 1000 inflated"] = s_allocs.load();
+	s_metrics["cache entry programs: bytes allocated per 1000 inflated"] = s_allocBytes.load();
 }
 
 static void MeasureRegisterRebuild()
@@ -580,6 +614,7 @@ int main(int argc, char** argv)
 	MeasureCorpus(argv[1], repeat);
 	MeasureFileCache();
 	MeasureRegisterRebuild();
+	MeasureProgramInflate();
 	MeasureReplay();
 	if (s_failures)
 	{

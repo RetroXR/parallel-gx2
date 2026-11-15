@@ -515,13 +515,14 @@ bool LatteShaderCache_readSeparableVertexShader(MemStreamReader& streamReader, u
 		return false;
 	LatteContextRegister* lcr = &Latte::LoadGPURegisterStateScratch(regState);
 	// fetch shader
-	std::vector<uint8> fetchShaderData;
+	// the thread's own buffers (ShaderProgramScratch), not one per entry
+	std::vector<uint8>& fetchShaderData = Latte::ShaderProgramScratch(0);
 	if (!Latte::DeserializeShaderProgram(fetchShaderData, streamReader))
 		return false;
 	if (streamReader.hasError())
 		return false;
 	// vertex shader
-	std::vector<uint8> vertexShaderData;
+	std::vector<uint8>& vertexShaderData = Latte::ShaderProgramScratch(1);
 	if (!Latte::DeserializeShaderProgram(vertexShaderData, streamReader))
 		return false;
 	if (streamReader.hasError() || !streamReader.isEndOfStream())
@@ -561,11 +562,11 @@ bool LatteShaderCache_readSeparableGeometryShader(MemStreamReader& streamReader,
 		return false;
 	LatteContextRegister* lcr = &Latte::LoadGPURegisterStateScratch(regState);
 	// geometry copy shader
-	std::vector<uint8> geometryCopyShaderData;
+	std::vector<uint8>& geometryCopyShaderData = Latte::ShaderProgramScratch(0);
 	if (!Latte::DeserializeShaderProgram(geometryCopyShaderData, streamReader))
 		return false;
 	// geometry shader
-	std::vector<uint8> geometryShaderData;
+	std::vector<uint8>& geometryShaderData = Latte::ShaderProgramScratch(1);
 	if (!Latte::DeserializeShaderProgram(geometryShaderData, streamReader))
 		return false;
 	if (streamReader.hasError() || !streamReader.isEndOfStream())
@@ -602,7 +603,7 @@ bool LatteShaderCache_readSeparablePixelShader(MemStreamReader& streamReader, ui
 		return false;
 	LatteContextRegister* lcr = &Latte::LoadGPURegisterStateScratch(regState);
 	// pixel shader
-	std::vector<uint8> pixelShaderData;
+	std::vector<uint8>& pixelShaderData = Latte::ShaderProgramScratch(1);
 	if (!Latte::DeserializeShaderProgram(pixelShaderData, streamReader))
 		return false;
 	if (streamReader.hasError() || !streamReader.isEndOfStream())

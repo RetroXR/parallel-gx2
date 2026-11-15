@@ -365,6 +365,12 @@ VkResult VulkanPipelineLibrary_Link(VkDevice device, VkPipelineCache cache, cons
 	return vkCreateGraphicsPipelines(device, cache, 1, &ci, nullptr, pipeline);
 }
 
+bool VulkanPipelineLibrary_LinkOptimized(bool drawWaits, bool* queueOptimized)
+{
+	*queueOptimized = drawWaits;
+	return !drawWaits;
+}
+
 // --- the cache ---------------------------------------------------------------
 
 static constexpr uint64 kFailed = ~0ull;
@@ -415,6 +421,16 @@ VulkanPipelineLibraryCache::State VulkanPipelineLibraryCache::Find(VulkanPipelin
 	return State::Ready;
 }
 
+VulkanPipelineLibraryCache::State VulkanPipelineLibraryCache::WaitFor(VulkanPipelineLibraryPart part, uint64 key, VkPipeline& library) const
+{
+	State state = State::Pending;
+	m_published.WaitUntil([&] {
+		state = Find(part, key, library);
+		return state != State::Pending;
+	});
+	return state;
+}
+
 bool VulkanPipelineLibraryCache::Claim(VulkanPipelineLibraryPart part, uint64 key)
 {
 	for (;;)
@@ -441,6 +457,7 @@ void VulkanPipelineLibraryCache::Publish(VulkanPipelineLibraryPart part, uint64 
 	if (library != VK_NULL_HANDLE)
 		m_count[part].fetch_add(1, std::memory_order_relaxed);
 	slot->library.store(library != VK_NULL_HANDLE ? (uint64)library : kFailed, std::memory_order_release);
+	m_published.Notify();
 }
 
 void VulkanPipelineLibraryCache::DestroyAll(VkDevice device)

@@ -302,7 +302,17 @@ is recorded over, under TSan); `test/dynstate` makes a new shader pair's
 parts ahead on lavapipe, and its first pipeline then makes no part and
 draws what the baked pipeline draws, under the validation layer.
 
-Next: the draws async skips.
+A draw skipped until its pipeline lands waits only for the parts: the
+compile thread links them fast as soon as they are made, as the GPU thread
+does, and queues the optimized link to take its place, where it linked
+them optimized first - a whole compile's time more of skipped draws. And
+a part another thread is making is waited for, never made a second time:
+before, a compile that found its part pending made it again and kept both.
+`test/pipeline_key` checks both: the link chosen for a waiting draw and
+for none, and eight threads waiting for 200 parts another makes (each the
+one published, a failed one missing, none made twice; TSan in CI).
+
+Next: the draws async skips while the parts are made.
 
 - **Graphics pipeline libraries** where the device has them
   (`VK_EXT_graphics_pipeline_library`): vertex input, pre-rasterization
@@ -374,8 +384,9 @@ Now (as of `495ded87`):
   a pipeline whose shader was missing leaked it, on Vulkan and Metal); a
   thread's one register file is reused now (`LoadGPURegisterStateScratch`,
   gated: no allocation per 1000 rebuilt), and the shader load reads every
-  entry into one buffer. Still to do: the entries' programs are inflated
-  into vectors of their own.
+  entry into one buffer. The entries' programs are inflated into the
+  thread's own buffers (`ShaderProgramScratch`), not vectors of their own
+  (gated: no allocation per 1000 inflated, 2000 before).
 - Compiled SPIR-V moves from rslc to the module without another copy;
   reflection and layout data borrow it while it lives.
 - Gate: allocations and bytes copied on the load path, per entry.

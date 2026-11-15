@@ -5,6 +5,7 @@
 #include <vulkan/vulkan.h>
 
 #include "util/helpers/FixedQueue.h"
+#include "util/helpers/EventWake.h"
 
 // Graphics pipeline libraries (VK_EXT_graphics_pipeline_library,
 // docs/SHADER-STUTTER.md M2): a pipeline as four parts, each compiled once
@@ -54,6 +55,11 @@ VkResult VulkanPipelineLibrary_Create(VkDevice device, VkPipelineCache cache, Vu
 // draws wrong (lavapipe does, test/dynstate)
 VkResult VulkanPipelineLibrary_Link(VkDevice device, VkPipelineCache cache, const VkPipeline libraries[VULKAN_PIPELINE_LIBRARY_PARTS],
 	VkPipelineLayout layout, bool optimize, VkPipeline* pipeline);
+// How a pipeline whose parts are made is linked: fast when a draw waits for
+// it - on the GPU thread, or on a compile thread for a draw skipped until
+// it lands - with the optimized link queued for a compile thread to swap
+// in (queueOptimized); optimized at once when nothing waits (made ahead)
+bool VulkanPipelineLibrary_LinkOptimized(bool drawWaits, bool* queueOptimized);
 
 // The parts made so far, found by key from any thread, without a lock: an
 // insert-only table per part. A thread claims a key before making its part
@@ -75,6 +81,10 @@ public:
 	};
 	// The part with the key, if made
 	State Find(VulkanPipelineLibraryPart part, uint64 key, VkPipeline& library) const;
+	// The part with the key once made: waits while the thread that claimed
+	// it makes it - which it does at once, waiting for nothing - rather than
+	// make it a second time; Missing when unclaimed or failed
+	State WaitFor(VulkanPipelineLibraryPart part, uint64 key, VkPipeline& library) const;
 	// Claims the key for the calling thread to make the part; false if
 	// another thread has (it is pending or made) or the table is full
 	bool Claim(VulkanPipelineLibraryPart part, uint64 key);
@@ -101,6 +111,8 @@ private:
 	std::unique_ptr<Slot[]> m_slots[VULKAN_PIPELINE_LIBRARY_PARTS];
 	std::atomic<size_t> m_count[VULKAN_PIPELINE_LIBRARY_PARTS];
 	FixedList<VkPipeline> m_adopted;
+	// every part published, for WaitFor
+	mutable EventWake m_published;
 };
 
 // Parts made ahead (docs/SHADER-STUTTER.md M2): the state of a shader part -

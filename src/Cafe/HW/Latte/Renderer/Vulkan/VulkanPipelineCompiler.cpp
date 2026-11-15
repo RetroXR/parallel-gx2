@@ -684,10 +684,12 @@ bool PipelineCompiler::TakeOptimizedPipeline(OptimizedPipeline& result)
 // The pipeline from its four parts (VulkanPipelineLibrary.h): each found
 // made, or made here and kept for the pipelines after it, then linked.
 // Without forceCompile nothing is compiled: a part not made yet - or only
-// made by the driver's cache - leaves it to a compile thread (false). On
-// the GPU thread the parts are linked as they are, a link and no compile,
-// and a compile thread links them optimized, which then takes its place;
-// on a compile thread they are linked optimized at once.
+// made by the driver's cache - leaves it to a compile thread (false); with
+// it a part another thread is making is waited for, not made twice. When a
+// draw waits for it - on the GPU thread, or a draw skipped until it lands -
+// the parts are linked as they are, a link and no compile, and a compile
+// thread links them optimized, which then takes its place; otherwise they
+// are linked optimized at once.
 bool PipelineCompiler::CompileFromLibraries(const VkGraphicsPipelineCreateInfo& full, bool forceCompile, bool isRenderThread)
 {
 	VulkanRenderer* vkRenderer = VulkanRenderer::GetInstance();
@@ -716,7 +718,13 @@ bool PipelineCompiler::CompileFromLibraries(const VkGraphicsPipelineCreateInfo& 
 		const VulkanPipelineLibraryPart part = (VulkanPipelineLibraryPart)p;
 		const uint64 key = VulkanPipelineLibrary_Key(part, full, identity);
 		VkPipeline library = VK_NULL_HANDLE;
-		const VulkanPipelineLibraryCache::State state = cache.Find(part, key, library);
+		VulkanPipelineLibraryCache::State state = cache.Find(part, key, library);
+		if (state == VulkanPipelineLibraryCache::State::Pending && forceCompile)
+		{
+			// another thread is making it: waited for, not made twice
+			PSO_TRACE_SCOPE(isRenderThread ? "pipeline library wait" : "pipeline library wait (worker)", key);
+			state = cache.WaitFor(part, key, library);
+		}
 		if (state == VulkanPipelineLibraryCache::State::Ready)
 		{
 			libraries[p] = library;
@@ -759,10 +767,11 @@ bool PipelineCompiler::CompileFromLibraries(const VkGraphicsPipelineCreateInfo& 
 		libraries[p] = library;
 	}
 	VkPipeline pipeline = VK_NULL_HANDLE;
+	bool optimize = false, queueOptimized = false;
 	if (ok)
 	{
-		// linked as they are on the GPU thread, optimized elsewhere
-		const bool optimize = !isRenderThread;
+		// linked as they are when a draw waits for it, optimized after
+		optimize = VulkanPipelineLibrary_LinkOptimized(isRenderThread || m_drawWaits, &queueOptimized);
 		PSO_TRACE_SCOPE(optimize ? "pipeline link optimized" : "pipeline fast link", (uint64)m_vkrObjPipeline);
 		vkRenderer->m_pipeline_cache_builds.Enter();
 		const VkResult result = VulkanPipelineLibrary_Link(device, vkRenderer->m_pipeline_cache, libraries, m_pipelineLayout, optimize, &pipeline);
@@ -779,7 +788,7 @@ bool PipelineCompiler::CompileFromLibraries(const VkGraphicsPipelineCreateInfo& 
 		return true;
 	m_vkrObjPipeline->SetPipeline(pipeline);
 	vkRenderer->m_pipeline_cache_semaphore.notify();
-	if (isRenderThread)
+	if (queueOptimized)
 	{
 		// the optimized one, from the same parts, on a compile thread
 		PipelineCompiler* job = new PipelineCompiler();

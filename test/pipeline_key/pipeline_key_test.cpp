@@ -22,6 +22,10 @@
 //    leaves out exactly what its dynamic states make the draw's, and the
 //    lock-free cache of parts gives each key to one maker however many
 //    threads race for it;
+//  - a part another thread claimed is waited for (WaitFor), never made a
+//    second time, and a failed one is found missing; a pipeline a draw waits
+//    for is linked fast with the optimized link queued, one nothing waits
+//    for optimized at once;
 //  - parts made ahead (docs/SHADER-STUTTER.md M2): a shader part's template
 //    taken from a pipeline makes, with another shader, the very key that
 //    shader's pipeline with the same state looks its part up by, for random
@@ -244,6 +248,59 @@ struct RandomPipeline
 		full.renderPass = (VkRenderPass)(uintptr_t)(0x100 + rng() % 4);
 	}
 };
+
+static void TestWaitFor()
+{
+	// the link: fast for a waiting draw, the optimized one after
+	bool queue = true;
+	CHECK(!VulkanPipelineLibrary_LinkOptimized(true, &queue) && queue);
+	CHECK(VulkanPipelineLibrary_LinkOptimized(false, &queue) && !queue);
+
+	// one thread claims keys and makes their parts while eight others,
+	// finding them pending, wait for them
+	VulkanPipelineLibraryCache cache;
+	const VulkanPipelineLibraryPart part = VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER;
+	const uint64 keys = 200;
+	for (uint64 k = 1; k <= keys; k++)
+		CHECK(cache.Claim(part, k));
+	std::atomic<int> entered{0};
+	std::atomic<uint32> wrong{0}, madeTwice{0};
+	std::vector<std::thread> waiters;
+	for (int t = 0; t < 8; t++)
+		waiters.emplace_back([&] {
+			entered++;
+			for (uint64 k = 1; k <= keys; k++)
+			{
+				VkPipeline library = VK_NULL_HANDLE;
+				// the renderer's: pending is waited for, only missing claimed
+				// (here, only ever after the maker's failure)
+				const VulkanPipelineLibraryCache::State found = cache.Find(part, k, library);
+				if (found == VulkanPipelineLibraryCache::State::Missing && k % 7)
+					madeTwice++;
+				if (found == VulkanPipelineLibraryCache::State::Missing)
+					continue;
+				const VulkanPipelineLibraryCache::State state = cache.WaitFor(part, k, library);
+				// every seventh fails to be made
+				const bool ok = k % 7 ? state == VulkanPipelineLibraryCache::State::Ready && library == (VkPipeline)(uintptr_t)(k * 16)
+					: state == VulkanPipelineLibraryCache::State::Missing;
+				if (!ok)
+					wrong++;
+			}
+		});
+	while (entered.load() < 8)
+		std::this_thread::yield();
+	for (uint64 k = 1; k <= keys; k++)
+		cache.Publish(part, k, k % 7 ? (VkPipeline)(uintptr_t)(k * 16) : VK_NULL_HANDLE);
+	for (auto& t : waiters)
+		t.join();
+	std::printf("parts waited for: %llu keys by 8 threads, %u found wrong, %u made a second time\n", (unsigned long long)keys,
+		wrong.load(), madeTwice.load());
+	CHECK(wrong == 0 && madeTwice == 0);
+	// a key nobody claimed: no wait
+	VkPipeline none;
+	CHECK(cache.WaitFor(part, keys + 1, none) == VulkanPipelineLibraryCache::State::Missing);
+	cache.DestroyAll(VK_NULL_HANDLE);
+}
 
 static void TestPartTemplates()
 {
@@ -1181,6 +1238,7 @@ int main()
 	}
 	TestPipelineState();
 	TestPartTemplates();
+	TestWaitFor();
 	if (s_failures)
 	{
 		std::printf("%d failed\n", s_failures);

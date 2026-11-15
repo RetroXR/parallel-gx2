@@ -32,7 +32,7 @@ include ../file_io.mk
 LRC_SRCS += $(FILE_IO_C)
 FLAGS += $(FILE_IO_FLAGS)
 CXX_SRCS := pso_gate.cpp stubs.cpp $(FILE_IO_CXX) \
-	$(SRC)/Cafe/HW/Latte/Common/RegisterSerializer.cpp \
+	$(SRC)/Cafe/HW/Latte/Common/RegisterSerializer.cpp $(SRC)/Cafe/HW/Latte/Common/ShaderSerializer.cpp \
 	$(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.cpp \
 	$(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.cpp $(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineRecord.cpp
 

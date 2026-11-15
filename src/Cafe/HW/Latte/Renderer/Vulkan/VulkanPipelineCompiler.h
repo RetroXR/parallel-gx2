@@ -110,6 +110,9 @@ public:
 	// hands the pipeline to the GPU thread to take the fast-linked one's
 	// place (VulkanRenderer::draw_takeOptimizedPipelines)
 	bool m_linkOptimizedOnly{false};
+	// a compile for a draw skipped until it lands (AsyncPipelineCompile):
+	// linked fast as soon as its parts are made, the optimized link after
+	bool m_drawWaits{false};
 	uint64 m_rectEmulationSerial{0};
 	VkPipeline m_linkLibraries[VULKAN_PIPELINE_LIBRARY_PARTS]{};
 	// a pipeline the compile threads linked optimized, for the GPU thread
@@ -164,6 +167,7 @@ struct AsyncPipelineCompile : PoolNew<AsyncPipelineCompile, 64>
 	// last, so that it is destroyed first
 	PreparedPipeline prepared{[](void* self, bool onCompileThread) {
 		AsyncPipelineCompile* c = (AsyncPipelineCompile*)self;
+		c->m_job->m_drawWaits = true;
 		c->m_job->Compile(true, !onCompileThread, true);
 		const VkPipeline pipeline = c->m_job->m_vkrObjPipeline->GetPipeline();
 		delete c->m_job;

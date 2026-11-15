@@ -24,6 +24,12 @@ namespace
 
 namespace Latte
 {
+	std::vector<uint8>& ShaderProgramScratch(int slot)
+	{
+		thread_local std::vector<uint8> s_scratch[3];
+		return s_scratch[slot];
+	}
+
 	void SerializeShaderProgram(void* shaderProg, uint32 size, MemStreamWriter& memWriter)
 	{
 		memWriter.writeBE<uint8>(1); // version
