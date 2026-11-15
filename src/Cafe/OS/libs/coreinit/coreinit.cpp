@@ -263,7 +263,8 @@ namespace coreinit
 		cemuLog_log(LogType::Force, "Msg: {}", msg);
 		DebugLogStackTrace(coreinit::OSGetCurrentThread(), coreinit::OSGetStackPointer());
 #ifdef CEMU_DEBUG_ASSERT
-		while (true) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		// stop the guest thread here, its host core free for the others
+		coreinit::OSSuspendThread(coreinit::OSGetCurrentThread());
 #endif
 	}
 

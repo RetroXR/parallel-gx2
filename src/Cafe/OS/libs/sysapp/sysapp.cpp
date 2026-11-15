@@ -3,6 +3,7 @@
 #include "Cafe/CafeSystem.h"
 #include "Cafe/OS/libs/coreinit/coreinit_FG.h"
 #include "Cafe/OS/libs/coreinit/coreinit_Misc.h"
+#include "Cafe/OS/libs/coreinit/coreinit_Thread.h"
 
 typedef struct  
 {
@@ -458,7 +459,12 @@ void sysappExport__SYSReturnToCallerWithStandardResult(PPCInterpreter_t* hCPU)
 {
 	ppcDefineParamU32BEPtr(resultPtr, 0);
 	cemuLog_log(LogType::Force, "_SYSReturnToCallerWithStandardResult(0x{:08x}) result: 0x{:08x}", hCPU->gpr[3], (uint32)*resultPtr);
-	while (true) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	// there is no caller to return to: the title ends, as at exit(), and this
+	// thread goes with it, where a host sleep held its core's thread for good
+	// and the title could not be closed
+	CafeSystem::NotifyPPCProcessExit((sint32)(uint32)*resultPtr);
+	coreinit::OSSuspendThread(coreinit::OSGetCurrentThread());
+	osLib_returnFromFunction(hCPU, 0);
 }
 
 void sysappExport__SYSGetEShopArgs(PPCInterpreter_t* hCPU)

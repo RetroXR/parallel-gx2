@@ -3,10 +3,13 @@
 #include "Cafe/HW/Latte/Renderer/RendererShader.h"
 #include "HW/Latte/Renderer/Metal/CachedFBOMtl.h"
 #include "HW/Latte/Renderer/Metal/MetalRenderer.h"
-#include "util/helpers/ConcurrentQueue.h"
+#include "util/helpers/ClaimTicket.h"
 #include "util/helpers/Semaphore.h"
 
 #include <Metal/Metal.hpp>
+
+class RendererShaderMtl;
+using ShaderMtlCompileTicket = ClaimTicket<RendererShaderMtl>;
 
 class RendererShaderMtl : public RendererShader
 {
@@ -46,6 +49,7 @@ private:
 	MTL::Function* m_function = nullptr;
 
 	StateSemaphore<COMPILATION_STATE> m_compilationState{ COMPILATION_STATE::NONE };
+	ShaderMtlCompileTicket* m_ticket{ nullptr };
 
 	std::string m_mslCode;
 

@@ -9,6 +9,8 @@
 #include "Cafe/HW/Latte/Common/RegisterSerializer.h"
 #include "Cafe/HW/Latte/Core/LatteShaderCache.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
+#include "Cafe/HW/Latte/Core/Latte.h"
+#include "Cafe/HW/Latte/Core/LatteGpuWake.h"
 #include "Cafe/HW/Latte/ISA/LatteReg.h"
 #include "Cemu/FileCache/FileCache.h"
 #include "Common/precompiled.h"
@@ -18,9 +20,8 @@
 #include "util/crypto/sha.h"
 
 static bool g_compilePipelineThreadInit{false};
-static std::mutex g_compilePipelineMutex;
-static std::condition_variable g_compilePipelineCondVar;
-static std::queue<MetalPipelineCompiler*> g_compilePipelineRequests;
+// pushed by the GPU thread, taken by every compile thread: no lock
+static MpmcQueue<MetalPipelineCompiler*> g_compilePipelineRequests;
 
 static void compileThreadFunc(sint32 threadIndex)
 {
@@ -32,16 +33,7 @@ static void compileThreadFunc(sint32 threadIndex)
 
 	while (true)
 	{
-		std::unique_lock lock(g_compilePipelineMutex);
-		while (g_compilePipelineRequests.empty())
-			g_compilePipelineCondVar.wait(lock);
-
-		MetalPipelineCompiler* request = g_compilePipelineRequests.front();
-
-		g_compilePipelineRequests.pop();
-
-		lock.unlock();
-
+		MetalPipelineCompiler* request = g_compilePipelineRequests.pop();
 		request->Compile(true, false, true);
 		delete request;
 	}
@@ -68,10 +60,7 @@ static void initCompileThread()
 
 static void queuePipeline(MetalPipelineCompiler* v)
 {
-	std::unique_lock lock(g_compilePipelineMutex);
-	g_compilePipelineRequests.push(std::move(v));
-	lock.unlock();
-	g_compilePipelineCondVar.notify_one();
+	g_compilePipelineRequests.push(v);
 }
 
 // make a guess if a pipeline is not essential
@@ -105,6 +94,7 @@ MetalPipelineCache::MetalPipelineCache(class MetalRenderer* metalRenderer) : m_m
 
 MetalPipelineCache::~MetalPipelineCache()
 {
+    TakeLoadedPipelines();
     for (auto& [key, pipelineObj] : m_pipelineCache)
     {
         pipelineObj->m_pipeline->release();
@@ -306,16 +296,29 @@ uint32 MetalPipelineCache::BeginLoading(uint64 cacheTitleId)
 	return s_cache->GetFileCount();
 }
 
+// Runs on: the GPU thread, in UpdateLoading. Until the compile threads have
+// moved on, or the GPU thread is asked to do something else.
+template<typename TPred>
+void MetalPipelineCache::WaitForCompileProgress(TPred progressed)
+{
+	LatteGpuWake_WaitUntil([&] {
+		return progressed() || Latte_GetStopSignal() || Latte_IsGpuPauseRequested();
+	});
+}
+
 bool MetalPipelineCache::UpdateLoading(uint32& pipelinesLoadedTotal, uint32& pipelinesMissingShaders)
 {
 	pipelinesLoadedTotal = g_mtlCacheState.pipelinesLoaded;
 	pipelinesMissingShaders = 0;
+	TakeLoadedPipelines();
 	while (g_mtlCacheState.pipelineLoadIndex <= g_mtlCacheState.pipelineMaxFileIndex)
 	{
 		if (m_compilationQueue.size() >= 50)
 		{
-			std::this_thread::sleep_for(std::chrono::milliseconds(10));
-			return true; // queue up to 50 entries at a time
+			// queue up to 50 entries at a time, and refill as soon as one is
+			// taken rather than after a 10 ms nap
+			WaitForCompileProgress([this] { return m_compilationQueue.size() < 50; });
+			return true;
 		}
 
 		uint64 fileNameA, fileNameB;
@@ -332,9 +335,10 @@ bool MetalPipelineCache::UpdateLoading(uint32& pipelinesLoadedTotal, uint32& pip
 	}
 	if (g_mtlCacheState.pipelinesLoaded != g_mtlCacheState.pipelinesQueued)
 	{
-		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		WaitForCompileProgress([] { return g_mtlCacheState.pipelinesLoaded == g_mtlCacheState.pipelinesQueued; });
 		return true; // pipelines still compiling
 	}
+	TakeLoadedPipelines();
 	return false; // done
 }
 
@@ -453,12 +457,26 @@ void MetalPipelineCache::LoadPipelineFromCache(std::span<uint8> fileData)
 
 	// Cache the pipeline
    	uint64 pipelineStateHash = CalculatePipelineHash(vertexShader->compatibleFetchShader, vertexShader, geometryShader, pixelShader, cachedPipeline->lastUsedAttachmentsInfo, attachmentsInfo, *lcr);
-   	m_pipelineCacheLock.lock();
-   	m_pipelineCache[pipelineStateHash] = pipelineObject;
-   	m_pipelineCacheLock.unlock();
+	// into the map on the GPU thread, the only one that touches it
+	m_loadedPipelines.Push({pipelineStateHash, pipelineObject});
 }
 
-ConcurrentQueue<CachedPipeline*> g_mtlPipelineCachingQueue;
+// Runs on: the GPU thread. What the compiler threads loaded from the cache
+// file, into the map the draws look pipelines up in; one already there stays
+void MetalPipelineCache::TakeLoadedPipelines()
+{
+	m_loadedPipelines.TakeAll([this](std::pair<uint64, PipelineObject*>&& loaded) {
+		if (!m_pipelineCache.emplace(loaded.first, loaded.second).second)
+		{
+			if (loaded.second->m_pipeline)
+				loaded.second->m_pipeline->release();
+			delete loaded.second;
+		}
+	});
+}
+
+// the GPU thread to the cache writer: no lock
+MpmcQueue<CachedPipeline*> g_mtlPipelineCachingQueue;
 
 void MetalPipelineCache::AddCurrentStateToCache(uint64 pipelineStateHash, const MetalAttachmentsInfo& lastUsedAttachmentsInfo)
 {
@@ -576,6 +594,7 @@ int MetalPipelineCache::CompilerThread()
 			continue;
 		LoadPipelineFromCache(pipelineData);
 		++g_mtlCacheState.pipelinesLoaded;
+		LatteGpuWake_Notify(); // the loader is waiting for this, or for room in the queue
 	}
 	return 0;
 }

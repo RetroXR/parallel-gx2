@@ -8,6 +8,7 @@
 #include "Common/precompiled.h"
 #include "GameProfile/GameProfile.h"
 #include "util/helpers/helpers.h"
+#include "util/helpers/MpmcQueue.h"
 
 #define METAL_AIR_CACHE_NAME "Cemu_AIR_cache"
 #define METAL_AIR_CACHE_PATH "/Volumes/" METAL_AIR_CACHE_NAME
@@ -21,6 +22,10 @@ static bool s_isLoadingShadersMtl{false};
 extern std::atomic_int g_compiled_shaders_total;
 extern std::atomic_int g_compiled_shaders_async;
 
+// The compile queue holds a ClaimTicket for each shader (ClaimTicket.h):
+// whoever compiles it - a compile thread, PreponeCompilation on the thread
+// that needs it now, or the destructor of one never compiled - claims it, so
+// no shader is taken out of the middle of the queue and none needs a lock
 class ShaderMtlThreadPool
 {
 public:
@@ -33,42 +38,18 @@ public:
 		const uint32 threadCount = 2;
 		for (uint32 i = 0; i < threadCount; ++i)
 			s_threads.emplace_back(&ShaderMtlThreadPool::CompilerThreadFunc, this);
-
-		// Create AIR cache thread
-		/*
-	    s_airCacheThread = new std::thread(&ShaderMtlThreadPool::AIRCacheThreadFunc, this);
-
-		// Set priority
-		sched_param schedParam;
-        schedParam.sched_priority = 20;
-        if (pthread_setschedparam(s_airCacheThread->native_handle(), SCHED_FIFO, &schedParam) != 0) {
-            cemuLog_log(LogType::Force, "failed to set FIFO thread priority");
-        }
-
-        if (pthread_setschedparam(s_airCacheThread->native_handle(), SCHED_RR, &schedParam) != 0) {
-            cemuLog_log(LogType::Force, "failed to set RR thread priority");
-        }
-        */
 	}
 
 	void StopThreads()
 	{
 		if (!m_threadsActive.exchange(false))
 			return;
+		// one empty ticket per thread, each of which leaves at one
 		for (uint32 i = 0; i < s_threads.size(); ++i)
-			s_compilationQueueCount.increment();
+			s_compilationQueue.push(nullptr);
 		for (auto& it : s_threads)
 			it.join();
 		s_threads.clear();
-
-		/*
-		if (s_airCacheThread)
-		{
-            s_airCacheQueueCount.increment();
-    		s_airCacheThread->join();
-    		delete s_airCacheThread;
-		}
-		*/
 	}
 
 	~ShaderMtlThreadPool()
@@ -79,77 +60,35 @@ public:
 	void CompilerThreadFunc()
 	{
 		SetThreadName("mtlShaderComp");
-		while (m_threadsActive.load(std::memory_order::relaxed))
+		while (true)
 		{
-			s_compilationQueueCount.decrementWithWait();
-			s_compilationQueueMutex.lock();
-			if (s_compilationQueue.empty())
+			ShaderMtlCompileTicket* ticket = s_compilationQueue.pop();
+			if (!ticket)
 			{
-				// queue empty again, shaders compiled synchronously via PreponeCompilation()
-				s_compilationQueueMutex.unlock();
+				if (!m_threadsActive.load(std::memory_order::relaxed))
+					return;
 				continue;
 			}
-			RendererShaderMtl* job = s_compilationQueue.front();
-			s_compilationQueue.pop_front();
-			// set compilation state
+			RendererShaderMtl* job = ticket->Claim();
+			ticket->Release();
+			if (!job)
+				continue; // compiled synchronously via PreponeCompilation(), or gone
 			cemu_assert_debug(job->m_compilationState.getValue() == RendererShaderMtl::COMPILATION_STATE::QUEUED);
 			job->m_compilationState.setValue(RendererShaderMtl::COMPILATION_STATE::COMPILING);
-			s_compilationQueueMutex.unlock();
-			// compile
 			job->CompileInternal();
 			if (job->ShouldCountCompilation())
 			    ++g_compiled_shaders_async;
-			// mark as compiled
-			cemu_assert_debug(job->m_compilationState.getValue() == RendererShaderMtl::COMPILATION_STATE::COMPILING);
 			job->m_compilationState.setValue(RendererShaderMtl::COMPILATION_STATE::DONE);
 		}
 	}
-
-	/*
-	void AIRCacheThreadFunc()
-    {
-        SetThreadName("mtlAIRCache");
-        while (m_threadsActive.load(std::memory_order::relaxed))
-        {
-            s_airCacheQueueCount.decrementWithWait();
-            s_airCacheQueueMutex.lock();
-            if (s_airCacheQueue.empty())
-            {
-                s_airCacheQueueMutex.unlock();
-                continue;
-            }
-
-            // Create RAM filesystem
-            if (!s_hasRAMFilesystem)
-            {
-                executeCommand("diskutil erasevolume HFS+ {} $(hdiutil attach -nomount ram://{})", METAL_AIR_CACHE_NAME, METAL_AIR_CACHE_BLOCK_COUNT);
-                s_hasRAMFilesystem = true;
-            }
-
-            RendererShaderMtl* job = s_airCacheQueue.front();
-            s_airCacheQueue.pop_front();
-            s_airCacheQueueMutex.unlock();
-            // compile
-            job->CompileToAIR();
-        }
-    }
-    */
 
 	bool HasThreadsRunning() const { return m_threadsActive; }
 
 public:
 	std::vector<std::thread> s_threads;
-	//std::thread* s_airCacheThread{nullptr};
-
-	std::deque<RendererShaderMtl*> s_compilationQueue;
-	CounterSemaphore s_compilationQueueCount;
-	std::mutex s_compilationQueueMutex;
-
-	/*
-	std::deque<RendererShaderMtl*> s_airCacheQueue;
-	CounterSemaphore s_airCacheQueueCount;
-	std::mutex s_airCacheQueueMutex;
-	*/
+	// pushed by whichever thread creates a shader, taken by the compile
+	// threads: no lock
+	MpmcQueue<ShaderMtlCompileTicket*> s_compilationQueue;
 
 private:
 	std::atomic<bool> m_threadsActive;
@@ -217,31 +156,32 @@ RendererShaderMtl::RendererShaderMtl(MetalRenderer* mtlRenderer, ShaderType type
 	: RendererShader(type, baseHash, auxHash, isGameShader, isGfxPackShader), m_mtlr{mtlRenderer}, m_mslCode{mslCode}
 {
 	// start async compilation
-	shaderMtlThreadPool.s_compilationQueueMutex.lock();
 	m_compilationState.setValue(COMPILATION_STATE::QUEUED);
-	shaderMtlThreadPool.s_compilationQueue.push_back(this);
-	shaderMtlThreadPool.s_compilationQueueCount.increment();
-	shaderMtlThreadPool.s_compilationQueueMutex.unlock();
+	m_ticket = new ShaderMtlCompileTicket(this);
+	shaderMtlThreadPool.s_compilationQueue.push(m_ticket);
 	cemu_assert_debug(shaderMtlThreadPool.HasThreadsRunning()); // make sure .StartThreads() was called
 }
 
 RendererShaderMtl::~RendererShaderMtl()
 {
+	if (m_ticket)
+	{
+		// Never compiled: the queue lets go of the ticket without touching this.
+		// Being compiled: done first, the compile thread uses this until then.
+		if (m_ticket->Claim() == nullptr)
+			m_compilationState.waitUntilValue(COMPILATION_STATE::DONE);
+		m_ticket->Release();
+		m_ticket = nullptr;
+	}
     if (m_function)
         m_function->release();
 }
 
 void RendererShaderMtl::PreponeCompilation(bool isRenderThread)
 {
-	shaderMtlThreadPool.s_compilationQueueMutex.lock();
-	bool isStillQueued = m_compilationState.hasState(COMPILATION_STATE::QUEUED);
-	if (isStillQueued)
-	{
-		// remove from queue
-		shaderMtlThreadPool.s_compilationQueue.erase(std::remove(shaderMtlThreadPool.s_compilationQueue.begin(), shaderMtlThreadPool.s_compilationQueue.end(), this), shaderMtlThreadPool.s_compilationQueue.end());
-		m_compilationState.setValue(COMPILATION_STATE::COMPILING);
-	}
-	shaderMtlThreadPool.s_compilationQueueMutex.unlock();
+	// Taken out of its ticket here, it is this thread's to compile; already
+	// taken, a compile thread has it (or had it)
+	const bool isStillQueued = m_ticket && m_ticket->Claim() != nullptr;
 	if (!isStillQueued)
 	{
 		m_compilationState.waitUntilValue(COMPILATION_STATE::DONE);
@@ -249,12 +189,10 @@ void RendererShaderMtl::PreponeCompilation(bool isRenderThread)
 		    --g_compiled_shaders_async; // compilation caused a stall so we don't consider this one async
 		return;
 	}
-	else
-	{
-		// compile synchronously
-		CompileInternal();
-		m_compilationState.setValue(COMPILATION_STATE::DONE);
-	}
+	// compile synchronously
+	m_compilationState.setValue(COMPILATION_STATE::COMPILING);
+	CompileInternal();
+	m_compilationState.setValue(COMPILATION_STATE::DONE);
 }
 
 bool RendererShaderMtl::IsCompiled()

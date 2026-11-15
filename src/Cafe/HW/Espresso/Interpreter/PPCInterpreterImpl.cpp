@@ -499,7 +499,6 @@ public:
 			debug_printf("ZERO[NOP] | 0x%08X\n", (unsigned int)hCPU->instructionPointer);
 	#ifdef CEMU_DEBUG_ASSERT		
 			assert_dbg();
-			while (true) std::this_thread::sleep_for(std::chrono::seconds(1));
 	#endif
 			hCPU->instructionPointer += 4;
 			break;

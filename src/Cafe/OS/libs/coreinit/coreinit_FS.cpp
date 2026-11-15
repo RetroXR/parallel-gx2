@@ -207,8 +207,10 @@ namespace coreinit
 	void __FSErrorAndBlock(std::string_view msg)
 	{
 		cemuLog_log(LogType::Force, "Critical error in FS: {}", msg);
-		while (true)
-			std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+		// the guest thread stops here, as on the console; its host core goes
+		// on with the others and the title can still be closed, where a host
+		// sleep held the core's thread for good
+		coreinit::OSSuspendThread(coreinit::OSGetCurrentThread());
 	}
 
 	/* FS client management */

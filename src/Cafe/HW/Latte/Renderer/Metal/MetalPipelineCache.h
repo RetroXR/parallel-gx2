@@ -1,8 +1,8 @@
 #pragma once
 
 #include "Cafe/HW/Latte/Renderer/Metal/MetalPipelineCompiler.h"
-#include "util/helpers/ConcurrentQueue.h"
-#include "util/helpers/fspinlock.h"
+#include "util/helpers/MpmcQueue.h"
+#include "util/helpers/MpscList.h"
 #include "util/math/vector2.h"
 
 class MetalPipelineCache
@@ -28,15 +28,17 @@ public:
 private:
     class MetalRenderer* m_mtlr;
 
-    std::map<uint64, PipelineObject*> m_pipelineCache;
-    FSpinlock m_pipelineCacheLock;
+    std::map<uint64, PipelineObject*> m_pipelineCache; // the GPU thread's alone
+    // loaded by the compiler threads, for the GPU thread to put in the map
+    MpscList<std::pair<uint64, PipelineObject*>> m_loadedPipelines;
+    void TakeLoadedPipelines();
 
 	std::thread* m_pipelineCacheStoreThread;
 
 	class FileCache* s_cache;
 
 	std::atomic_uint32_t m_numCompilationThreads{ 0 };
-	ConcurrentQueue<std::vector<uint8>> m_compilationQueue;
+	MpmcQueue<std::vector<uint8>> m_compilationQueue; // the loader to every compiler thread: no lock
 	std::atomic_uint32_t m_compilationCount;
 
     static uint64 CalculatePipelineHash(const LatteFetchShader* fetchShader, const LatteDecompilerShader* vertexShader, const LatteDecompilerShader* geometryShader, const LatteDecompilerShader* pixelShader, const class MetalAttachmentsInfo& lastUsedAttachmentsInfo, const class MetalAttachmentsInfo& activeAttachmentsInfo, const LatteContextRegister& lcr);
@@ -48,5 +50,7 @@ private:
 	bool DeserializePipeline(class MemStreamReader& memReader, struct CachedPipeline& cachedPipeline);
 
     int CompilerThread();
+	template<typename TPred>
+	void WaitForCompileProgress(TPred progressed);
 	void WorkerThread();
 };

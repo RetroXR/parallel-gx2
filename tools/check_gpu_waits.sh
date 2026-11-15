@@ -36,7 +36,13 @@
 # and the two pipeline compile pools (MpmcQueue.h) - instead of
 # ConcurrentQueue's mutex and condition variable; and the shader compile pool,
 # whose queue a shader is claimed from rather than taken out of
-# (ClaimTicket.h), and whose compile state is atomic. Online, the nex thread
+# (ClaimTicket.h), and whose compile state is atomic. Metal's the same: its
+# shader and pipeline compile pools, its cache writer and its cache loader
+# take no lock, the loaded pipelines reach the GPU thread's map through a
+# lock-free list (MpscList.h) rather than past a spinlock, and the cache load
+# waits on LatteGpuWake for the compile threads, not 10 ms at a time. Nor does
+# a guest stopped for good (a fatal FS error, a return to no caller) hold its
+# core's host thread in a sleep. Online, the nex thread
 # and the logins sleep in select() on their sockets and a wake socket
 # (nexWait.h) instead of polling every millisecond - or, registering for
 # secure access, spinning. And the emulated controllers the game reads every
@@ -150,14 +156,18 @@ for f in src/Cemu/Logging/CemuLogging.cpp src/Cemu/Logging/LogFileSink.h \
 	src/input/api/Controller.cpp src/input/api/Controller.h src/input/api/ControllerState.h \
 	src/util/helpers/RcuCell.h src/Cafe/IOSU/legacy/iosu_ioctl.cpp \
 	src/Cafe/IOSU/kernel/iosu_kernel.cpp src/Cafe/OS/libs/coreinit/coreinit_IPC.cpp \
-	src/util/helpers/IndexFreeList.h src/util/helpers/Semaphore.h; do
+	src/util/helpers/IndexFreeList.h src/util/helpers/Semaphore.h \
+	src/Cafe/HW/Latte/Renderer/Metal/MetalPipelineCache.cpp src/Cafe/HW/Latte/Renderer/Metal/MetalPipelineCache.h \
+	src/Cafe/HW/Latte/Renderer/Metal/RendererShaderMtl.cpp src/Cafe/HW/Latte/Renderer/Metal/RendererShaderMtl.h; do
 	if pp $f | grep -qE 'std::[a-z_]*mutex|std::(shared|unique|scoped)_lock|lock_guard|condition_variable|sleep_for|FSpinlock'; then
 		echo "$f: takes a lock or sleeps again"; fail=1
 	fi
 done
 for f in src/Cafe/OS/libs/gx2/GX2_Event.cpp src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp \
 	src/Cafe/OS/libs/nlibcurl/nlibcurl.cpp src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp \
-	src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.cpp src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.h; do
+	src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.cpp src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.h \
+	src/Cafe/HW/Latte/Renderer/Metal/MetalPipelineCache.cpp src/Cafe/HW/Latte/Renderer/Metal/MetalPipelineCache.h \
+	src/Cafe/HW/Latte/Renderer/Metal/RendererShaderMtl.cpp src/Cafe/HW/Latte/Renderer/Metal/RendererShaderMtl.h; do
 	if pp $f | grep -qE '(^|[^C])ConcurrentQueue<'; then
 		echo "$f: a worker queue is back on ConcurrentQueue's mutex"; fail=1
 	fi
@@ -189,6 +199,24 @@ if pp src/libretro/CemuLibretro.cpp | grep -q 'libretro_gpu_wait_step'; then
 	echo "CemuLibretro.cpp: a GPU wait still steps a millisecond at a time"; fail=1
 fi
 check src/Cafe/HW/Latte/Core/LatteAsyncCommands.cpp '^void LatteAsyncCommands_waitUntilAllProcessed\(\)' LatteGpuWake_WaitUntil
+# A title that hits a fatal FS error, or returns to a caller it does not have,
+# stops its own guest thread - its host core goes on, and the title can be
+# closed - where a host sleep held the core's thread for good
+check src/Cafe/OS/libs/coreinit/coreinit_FS.cpp 'void __FSErrorAndBlock\(' OSSuspendThread
+check src/Cafe/OS/libs/sysapp/sysapp.cpp '^void sysappExport__SYSReturnToCallerWithStandardResult\(' NotifyPPCProcessExit
+check src/Cafe/OS/libs/sysapp/sysapp.cpp '^void sysappExport__SYSReturnToCallerWithStandardResult\(' OSSuspendThread
+MC=src/Cafe/HW/Latte/Renderer/Metal/MetalPipelineCache.cpp
+check $MC '^bool MetalPipelineCache::UpdateLoading\(' WaitForCompileProgress
+check $MC '^void MetalPipelineCache::WaitForCompileProgress\(' LatteGpuWake_WaitUntil
+if ! body $MC '^int MetalPipelineCache::CompilerThread\(\)' | grep -q LatteGpuWake_Notify; then
+	echo "$MC: CompilerThread does not wake the cache loader"; fail=1
+fi
+if ! body $MC '^bool MetalPipelineCache::UpdateLoading\(' | grep -q TakeLoadedPipelines; then
+	echo "$MC: the loaded pipelines never reach the GPU thread's map"; fail=1
+fi
+if ! body src/Cafe/HW/Latte/Renderer/Metal/RendererShaderMtl.cpp '^RendererShaderMtl::RendererShaderMtl\(' | grep -q 'new ShaderMtlCompileTicket'; then
+	echo "RendererShaderMtl.cpp: a shader is queued without a claim ticket"; fail=1
+fi
 
 if pp $L | grep -q 'condition_variable'; then
 	echo "$L: the pause gate is back on a condition variable"; fail=1

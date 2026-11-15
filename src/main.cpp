@@ -200,22 +200,6 @@ void requireConsole()
     #endif
 }
 
-void HandlePostUpdate()
-{
-	auto exeBackupPath = ActiveSettings::GetExecutablePath();
-	exeBackupPath.replace_extension( _utf8ToPath(_pathToUtf8(exeBackupPath.extension()).append(".backup")));
-	if (!FileStream::Exists(exeBackupPath))
-		return;
-	// try to delete update residue, but give up quickly as to not cause a permanent hang
-	// it may succeed on next turn
-	for (sint32 i=0; i<3; i++)
-	{
-		if (FileStream::Remove(exeBackupPath))
-			break;
-		std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-	}
-}
-
 void ToolShaderCacheMerger();
 
 
