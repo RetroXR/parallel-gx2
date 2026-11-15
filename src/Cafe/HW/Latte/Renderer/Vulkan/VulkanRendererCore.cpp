@@ -449,7 +449,8 @@ void VulkanRenderer::draw_prepareDynamicOffsetsForDescriptorSet(uint32 shaderSta
 	}
 	if (pipeline_info->dynamicOffsetInfo.hasUniformBuffers[shaderStageIndex])
 	{
-		for (auto& itr : pipeline_info->dynamicOffsetInfo.list_uniformBuffers[shaderStageIndex])
+		const auto& info = pipeline_info->dynamicOffsetInfo;
+		for (uint8 itr : std::span(info.list_uniformBuffers[shaderStageIndex], info.uniformBufferCount[shaderStageIndex]))
 		{
 			dynamicOffsets[numDynOffsets] = dynamicOffsetInfo.shaderUB[shaderStageIndex].uniformBufferOffset[itr];
 			numDynOffsets++;

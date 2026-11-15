@@ -3,8 +3,14 @@
 #include "VKRBase.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineLibrary.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/PreparedPipeline.h"
+#include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h"
+#include "util/helpers/PoolNew.h"
 
-class PipelineCompiler : public VKRMoveableRefCounter
+// A new pipeline's state, built on the GPU thread and compiled there or on a
+// compile thread. From a pool (PoolNew.h), with its state in arrays of its
+// own, so that a game reaching new state allocates nothing for it: only the
+// driver does, compiling.
+class PipelineCompiler : public VKRMoveableRefCounter, public PoolNew<PipelineCompiler, 64>
 {
 private:
 	// helper functions
@@ -58,11 +64,12 @@ public:
 	bool m_requestRobustBufferAccess{false};
 
 	/* shader stages */
-	std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
+	VkPipelineShaderStageCreateInfo shaderStages[3]{};
+	uint32 shaderStageCount{0};
 
 	/* vertex attribute description */
-	std::vector<VkVertexInputAttributeDescription> vertexInputAttributeDescription;
-	std::vector<VkVertexInputBindingDescription> vertexInputBindingDescription;
+	VkVertexInputAttributeDescription vertexInputAttributeDescription[LATTE_NUM_MAX_ATTRIBUTE_LOCATIONS]{};
+	VkVertexInputBindingDescription vertexInputBindingDescription[Latte::GPU_LIMITS::NUM_VERTEX_BUFFERS]{};
 	VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
 
 	/* input assembly state */
@@ -88,7 +95,7 @@ public:
 	VkPipelineDepthStencilStateCreateInfo depthStencilState{};
 
 	/* dynamic state */
-	std::vector<VkDynamicState> dynamicStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+	VkDynamicState dynamicStates[VULKAN_PIPELINE_MAX_DYNAMIC_STATES]{};
 	VkPipelineDynamicStateCreateInfo dynamicState = {};
 
 	// returns true if the shader was compiled (even if errors occurred)
@@ -132,7 +139,7 @@ public:
 // that has, rather than being skipped as well
 // (VulkanRenderer::draw_awaitAsyncPipeline). Destroyed with the
 // PipelineInfo: a compile not started is dropped, one under way finished.
-struct AsyncPipelineCompile
+struct AsyncPipelineCompile : PoolNew<AsyncPipelineCompile, 64>
 {
 	explicit AsyncPipelineCompile(PipelineCompiler* job) : m_job(job) {}
 	~AsyncPipelineCompile()

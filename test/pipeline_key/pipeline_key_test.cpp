@@ -21,12 +21,21 @@
 //    state the renderer sets goes to the part that takes it, a part's key
 //    leaves out exactly what its dynamic states make the draw's, and the
 //    lock-free cache of parts gives each key to one maker however many
-//    threads race for it.
+//    threads race for it;
+//  - a new pipeline's descriptor set bindings and dynamic states, built in
+//    place, are what the vectors built before (the reference below) for
+//    every resource mapping and every set of dynamic state, and building
+//    them allocates nothing.
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineLibrary.h"
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
+#include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.h"
 
+#include <atomic>
 #include <cstdio>
+#include <cstdlib>
+#include <new>
+#include <random>
 #include <memory>
 #include <set>
 #include <thread>
@@ -36,6 +45,192 @@ static int s_failures = 0;
 #define CHECK(cond) do { if (!(cond)) { std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); s_failures++; } } while (0)
 
 using namespace Latte;
+
+// every operator new counted, for the allocations the pipeline state takes
+static std::atomic<uint64> s_allocs{0};
+void* operator new(size_t n)
+{
+	s_allocs.fetch_add(1, std::memory_order_relaxed);
+	if (void* p = std::malloc(n ? n : 1))
+		return p;
+	throw std::bad_alloc();
+}
+void* operator new[](size_t n) { return operator new(n); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p, size_t) noexcept { std::free(p); }
+void operator delete[](void* p, size_t) noexcept { std::free(p); }
+
+// What PipelineCompiler built, in vectors, before
+// (PipelineCompiler::CreateDescriptorSetLayout and InitDynamicState)
+static std::vector<VkDescriptorSetLayoutBinding> RefBindings(LatteDecompilerShaderResourceMapping& m,
+	VkShaderStageFlags stageFlags, std::vector<uint8>& uniformBuffers, bool& hasUniformVar, bool& hasUniformBuffers)
+{
+	std::vector<VkDescriptorSetLayoutBinding> out;
+	sint32 textureBindingBase = m.getTextureBaseBindingPoint();
+	if (textureBindingBase >= 0)
+	{
+		sint32 textureCount = m.getTextureCount();
+		for (sint32 i = 0; i < textureCount; i++)
+		{
+			VkDescriptorSetLayoutBinding entry{};
+			entry.binding = (uint32)textureBindingBase + i;
+			entry.descriptorCount = 1;
+			entry.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			entry.stageFlags = stageFlags;
+			out.emplace_back(entry);
+		}
+	}
+	if (m.uniformVarsBufferBindingPoint >= 0)
+	{
+		VkDescriptorSetLayoutBinding entry{};
+		entry.binding = m.uniformVarsBufferBindingPoint;
+		entry.descriptorCount = 1;
+		entry.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+		entry.stageFlags = stageFlags;
+		out.emplace_back(entry);
+	}
+	for (sint32 i = 0; i < LATTE_NUM_MAX_UNIFORM_BUFFERS; i++)
+	{
+		if (m.uniformBuffersBindingPoint[i] >= 0)
+		{
+			VkDescriptorSetLayoutBinding entry{};
+			entry.binding = m.uniformBuffersBindingPoint[i];
+			entry.descriptorCount = 1;
+			entry.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+			entry.stageFlags = stageFlags;
+			out.emplace_back(entry);
+			uniformBuffers.emplace_back((uint8)i);
+		}
+	}
+	if (m.tfStorageBindingPoint >= 0)
+	{
+		VkDescriptorSetLayoutBinding entry{};
+		entry.binding = m.tfStorageBindingPoint;
+		entry.descriptorCount = 1;
+		entry.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		entry.stageFlags = stageFlags;
+		out.emplace_back(entry);
+	}
+	hasUniformVar = m.uniformVarsBufferBindingPoint >= 0;
+	hasUniformBuffers = m.hasUniformBuffers();
+	return out;
+}
+
+static std::vector<VkDynamicState> RefDynamicStates(uint32 dynamic, bool usesBlendConstants, bool usesDepthBias, bool feedbackLoop)
+{
+	std::vector<VkDynamicState> d = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+	if (usesBlendConstants)
+		d.emplace_back(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
+	if (usesDepthBias)
+		d.emplace_back(VK_DYNAMIC_STATE_DEPTH_BIAS);
+	if (feedbackLoop)
+		d.emplace_back(VK_DYNAMIC_STATE_ATTACHMENT_FEEDBACK_LOOP_ENABLE_EXT);
+	d.emplace_back(VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK);
+	d.emplace_back(VK_DYNAMIC_STATE_STENCIL_WRITE_MASK);
+	d.emplace_back(VK_DYNAMIC_STATE_STENCIL_REFERENCE);
+	if (dynamic & VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL)
+	{
+		d.emplace_back(VK_DYNAMIC_STATE_CULL_MODE_EXT);
+		d.emplace_back(VK_DYNAMIC_STATE_FRONT_FACE_EXT);
+		d.emplace_back(VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE_EXT);
+		d.emplace_back(VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE_EXT);
+		d.emplace_back(VK_DYNAMIC_STATE_DEPTH_COMPARE_OP_EXT);
+		d.emplace_back(VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE_EXT);
+		d.emplace_back(VK_DYNAMIC_STATE_STENCIL_OP_EXT);
+	}
+	if (dynamic & VULKAN_PIPELINE_KEY_DYNAMIC_BLEND)
+	{
+		d.emplace_back(VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT);
+		d.emplace_back(VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT);
+		d.emplace_back(VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT);
+	}
+	if (dynamic & VULKAN_PIPELINE_KEY_DYNAMIC_VERTEX_INPUT)
+		d.emplace_back(VK_DYNAMIC_STATE_VERTEX_INPUT_EXT);
+	if (dynamic & VULKAN_PIPELINE_KEY_DYNAMIC_TOPOLOGY)
+	{
+		d.emplace_back(VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY_EXT);
+		d.emplace_back(VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE_EXT);
+	}
+	if (dynamic & VULKAN_PIPELINE_KEY_DYNAMIC_RASTERIZER)
+	{
+		d.emplace_back(VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE_EXT);
+		d.emplace_back(VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE_EXT);
+	}
+	return d;
+}
+
+static bool SameBinding(const VkDescriptorSetLayoutBinding& a, const VkDescriptorSetLayoutBinding& b)
+{
+	return a.binding == b.binding && a.descriptorType == b.descriptorType && a.descriptorCount == b.descriptorCount &&
+		a.stageFlags == b.stageFlags && a.pImmutableSamplers == b.pImmutableSamplers;
+}
+
+static void TestPipelineState()
+{
+	// every set of dynamic state and of what the pipeline reads
+	uint32 dynamicStateSets = 0;
+	uint64 allocs = 0;
+	for (uint32 dynamic = 0; dynamic < 32; dynamic++)
+	{
+		for (uint32 uses = 0; uses < 8; uses++)
+		{
+			const auto ref = RefDynamicStates(dynamic, uses & VULKAN_PIPELINE_USES_BLEND_CONSTANTS,
+				uses & VULKAN_PIPELINE_USES_DEPTH_BIAS, uses & VULKAN_PIPELINE_FEEDBACK_LOOP_DYNAMIC);
+			VkDynamicState got[VULKAN_PIPELINE_MAX_DYNAMIC_STATES];
+			const uint64 before = s_allocs.load();
+			const uint32 n = VulkanPipelineKey_DynamicStates(dynamic, uses, got);
+			allocs += s_allocs.load() - before;
+			CHECK(n == ref.size() && n <= VULKAN_PIPELINE_MAX_DYNAMIC_STATES);
+			CHECK(n == ref.size() && std::equal(ref.begin(), ref.end(), got));
+			dynamicStateSets++;
+		}
+	}
+	std::printf("dynamic states: %u sets as before, %llu allocations\n", dynamicStateSets, (unsigned long long)allocs);
+	CHECK(allocs == 0);
+
+	// resource mappings as the decompiler leaves them, and at their limits
+	std::mt19937 rng(1234);
+	auto pick = [&](sint32 lo, sint32 hi) { return (sint32)(rng() % (uint32)(hi - lo + 1)) + lo; };
+	const VkShaderStageFlags stages[3] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT, VK_SHADER_STAGE_GEOMETRY_BIT};
+	uint32 mappings = 0, mismatched = 0;
+	allocs = 0;
+	for (uint32 it = 0; it < 20000; it++)
+	{
+		LatteDecompilerShaderResourceMapping m;
+		const bool full = it < 2;
+		m.textureUnitBaseBindingPoint = full ? 0 : (sint8)(pick(0, 3) ? pick(0, 8) : -1);
+		m.textureUnitCount = full ? LATTE_NUM_MAX_TEX_UNITS : (sint8)pick(0, LATTE_NUM_MAX_TEX_UNITS);
+		sint32 next = m.textureUnitBaseBindingPoint + m.textureUnitCount + 1;
+		m.uniformVarsBufferBindingPoint = (full && it == 0) || pick(0, 1) ? (sint8)next++ : -1;
+		for (sint32 i = 0; i < LATTE_NUM_MAX_UNIFORM_BUFFERS; i++)
+			m.uniformBuffersBindingPoint[i] = full || pick(0, 3) == 0 ? (sint8)next++ : -1;
+		m.tfStorageBindingPoint = full || pick(0, 7) == 0 ? (sint8)next++ : -1;
+		const VkShaderStageFlags stage = stages[it % 3];
+
+		std::vector<uint8> refUB;
+		bool refVar = false, refUBs = false;
+		const auto ref = RefBindings(m, stage, refUB, refVar, refUBs);
+		VulkanDescriptorBindings b;
+		std::memset(&b, 0xA5, sizeof(b));
+		const uint64 before = s_allocs.load();
+		VulkanPipelineKey_DescriptorBindings(m, stage, b);
+		allocs += s_allocs.load() - before;
+		bool same = b.count == ref.size() && b.count <= VULKAN_PIPELINE_MAX_SET_BINDINGS &&
+			b.uniformBufferCount == refUB.size() && b.hasUniformVar == refVar && b.hasUniformBuffers == refUBs;
+		for (uint32 i = 0; same && i < b.count; i++)
+			same = SameBinding(b.bindings[i], ref[i]);
+		for (uint32 i = 0; same && i < b.uniformBufferCount; i++)
+			same = b.uniformBuffers[i] == refUB[i];
+		if (!same)
+			mismatched++;
+		mappings++;
+	}
+	std::printf("descriptor set bindings: %u mappings, %u not as before, %llu allocations\n", mappings, mismatched,
+		(unsigned long long)allocs);
+	CHECK(mismatched == 0);
+	CHECK(allocs == 0);
+}
 
 static void SetReg(LatteContextRegister& r, uint32 addr, uint32 v)
 {
@@ -734,6 +929,7 @@ int main()
 		d = VulkanPipelineKey_DepthStencilCull(*s2);
 		CHECK(d.cullMode == VK_CULL_MODE_FRONT_BIT);
 	}
+	TestPipelineState();
 	if (s_failures)
 	{
 		std::printf("%d failed\n", s_failures);

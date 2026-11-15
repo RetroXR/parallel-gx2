@@ -114,3 +114,35 @@ void VulkanPipelineKey_SetRasterizer(VkCommandBuffer cb, const VulkanRasterizerE
 void VulkanPipelineKey_SetInputAssembly(VkCommandBuffer cb, const VulkanInputAssembly& s);
 // and the vertex input's (VulkanRenderer::draw_updateVertexInput)
 void VulkanPipelineKey_SetVertexInput(VkCommandBuffer cb, const VulkanVertexInput& s);
+
+// The bindings of a shader's descriptor set layout, from its resource
+// mapping: its textures, its uniform register block, its uniform buffers and
+// its transform feedback buffer, each for stage. Filled in place, so that a
+// new pipeline allocates nothing for them (PipelineCompiler); also which
+// uniform buffers the draw gives dynamic offsets, in binding order.
+#define VULKAN_PIPELINE_MAX_SET_BINDINGS (LATTE_NUM_MAX_TEX_UNITS + 1 + LATTE_NUM_MAX_UNIFORM_BUFFERS + 1)
+struct VulkanDescriptorBindings
+{
+	uint32 count;
+	VkDescriptorSetLayoutBinding bindings[VULKAN_PIPELINE_MAX_SET_BINDINGS];
+	uint32 uniformBufferCount;
+	uint8 uniformBuffers[LATTE_NUM_MAX_UNIFORM_BUFFERS];
+	bool hasUniformVar;
+	bool hasUniformBuffers;
+};
+void VulkanPipelineKey_DescriptorBindings(const struct LatteDecompilerShaderResourceMapping& mapping,
+	VkShaderStageFlags stage, VulkanDescriptorBindings& out);
+
+// The dynamic states of a pipeline: the viewport, scissor and stencil
+// reference and masks always, the blend constants and depth bias when it
+// reads them, the attachment feedback loop when the device takes it as
+// dynamic, and what dynamic (VULKAN_PIPELINE_KEY_DYNAMIC_*) leaves to the
+// draw. Returns how many it wrote.
+enum
+{
+	VULKAN_PIPELINE_USES_BLEND_CONSTANTS = 1 << 0,
+	VULKAN_PIPELINE_USES_DEPTH_BIAS = 1 << 1,
+	VULKAN_PIPELINE_FEEDBACK_LOOP_DYNAMIC = 1 << 2,
+};
+#define VULKAN_PIPELINE_MAX_DYNAMIC_STATES 24
+uint32 VulkanPipelineKey_DynamicStates(uint32 dynamic, uint32 uses, VkDynamicState out[VULKAN_PIPELINE_MAX_DYNAMIC_STATES]);

@@ -167,7 +167,10 @@ public:
 	{
 		bool hasUniformVar[VulkanRendererConst::SHADER_STAGE_INDEX_COUNT];
 		bool hasUniformBuffers[VulkanRendererConst::SHADER_STAGE_INDEX_COUNT];
-		std::vector<uint8> list_uniformBuffers[VulkanRendererConst::SHADER_STAGE_INDEX_COUNT];
+		// the uniform buffers given dynamic offsets, in binding order: in
+		// place, so that a new pipeline allocates nothing for them
+		uint8 list_uniformBuffers[VulkanRendererConst::SHADER_STAGE_INDEX_COUNT][LATTE_NUM_MAX_UNIFORM_BUFFERS];
+		uint8 uniformBufferCount[VulkanRendererConst::SHADER_STAGE_INDEX_COUNT];
 	}dynamicOffsetInfo{};
 
 	// primitive rects emulation

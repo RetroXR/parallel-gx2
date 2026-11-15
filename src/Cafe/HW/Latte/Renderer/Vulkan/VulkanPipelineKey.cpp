@@ -1,6 +1,7 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
+#include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.h"
 
 #include <bit>
 
@@ -559,4 +560,84 @@ void VulkanPipelineKey_SetInputAssembly(VkCommandBuffer cb, const VulkanInputAss
 {
 	vkCmdSetPrimitiveTopologyEXT(cb, s.topology);
 	vkCmdSetPrimitiveRestartEnableEXT(cb, s.primitiveRestartEnable);
+}
+
+void VulkanPipelineKey_DescriptorBindings(const LatteDecompilerShaderResourceMapping& mapping,
+	VkShaderStageFlags stage, VulkanDescriptorBindings& out)
+{
+	out.count = 0;
+	out.uniformBufferCount = 0;
+	auto add = [&](sint32 binding, VkDescriptorType type) {
+		VkDescriptorSetLayoutBinding& entry = out.bindings[out.count++];
+		entry.binding = (uint32)binding;
+		entry.descriptorType = type;
+		entry.descriptorCount = 1;
+		entry.stageFlags = stage;
+		entry.pImmutableSamplers = nullptr;
+	};
+	if (mapping.textureUnitBaseBindingPoint >= 0)
+	{
+		const sint32 count = std::min<sint32>(mapping.textureUnitCount, LATTE_NUM_MAX_TEX_UNITS);
+		for (sint32 i = 0; i < count; i++)
+			add(mapping.textureUnitBaseBindingPoint + i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+	}
+	if (mapping.uniformVarsBufferBindingPoint >= 0)
+		add(mapping.uniformVarsBufferBindingPoint, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);
+	for (sint32 i = 0; i < LATTE_NUM_MAX_UNIFORM_BUFFERS; i++)
+	{
+		if (mapping.uniformBuffersBindingPoint[i] < 0)
+			continue;
+		add(mapping.uniformBuffersBindingPoint[i], VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);
+		out.uniformBuffers[out.uniformBufferCount++] = (uint8)i;
+	}
+	if (mapping.tfStorageBindingPoint >= 0)
+		add(mapping.tfStorageBindingPoint, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+	out.hasUniformVar = mapping.uniformVarsBufferBindingPoint >= 0;
+	out.hasUniformBuffers = out.uniformBufferCount != 0;
+}
+
+uint32 VulkanPipelineKey_DynamicStates(uint32 dynamic, uint32 uses, VkDynamicState out[VULKAN_PIPELINE_MAX_DYNAMIC_STATES])
+{
+	uint32 n = 0;
+	out[n++] = VK_DYNAMIC_STATE_VIEWPORT;
+	out[n++] = VK_DYNAMIC_STATE_SCISSOR;
+	if (uses & VULKAN_PIPELINE_USES_BLEND_CONSTANTS)
+		out[n++] = VK_DYNAMIC_STATE_BLEND_CONSTANTS;
+	if (uses & VULKAN_PIPELINE_USES_DEPTH_BIAS)
+		out[n++] = VK_DYNAMIC_STATE_DEPTH_BIAS;
+	if (uses & VULKAN_PIPELINE_FEEDBACK_LOOP_DYNAMIC)
+		out[n++] = VK_DYNAMIC_STATE_ATTACHMENT_FEEDBACK_LOOP_ENABLE_EXT;
+	// core Vulkan, every device
+	out[n++] = VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK;
+	out[n++] = VK_DYNAMIC_STATE_STENCIL_WRITE_MASK;
+	out[n++] = VK_DYNAMIC_STATE_STENCIL_REFERENCE;
+	if (dynamic & VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL)
+	{
+		out[n++] = VK_DYNAMIC_STATE_CULL_MODE_EXT;
+		out[n++] = VK_DYNAMIC_STATE_FRONT_FACE_EXT;
+		out[n++] = VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE_EXT;
+		out[n++] = VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE_EXT;
+		out[n++] = VK_DYNAMIC_STATE_DEPTH_COMPARE_OP_EXT;
+		out[n++] = VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE_EXT;
+		out[n++] = VK_DYNAMIC_STATE_STENCIL_OP_EXT;
+	}
+	if (dynamic & VULKAN_PIPELINE_KEY_DYNAMIC_BLEND)
+	{
+		out[n++] = VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT;
+		out[n++] = VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT;
+		out[n++] = VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT;
+	}
+	if (dynamic & VULKAN_PIPELINE_KEY_DYNAMIC_VERTEX_INPUT)
+		out[n++] = VK_DYNAMIC_STATE_VERTEX_INPUT_EXT;
+	if (dynamic & VULKAN_PIPELINE_KEY_DYNAMIC_TOPOLOGY)
+	{
+		out[n++] = VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY_EXT;
+		out[n++] = VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE_EXT;
+	}
+	if (dynamic & VULKAN_PIPELINE_KEY_DYNAMIC_RASTERIZER)
+	{
+		out[n++] = VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE_EXT;
+		out[n++] = VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE_EXT;
+	}
+	return n;
 }

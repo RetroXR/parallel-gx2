@@ -2,6 +2,8 @@
 
 #include <atomic>
 
+#include "util/helpers/PoolNew.h"
+
 // What a work queue holds for an item, rather than the item: whoever is to do
 // the work - a pool thread that took the ticket off the queue, or the thread
 // that needs it done now, or the item's own destructor when it was never done
@@ -10,9 +12,10 @@
 // middle of a queue, which is what a queue would need a lock for, and a ticket
 // left in the queue for an item that has gone points at nothing rather than at
 // freed memory. Two owners, the queue and the item; the last to let go frees
-// it.
+// it - back to a pool of tickets (PoolNew.h), so that queuing a shader or a
+// pipeline while a game plays allocates nothing for its ticket.
 template<typename T>
-struct ClaimTicket
+struct ClaimTicket : PoolNew<ClaimTicket<T>, 256>
 {
 	explicit ClaimTicket(T* t) : item(t) {}
 

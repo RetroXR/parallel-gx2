@@ -12,19 +12,38 @@
 //  - retired before a compile thread got to it: never built, and the ticket
 //    still in the queue finds nothing; retired while one builds it: waits for
 //    it, and what it built is there to take;
-//  - tickets dropped with the queue, unrun: nothing leaks (LeakSanitizer).
+//  - tickets dropped with the queue, unrun: nothing leaks (LeakSanitizer);
+//  - tickets come from a pool (ClaimTicket.h, PoolNew.h): once as many have
+//    been out as a game keeps, queuing another allocates nothing.
 #include "Cafe/HW/Latte/Renderer/Vulkan/PreparedPipeline.h"
 #include "util/helpers/MpmcQueue.h"
 
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
+#include <new>
 #include <memory>
 #include <thread>
 #include <vector>
 
 static int s_failures = 0;
 #define CHECK(cond) do { if (!(cond)) { std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); s_failures++; } } while (0)
+
+// every operator new counted, for the tickets' allocations
+static std::atomic<uint64_t> s_allocs{0};
+void* operator new(size_t n)
+{
+	s_allocs.fetch_add(1, std::memory_order_relaxed);
+	if (void* p = std::malloc(n ? n : 1))
+		return p;
+	throw std::bad_alloc();
+}
+void* operator new[](size_t n) { return operator new(n); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p, size_t) noexcept { std::free(p); }
+void operator delete[](void* p, size_t) noexcept { std::free(p); }
 
 struct Entry
 {
@@ -190,12 +209,47 @@ static void Dropped()
 	entries.clear();
 }
 
+static void Pooled()
+{
+	// the rounds a game's new pipelines come in: the first fills the pool,
+	// the rest take their tickets from it
+	const int perRound = 300;
+	uint64_t laterAllocs = 0;
+	for (int round = 0; round < 4; round++)
+	{
+		std::vector<std::unique_ptr<Entry>> entries;
+		for (int i = 0; i < perRound; i++)
+			entries.emplace_back(new Entry());
+		Pool pool;
+		pool.Start(2);
+		std::vector<PreparedPipeline::Ticket*> tickets;
+		tickets.reserve(perRound);
+		const uint64_t before = s_allocs.load();
+		for (auto& e : entries)
+			tickets.push_back(e->prepared.Queue());
+		const uint64_t allocs = s_allocs.load() - before;
+		for (PreparedPipeline::Ticket* t : tickets)
+			pool.queue.push(t);
+		for (auto& e : entries)
+			CHECK(e->prepared.Take() == (VkPipeline)(uintptr_t)(e->id + 1));
+		pool.Stop();
+		entries.clear();
+		if (round)
+			laterAllocs += allocs;
+		else
+			std::printf("tickets: %d queued first, %llu allocations\n", perRound, (unsigned long long)allocs);
+	}
+	std::printf("tickets: %d queued later, %llu allocations\n", perRound * 3, (unsigned long long)laterAllocs);
+	CHECK(laterAllocs == 0);
+}
+
 int main()
 {
 	MadeAhead();
 	Racing();
 	Retired();
 	Dropped();
+	Pooled();
 	if (s_failures)
 	{
 		std::printf("%d failed\n", s_failures);

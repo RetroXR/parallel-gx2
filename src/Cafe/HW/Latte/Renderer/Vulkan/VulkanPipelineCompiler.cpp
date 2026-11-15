@@ -142,9 +142,6 @@ bool PipelineCompiler::ConsumesBlendConstants(VkBlendFactor blendFactor)
 
 void PipelineCompiler::CreateDescriptorSetLayout(VulkanRenderer* vkRenderer, LatteDecompilerShader* shader, VkDescriptorSetLayout& layout, PipelineInfo* vkrPipelineInfo)
 {
-	// create vertex shader descriptor set
-	std::vector<VkDescriptorSetLayoutBinding> descriptorSetLayoutBindings;
-
 	VkShaderStageFlags stageFlags = 0;
 	uint32 stageIndex = 0;
 	if (shader->shaderType == LatteConst::ShaderType::Vertex)
@@ -162,75 +159,23 @@ void PipelineCompiler::CreateDescriptorSetLayout(VulkanRenderer* vkRenderer, Lat
 		stageFlags = VK_SHADER_STAGE_GEOMETRY_BIT;
 		stageIndex = VulkanRendererConst::SHADER_STAGE_INDEX_GEOMETRY;
 	}
-	// attributes
-	// -> not part of descriptor
+	// the textures, uniform register block, uniform buffers and transform
+	// feedback buffer (attributes are not in a descriptor set)
+	VulkanDescriptorBindings b;
+	VulkanPipelineKey_DescriptorBindings(shader->resourceMapping, stageFlags, b);
 
-	// textures
-	sint32 textureBindingBase = shader->resourceMapping.getTextureBaseBindingPoint();
-	if (textureBindingBase >= 0)
-	{
-		sint32 textureCount = shader->resourceMapping.getTextureCount();
-		for (sint32 i = 0; i < textureCount; i++)
-		{
-			VkDescriptorSetLayoutBinding entry{};
-			entry.binding = (uint32)textureBindingBase + i;
-			entry.descriptorCount = 1;
-			entry.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-			entry.pImmutableSamplers = nullptr;
-			entry.stageFlags = stageFlags;
-			descriptorSetLayoutBindings.emplace_back(entry);
-		}
-	}
-
-	// uniform buffers
-	if (shader->resourceMapping.uniformVarsBufferBindingPoint >= 0)
-	{
-		VkDescriptorSetLayoutBinding entry{};
-		entry.binding = shader->resourceMapping.uniformVarsBufferBindingPoint;
-		entry.descriptorCount = 1;
-		entry.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-		entry.pImmutableSamplers = nullptr;
-		entry.stageFlags = stageFlags;
-		descriptorSetLayoutBindings.emplace_back(entry);
-	}
-
-	for (sint32 i = 0; i < LATTE_NUM_MAX_UNIFORM_BUFFERS; i++)
-	{
-		if (shader->resourceMapping.uniformBuffersBindingPoint[i] >= 0)
-		{
-			VkDescriptorSetLayoutBinding entry{};
-			entry.binding = shader->resourceMapping.uniformBuffersBindingPoint[i];
-			entry.descriptorCount = 1;
-			entry.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-			entry.pImmutableSamplers = nullptr;
-			entry.stageFlags = stageFlags;
-			descriptorSetLayoutBindings.emplace_back(entry);
-
-			vkrPipelineInfo->dynamicOffsetInfo.list_uniformBuffers[stageIndex].emplace_back((uint8)i);
-		}
-	}
-
-	// storage buffer for TF
-	if (shader->resourceMapping.tfStorageBindingPoint >= 0)
-	{
-		VkDescriptorSetLayoutBinding entry{};
-		entry.binding = shader->resourceMapping.tfStorageBindingPoint;
-		entry.descriptorCount = 1;
-		entry.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-		entry.pImmutableSamplers = nullptr;
-		entry.stageFlags = stageFlags;
-		descriptorSetLayoutBindings.emplace_back(entry);
-	}
-
-	if (shader->resourceMapping.uniformVarsBufferBindingPoint >= 0)
-		vkrPipelineInfo->dynamicOffsetInfo.hasUniformVar[stageIndex] = true;
-	if (shader->resourceMapping.hasUniformBuffers())
-		vkrPipelineInfo->dynamicOffsetInfo.hasUniformBuffers[stageIndex] = true;
+	auto& offsets = vkrPipelineInfo->dynamicOffsetInfo;
+	std::copy_n(b.uniformBuffers, b.uniformBufferCount, offsets.list_uniformBuffers[stageIndex]);
+	offsets.uniformBufferCount[stageIndex] = (uint8)b.uniformBufferCount;
+	if (b.hasUniformVar)
+		offsets.hasUniformVar[stageIndex] = true;
+	if (b.hasUniformBuffers)
+		offsets.hasUniformBuffers[stageIndex] = true;
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = descriptorSetLayoutBindings.size();
-	layoutInfo.pBindings = descriptorSetLayoutBindings.data();
+	layoutInfo.bindingCount = b.count;
+	layoutInfo.pBindings = b.bindings;
 
 	if (vkCreateDescriptorSetLayout(vkRenderer->m_logicalDevice, &layoutInfo, nullptr, &layout) != VK_SUCCESS)
 		vkRenderer->UnrecoverableError(fmt::format("Failed to create descriptor set layout for shader {0:#x}", shader->baseHash).c_str());
@@ -252,15 +197,15 @@ bool PipelineCompiler::InitShaderStages(VulkanRenderer* vkRenderer, RendererShad
 	}
 
 	if (vkVertexShader)
-		shaderStages.emplace_back(vkRenderer->CreatePipelineShaderStageCreateInfo(VK_SHADER_STAGE_VERTEX_BIT, vkVertexShader->GetShaderModule(), "main"));
+		shaderStages[shaderStageCount++] = vkRenderer->CreatePipelineShaderStageCreateInfo(VK_SHADER_STAGE_VERTEX_BIT, vkVertexShader->GetShaderModule(), "main");
 
 	if (vkGeometryShader)
-		shaderStages.emplace_back(vkRenderer->CreatePipelineShaderStageCreateInfo(VK_SHADER_STAGE_GEOMETRY_BIT, vkGeometryShader->GetShaderModule(), "main"));
+		shaderStages[shaderStageCount++] = vkRenderer->CreatePipelineShaderStageCreateInfo(VK_SHADER_STAGE_GEOMETRY_BIT, vkGeometryShader->GetShaderModule(), "main");
 	else if (m_rectEmulationGS)
-		shaderStages.emplace_back(vkRenderer->CreatePipelineShaderStageCreateInfo(VK_SHADER_STAGE_GEOMETRY_BIT, m_rectEmulationGS->GetShaderModule(), "main"));
+		shaderStages[shaderStageCount++] = vkRenderer->CreatePipelineShaderStageCreateInfo(VK_SHADER_STAGE_GEOMETRY_BIT, m_rectEmulationGS->GetShaderModule(), "main");
 
 	if (vkPixelShader)
-		shaderStages.emplace_back(vkRenderer->CreatePipelineShaderStageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT, vkPixelShader->GetShaderModule(), "main"));
+		shaderStages[shaderStageCount++] = vkRenderer->CreatePipelineShaderStageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT, vkPixelShader->GetShaderModule(), "main");
 
 	return true;
 }
@@ -269,29 +214,27 @@ void PipelineCompiler::InitVertexInputState(const LatteContextRegister& latteReg
 {
 	// with VK_EXT_vertex_input_dynamic_state the draw sets the same
 	// (draw_updateVertexInput) and what is baked here is ignored
-	auto input = std::make_unique<VulkanVertexInput>();
-	VulkanPipelineKey_VertexInput(*fetchShader, vertexShader->resourceMapping.attributeMapping, latteRegister, *input);
+	VulkanVertexInput input;
+	VulkanPipelineKey_VertexInput(*fetchShader, vertexShader->resourceMapping.attributeMapping, latteRegister, input);
 
-	vertexInputAttributeDescription.resize(input->attributeCount);
-	for (uint32 i = 0; i < input->attributeCount; i++)
+	for (uint32 i = 0; i < input.attributeCount; i++)
 	{
-		const auto& a = input->attributes[i];
+		const auto& a = input.attributes[i];
 		if (a.format == VK_FORMAT_UNDEFINED)
 			cemuLog_log(LogType::Force, "Unsupported vertex format in fetch shader {:016x}", fetchShader->key);
 		vertexInputAttributeDescription[i] = {a.location, a.binding, a.format, a.offset};
 	}
-	vertexInputBindingDescription.resize(input->bindingCount);
-	for (uint32 i = 0; i < input->bindingCount; i++)
+	for (uint32 i = 0; i < input.bindingCount; i++)
 	{
-		const auto& b = input->bindings[i];
+		const auto& b = input.bindings[i];
 		vertexInputBindingDescription[i] = {b.binding, b.stride, b.inputRate};
 	}
 
 	vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-	vertexInputInfo.vertexBindingDescriptionCount = vertexInputBindingDescription.size();
-	vertexInputInfo.pVertexBindingDescriptions = vertexInputBindingDescription.data();
-	vertexInputInfo.vertexAttributeDescriptionCount = vertexInputAttributeDescription.size();
-	vertexInputInfo.pVertexAttributeDescriptions = vertexInputAttributeDescription.data();
+	vertexInputInfo.vertexBindingDescriptionCount = input.bindingCount;
+	vertexInputInfo.pVertexBindingDescriptions = vertexInputBindingDescription;
+	vertexInputInfo.vertexAttributeDescriptionCount = input.attributeCount;
+	vertexInputInfo.pVertexAttributeDescriptions = vertexInputAttributeDescription;
 }
 
 void PipelineCompiler::InitInputAssemblyState(const Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE primitiveMode)
@@ -481,57 +424,23 @@ void PipelineCompiler::InitDepthStencilState(const LatteContextRegister& latteRe
 
 void PipelineCompiler::InitDynamicState(PipelineInfo* pipelineInfo, bool usesBlendConstants, bool usesDepthBias)
 {
-
+	uint32 uses = 0;
 	if (usesBlendConstants)
 	{
-		dynamicStates.emplace_back(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
+		uses |= VULKAN_PIPELINE_USES_BLEND_CONSTANTS;
 		pipelineInfo->usesBlendConstants = true;
 	}
 	if (usesDepthBias)
 	{
-		dynamicStates.emplace_back(VK_DYNAMIC_STATE_DEPTH_BIAS);
+		uses |= VULKAN_PIPELINE_USES_DEPTH_BIAS;
 		pipelineInfo->usesDepthBias = true;
 	}
 	if (VulkanRenderer::GetInstance()->UseAttachmentFeedbackLoop())
-	{
-		dynamicStates.emplace_back(VK_DYNAMIC_STATE_ATTACHMENT_FEEDBACK_LOOP_ENABLE_EXT);
-	}
-	// core Vulkan, every device
-	dynamicStates.emplace_back(VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK);
-	dynamicStates.emplace_back(VK_DYNAMIC_STATE_STENCIL_WRITE_MASK);
-	dynamicStates.emplace_back(VK_DYNAMIC_STATE_STENCIL_REFERENCE);
-	if (VulkanRenderer::GetInstance()->m_featureControl.deviceExtensions.extended_dynamic_state)
-	{
-		dynamicStates.emplace_back(VK_DYNAMIC_STATE_CULL_MODE_EXT);
-		dynamicStates.emplace_back(VK_DYNAMIC_STATE_FRONT_FACE_EXT);
-		dynamicStates.emplace_back(VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE_EXT);
-		dynamicStates.emplace_back(VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE_EXT);
-		dynamicStates.emplace_back(VK_DYNAMIC_STATE_DEPTH_COMPARE_OP_EXT);
-		dynamicStates.emplace_back(VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE_EXT);
-		dynamicStates.emplace_back(VK_DYNAMIC_STATE_STENCIL_OP_EXT);
-	}
-	if (VulkanRenderer::GetInstance()->m_featureControl.deviceExtensions.extended_dynamic_state3_blend)
-	{
-		dynamicStates.emplace_back(VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT);
-		dynamicStates.emplace_back(VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT);
-		dynamicStates.emplace_back(VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT);
-	}
-	if (VulkanRenderer::GetInstance()->m_featureControl.deviceExtensions.vertex_input_dynamic_state)
-		dynamicStates.emplace_back(VK_DYNAMIC_STATE_VERTEX_INPUT_EXT);
-	if (VulkanRenderer::draw_pipelineKeyDynamicFlags() & VULKAN_PIPELINE_KEY_DYNAMIC_TOPOLOGY)
-	{
-		dynamicStates.emplace_back(VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY_EXT);
-		dynamicStates.emplace_back(VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE_EXT);
-	}
-	if (VulkanRenderer::GetInstance()->m_featureControl.deviceExtensions.extended_dynamic_state2)
-	{
-		dynamicStates.emplace_back(VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE_EXT);
-		dynamicStates.emplace_back(VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE_EXT);
-	}
+		uses |= VULKAN_PIPELINE_FEEDBACK_LOOP_DYNAMIC;
 
 	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-	dynamicState.dynamicStateCount = dynamicStates.size();
-	dynamicState.pDynamicStates = dynamicStates.data();
+	dynamicState.dynamicStateCount = VulkanPipelineKey_DynamicStates(VulkanRenderer::draw_pipelineKeyDynamicFlags(), uses, dynamicStates);
+	dynamicState.pDynamicStates = dynamicStates;
 }
 
 bool PipelineCompiler::InitFromCurrentGPUState(PipelineInfo* pipelineInfo, const LatteContextRegister& latteRegister, VKRObjectRenderPass* renderPassObj, bool requireRobustBufferAccess)
@@ -660,7 +569,7 @@ bool PipelineCompiler::Compile(bool forceCompile, bool isRenderThread, bool show
 			m_vkGeometryShader->PreponeCompilation(isRenderThread);
 	}
 
-	if (shaderStages.empty())
+	if (shaderStageCount == 0)
 	{
 		if (!InitShaderStages(vkRenderer, m_vkVertexShader, m_vkPixelShader, m_vkGeometryShader))
 			return true; // invalid shaders, cannot compile
@@ -668,8 +577,8 @@ bool PipelineCompiler::Compile(bool forceCompile, bool isRenderThread, bool show
 
 	VkGraphicsPipelineCreateInfo pipelineInfo{};
 	pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-	pipelineInfo.stageCount = shaderStages.size();
-	pipelineInfo.pStages = shaderStages.data();
+	pipelineInfo.stageCount = shaderStageCount;
+	pipelineInfo.pStages = shaderStages;
 	pipelineInfo.pVertexInputState = &vertexInputInfo;
 	pipelineInfo.pInputAssemblyState = &inputAssembly;
 	pipelineInfo.pViewportState = &viewportState;
@@ -744,7 +653,7 @@ bool PipelineCompiler::Compile(bool forceCompile, bool isRenderThread, bool show
 		// and the vertex attributes' formats, each marked "!" where the device
 		// cannot fetch vertex data in it (VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT)
 		std::string vertexFormats;
-		for (const auto& attr : vertexInputAttributeDescription)
+		for (const auto& attr : std::span(vertexInputAttributeDescription, vertexInputInfo.vertexAttributeDescriptionCount))
 		{
 			VkFormatProperties props{};
 			vkGetPhysicalDeviceFormatProperties(VulkanRenderer::GetInstance()->GetPhysicalDevice(), attr.format, &props);
