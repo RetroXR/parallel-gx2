@@ -4,8 +4,10 @@
 
 struct RedirectEntry
 {
-	RedirectEntry(const fs::path& dstPath, sint32 priority) : dstPath(dstPath), priority(priority) {}
+	RedirectEntry(const fs::path& dstPath, sint32 priority) : dstPath(dstPath), dstPathUtf8(_pathToUtf8(dstPath)), priority(priority) {}
 	fs::path dstPath;
+	// as the file is opened: made once, when the graphic packs are applied
+	std::string dstPathUtf8;
 	sint32 priority;
 };
 
@@ -34,7 +36,7 @@ class fscDeviceTypeRedirect : public fscDeviceC
 		RedirectEntry* redirectionEntry;
 
 		if (HAS_FLAG(accessFlags, FSC_ACCESS_FLAG::OPEN_FILE) && redirectTree.getFile(path, redirectionEntry))
-			return FSCVirtualFile_Host::OpenFile(redirectionEntry->dstPath, accessFlags, *fscStatus);
+			return FSCVirtualFile_Host::OpenFile(redirectionEntry->dstPathUtf8.c_str(), accessFlags, *fscStatus);
 
 		FSCVirtualFile* dirIterator;
 

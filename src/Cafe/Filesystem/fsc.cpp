@@ -388,7 +388,35 @@ void fsc_unmountAll()
 }
 
 // lookup virtual path and find mounted device and relative device directory
-static bool fsc_lookupPath(const char* path, std::string& devicePathOut, fscDeviceC** fscDeviceOut, void** ctxOut, sint32 priority = FSC_PRIORITY_BASE)
+// The device path of a virtual one, built in place: what fsc hands a device,
+// always ended with a NUL past the view, so that a lookup allocates nothing
+struct FSCDevicePath
+{
+	char path[2048];
+	size_t len = 0;
+
+	void Assign(std::string_view s)
+	{
+		len = 0;
+		path[0] = '\0';
+		Append(s);
+	}
+	void Append(std::string_view s)
+	{
+		if (overflow || len + s.size() >= sizeof(path))
+		{
+			overflow = true;
+			return;
+		}
+		std::memcpy(path + len, s.data(), s.size());
+		len += s.size();
+		path[len] = '\0';
+	}
+	operator std::string_view() const { return std::string_view(path, len); }
+	bool overflow = false;
+};
+
+static bool fsc_lookupPath(const char* path, FSCDevicePath& devicePathOut, fscDeviceC** fscDeviceOut, void** ctxOut, sint32 priority = FSC_PRIORITY_BASE)
 {
 	FSCTableRef ref;
 	if (!ref.get())
@@ -421,14 +449,17 @@ static bool fsc_lookupPath(const char* path, std::string& devicePathOut, fscDevi
 	{
 		if (nodeParent->device)
 		{
-			devicePathOut = nodeParent->deviceTargetPath;
+			devicePathOut.overflow = false;
+			devicePathOut.Assign(nodeParent->deviceTargetPath);
 			for (size_t f = i; f < parsedPath.GetNodeCount(); f++)
 			{
 				auto nodeName = parsedPath.GetNodeName(f);
-				devicePathOut.append(nodeName);
+				devicePathOut.Append(nodeName);
 				if (f < (parsedPath.GetNodeCount() - 1))
-					devicePathOut.push_back('/');
+					devicePathOut.Append("/");
 			}
+			if (devicePathOut.overflow)
+				return false;
 			*fscDeviceOut = nodeParent->device;
 			*ctxOut = nodeParent->ctx;
 			return true;
@@ -567,7 +598,7 @@ FSCVirtualFile* fsc_open(const char* path, FSC_ACCESS_FLAG accessFlags, sint32* 
 	cemu_assert_debug(HAS_FLAG(accessFlags, FSC_ACCESS_FLAG::OPEN_FILE) || HAS_FLAG(accessFlags, FSC_ACCESS_FLAG::OPEN_DIR)); // must open either file or directory
 	FSCVirtualFile* dirList[FSC_PRIORITY_COUNT];
 	uint8 dirListCount = 0;
-	std::string devicePath;
+	FSCDevicePath devicePath;
 	fscDeviceC* fscDevice = NULL;
 	*fscStatus = FSC_STATUS_UNDEFINED;
 	void* ctx;
@@ -654,7 +685,7 @@ bool fsc_createDir(const char* path, sint32* fscStatus)
 	fscDeviceC* fscDevice = NULL;
 	*fscStatus = FSC_STATUS_UNDEFINED;
 	void* ctx;
-	std::string devicePath;
+	FSCDevicePath devicePath;
 	if( fsc_lookupPath(path, devicePath, &fscDevice, &ctx) )
 	{
 		sint32 status = fscDevice->fscDeviceCreateDir(devicePath, ctx, fscStatus);
@@ -668,8 +699,8 @@ bool fsc_createDir(const char* path, sint32* fscStatus)
  */
 bool fsc_rename(const char* srcPath, const char* dstPath, sint32* fscStatus)
 {
-	std::string srcDevicePath;
-	std::string dstDevicePath;
+	FSCDevicePath srcDevicePath;
+	FSCDevicePath dstDevicePath;
 	void* srcCtx;
 	void* dstCtx;
 	fscDeviceC* fscSrcDevice = NULL;
@@ -688,7 +719,7 @@ bool fsc_rename(const char* srcPath, const char* dstPath, sint32* fscStatus)
  */
 bool fsc_remove(const char* path, sint32* fscStatus)
 {
-	std::string devicePath;
+	FSCDevicePath devicePath;
 	fscDeviceC* fscDevice = NULL;
 	*fscStatus = FSC_STATUS_UNDEFINED;
 	void* ctx;
@@ -821,7 +852,7 @@ sint64 fsc_readFileInto(const char* path, void* dst, uint32 capacity, sint32 max
 
 sint32 fsc_getFilePriority(const char* path, sint32 maxPriority)
 {
-	std::string devicePath;
+	FSCDevicePath devicePath;
 	fscDeviceC* fscDevice = nullptr;
 	void* ctx;
 	FSCTableRef ref;

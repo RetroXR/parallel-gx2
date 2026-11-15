@@ -2,6 +2,7 @@
 #include "iosu_fsa.h"
 #include "Cafe/IOSU/kernel/iosu_kernel.h"
 #include "Cafe/Filesystem/fsc.h"
+#include "Cafe/IOSU/fsa/fsa_path.h"
 #include "util/helpers/helpers.h"
 
 #include "Cafe/OS/libs/coreinit/coreinit_FS.h"	 // get rid of this dependency, requires reworking some of the IPC stuff. See locations where we use coreinit::FSCmdBlockBody_t
@@ -21,13 +22,14 @@ namespace iosu
 
 		struct FSAClient // IOSU's counterpart to the coreinit FSClient struct
 		{
-			std::string workingDirectory;
+			// in place: a path is translated against it with nothing allocated
+			char workingDirectory[FSA_TRANSLATED_PATH_MAX] = "/";
 			bool isAllocated{false};
 
 			void AllocateAndInitialize()
 			{
 				isAllocated = true;
-				workingDirectory = std::string("/");
+				std::strcpy(workingDirectory, "/");
 			}
 
 			void ReleaseAndCleanup()
@@ -63,109 +65,27 @@ namespace iosu
 			return FSA_RESULT::FATAL_ERROR;
 		}
 
-		std::string __FSATranslatePath(FSAClient* fsaClient, std::string_view input, bool endWithSlash = false)
+		// The path made absolute against the client's working directory, into
+		// a buffer of the caller's (fsa_path.c); false when too long
+		struct FSATranslatedPath
 		{
-			std::string tmp;
-			if (input.empty())
-			{
-				tmp.assign(fsaClient->workingDirectory);
-				if (endWithSlash)
-					tmp.push_back('/');
-				return tmp;
-			}
-			char c = input.front();
-			cemu_assert_debug(c != '\\'); // how to handle backward slashes?
-
-			if (c == '/')
-			{
-				// absolute path
-				tmp.assign("/"); // keep the leading slash
-			}
-			else if (c == '~')
-			{
-				cemu_assert_debug(false);
-				input.remove_prefix(1);
-				tmp.assign("/");
-			}
-			else
-			{
-				// in all other cases the path is relative to the working directory
-				tmp.assign(fsaClient->workingDirectory);
-			}
-			// parse path
-			size_t idx = 0;
-			while (idx < input.size())
-			{
-				c = input[idx];
-				if (c == '/')
-				{
-					idx++;
-					continue; // filter leading and repeated slashes
-				}
-
-				if (c == '.')
-				{
-					if ((input.size() - idx) >= 3 && input[idx + 1] == '.' && input[idx + 2] == '/')
-					{
-						// "../"
-                        while(!tmp.empty())
-                        {
-                            if(tmp.back() == '/')
-                            {
-                                tmp.pop_back();
-                                break;
-                            }
-                            tmp.pop_back();
-                        }
-						idx += 3;
-						continue;
-					}
-					else if ((input.size() - idx) == 2 && input[idx + 1] == '.')
-					{
-						// ".." at the end
-                        while(!tmp.empty())
-                        {
-                            if(tmp.back() == '/')
-                            {
-                                tmp.pop_back();
-                                break;
-                            }
-                            tmp.pop_back();
-                        }
-						idx += 2;
-						continue;
-					}
-					else if ((input.size() - idx) >= 2 && input[idx + 1] == '/')
-					{
-						// "./"
-						idx += 2;
-						continue;
-					}
-				}
-				if (!tmp.empty() && tmp.back() != '/')
-					tmp.push_back('/');
-
-				while (idx < input.size())
-				{
-					c = input[idx];
-					if (c == '/')
-						break;
-					tmp.push_back(c);
-					idx++;
-				}
-			}
-			if (endWithSlash)
-			{
-				if (tmp.empty() || tmp.back() != '/')
-					tmp.push_back('/');
-			}
-			return tmp;
+			char path[FSA_TRANSLATED_PATH_MAX];
+		};
+		bool __FSATranslatePath(FSAClient* fsaClient, std::string_view input, FSATranslatedPath& out, bool endWithSlash = false)
+		{
+			return fsa_path_translate(fsaClient->workingDirectory, input.data(), input.size(), endWithSlash ? 1 : 0,
+				out.path, sizeof(out.path)) >= 0;
 		}
 
 		FSCVirtualFile* __FSAOpenNode(FSAClient* client, std::string_view path, FSC_ACCESS_FLAG accessFlags, sint32& fscStatus)
 		{
-			std::string translatedPath = __FSATranslatePath(client, path);
-			return fsc_open(translatedPath.c_str(), accessFlags, &fscStatus);
+			FSATranslatedPath translatedPath;
+			if (!__FSATranslatePath(client, path, translatedPath))
+			{
+				fscStatus = FSC_STATUS_FILE_NOT_FOUND;
+				return nullptr;
+			}
+			return fsc_open(translatedPath.path, accessFlags, &fscStatus);
 		}
 
 		class _FSAHandleTable {
@@ -363,26 +283,29 @@ namespace iosu
 
 		FSA_RESULT FSAProcessCmd_remove(FSAClient* client, FSAShimBuffer* shimBuffer)
 		{
-			std::string path = __FSATranslatePath(client, (char*)shimBuffer->request.cmdRemove.path);
+			FSATranslatedPath path;
 			sint32 fscStatus = FSC_STATUS_FILE_NOT_FOUND;
-			fsc_remove(path.c_str(), &fscStatus);
+			if (__FSATranslatePath(client, (char*)shimBuffer->request.cmdRemove.path, path))
+				fsc_remove(path.path, &fscStatus);
 			return FSA_convertFSCtoFSAStatus(fscStatus);
 		}
 
 		FSA_RESULT FSAProcessCmd_makeDir(FSAClient* client, FSAShimBuffer* shimBuffer)
 		{
-			std::string path = __FSATranslatePath(client, (char*)shimBuffer->request.cmdMakeDir.path);
+			FSATranslatedPath path;
 			sint32 fscStatus = FSC_STATUS_FILE_NOT_FOUND;
-			fsc_createDir(path.c_str(), &fscStatus);
+			if (__FSATranslatePath(client, (char*)shimBuffer->request.cmdMakeDir.path, path))
+				fsc_createDir(path.path, &fscStatus);
 			return FSA_convertFSCtoFSAStatus(fscStatus);
 		}
 
 		FSA_RESULT FSAProcessCmd_rename(FSAClient* client, FSAShimBuffer* shimBuffer)
 		{
-			std::string srcPath = __FSATranslatePath(client, (char*)shimBuffer->request.cmdRename.srcPath);
-			std::string dstPath = __FSATranslatePath(client, (char*)shimBuffer->request.cmdRename.dstPath);
+			FSATranslatedPath srcPath, dstPath;
 			sint32 fscStatus = FSC_STATUS_FILE_NOT_FOUND;
-			fsc_rename(srcPath.c_str(), dstPath.c_str(), &fscStatus);
+			if (__FSATranslatePath(client, (char*)shimBuffer->request.cmdRename.srcPath, srcPath) &&
+				__FSATranslatePath(client, (char*)shimBuffer->request.cmdRename.dstPath, dstPath))
+				fsc_rename(srcPath.path, dstPath.path, &fscStatus);
 			return FSA_convertFSCtoFSAStatus(fscStatus);
 		}
 
@@ -689,7 +612,7 @@ namespace iosu
 			sint32 pathOutputMaxLen = sizeof(shimBuffer->response.cmdGetCWD.path);
 			cemu_assert(pathOutputMaxLen > 0);
 			sint32 fscStatus = FSC_STATUS_OK;
-			strncpy(pathOutput, client->workingDirectory.data(), std::min(client->workingDirectory.size() + 1, (size_t)pathOutputMaxLen));
+			strncpy(pathOutput, client->workingDirectory, std::min(std::strlen(client->workingDirectory) + 1, (size_t)pathOutputMaxLen));
 			pathOutput[pathOutputMaxLen - 1] = '\0';
 			return FSA_convertFSCtoFSAStatus(fscStatus);
 		}
@@ -699,7 +622,9 @@ namespace iosu
 			const char* path = (const char*)shimBuffer->request.cmdChangeDir.path;
 			shimBuffer->request.cmdChangeDir.path[sizeof(shimBuffer->request.cmdChangeDir.path) - 1] = '\0';
 			sint32 fscStatus = FSC_STATUS_OK;
-			client->workingDirectory.assign(__FSATranslatePath(client, path, true));
+			FSATranslatedPath translated;
+			if (__FSATranslatePath(client, path, translated, true))
+				std::strcpy(client->workingDirectory, translated.path);
 			return FSA_convertFSCtoFSAStatus(fscStatus);
 		}
 

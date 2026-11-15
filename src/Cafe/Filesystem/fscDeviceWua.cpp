@@ -1,7 +1,9 @@
 #include "Cafe/Filesystem/fsc.h"
 #include "Cafe/Filesystem/zarchive.h"
+#include "util/helpers/PoolNew.h"
 
-class FSCDeviceWuaFileCtx : public FSCVirtualFile
+// from a pool (PoolNew.h): opening one allocates nothing
+class FSCDeviceWuaFileCtx : public FSCVirtualFile, public PoolNew<FSCDeviceWuaFileCtx>
 {
 	friend class fscDeviceWUAC;
 

@@ -57,6 +57,8 @@ struct FSCDirEntry
 	}
 };
 
+// A device is handed its paths as views fsc ends with a NUL past their end
+// (FSCDevicePath, fsc.cpp), built in place
 class fscDeviceC
 {
 public:

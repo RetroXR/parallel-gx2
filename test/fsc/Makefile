@@ -33,9 +33,9 @@ CXX_SRCS := fsc_test.cpp $(SRC)/Cafe/Filesystem/fsc.cpp $(SRC)/Cafe/Filesystem/f
 # the bundle and archive readers, the file reader under them, the cell
 # shared archives are kept in and the host folders' files, C89
 CORE_C_SRCS := $(SRC)/Cafe/Filesystem/WUHB/wuhb.c $(SRC)/Common/shared_file.c $(SRC)/Cafe/Filesystem/zarchive.c $(RCU_C) \
-	$(SRC)/Cafe/Filesystem/host_fs.c
+	$(SRC)/Cafe/Filesystem/host_fs.c $(SRC)/Cafe/IOSU/fsa/fsa_path.c $(SRC)/util/helpers/obj_pool.c $(SRC)/util/helpers/lf_ring.c
 
-fsc_test$(EXE): $(CXX_SRCS) $(C_SRCS) $(CORE_C_SRCS) $(SRC)/Cafe/Filesystem/WUHB/wuhb.h $(SRC)/Cafe/Filesystem/zarchive.h ../disc_image/romfs_image.h $(SRC)/Cafe/Filesystem/fsc.h $(SRC)/Cafe/Filesystem/fscDeviceHostFS.h $(SRC)/Cafe/Filesystem/host_fs.h $(SRC)/Cafe/RPXHash.h stub/config/ActiveSettings.h
+fsc_test$(EXE): $(CXX_SRCS) $(C_SRCS) $(CORE_C_SRCS) $(SRC)/Cafe/Filesystem/WUHB/wuhb.h $(SRC)/Cafe/Filesystem/zarchive.h ../disc_image/romfs_image.h $(SRC)/Cafe/Filesystem/fsc.h $(SRC)/Cafe/Filesystem/fscDeviceHostFS.h $(SRC)/Cafe/Filesystem/host_fs.h $(SRC)/Cafe/IOSU/fsa/fsa_path.h $(SRC)/util/helpers/PoolNew.h $(SRC)/Cafe/Filesystem/FST/fstUtil.h $(SRC)/Cafe/RPXHash.h stub/config/ActiveSettings.h
 	for f in $(C_SRCS); do $(CC) $(FLAGS) -std=gnu99 -c $$f -o $$(basename $$f .c).o || exit 1; done
 	for f in $(CORE_C_SRCS); do $(CC) $(FLAGS) $(C89_FLAGS) -c $$f -o $$(basename $$f .c).o || exit 1; done
 	$(CXX) $(FLAGS) $(CXXFLAGS_CORE) -std=gnu++20 $(CXX_SRCS) *.o $(LIBS) -o $@

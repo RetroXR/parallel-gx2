@@ -17,8 +17,10 @@ class FSCPath
 		uint16 len;
 	};
 
-	boost::container::small_vector<PathNode, 8> m_nodes;
-	boost::container::small_vector<char, 64> m_names;
+	// as long as FSA takes a path (FSA_PATH_SIZE_MAX), in place: looking a
+	// path up allocates nothing
+	boost::container::small_vector<PathNode, 64> m_nodes;
+	boost::container::small_vector<char, 640> m_names;
 	bool m_isAbsolute{};
 
 	inline bool isSlash(char c)

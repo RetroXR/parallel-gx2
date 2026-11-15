@@ -23,8 +23,17 @@
 //  - a Wii U archive (.wua) mounted the same way (fscDeviceWua.cpp,
 //    zarchive.c): listed a name at a time through the device, with the
 //    sizes the archive has, and its files read back, mapped and not; a
-//    file opened as a directory and the other way round are not found.
+//    file opened as a directory and the other way round are not found;
+//  - opening, reading and closing a file - in a bundle, an archive or a host
+//    folder, at a path longer than the inline room the path parser had,
+//    and a file that is not there - allocates nothing of the core's, once
+//    the pools are warm (operator new counted; a host file's stream is
+//    libretro-common's);
+//  - FSA's path translation (fsa_path.c) gives what the std::string one it
+//    replaced gave, for random paths against random working directories,
+//    and nothing for one too long.
 #include "Cafe/Filesystem/fsc.h"
+#include "Cafe/IOSU/fsa/fsa_path.h"
 #include "Cafe/RPXHash.h"
 #include "Cafe/Filesystem/WUHB/wuhb.h"
 #include "Cafe/Filesystem/zarchive.h"
@@ -34,6 +43,8 @@
 #include "Cemu/Logging/CemuLogging.h"
 
 #include <atomic>
+#include <cstdlib>
+#include <new>
 #include <cstdio>
 #include <map>
 #include <random>
@@ -48,6 +59,184 @@ uint64 s_loggingFlagMask = 0;
 bool cemuLog_log(LogType type, std::string_view text)
 {
 	return false;
+}
+
+// operator new, counted on the thread that asks
+static thread_local bool t_counting = false;
+static thread_local uint64 t_allocs = 0;
+void* operator new(size_t n)
+{
+	if (t_counting)
+		t_allocs++;
+	if (void* p = std::malloc(n ? n : 1))
+		return p;
+	throw std::bad_alloc();
+}
+void* operator new[](size_t n) { return operator new(n); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p, size_t) noexcept { std::free(p); }
+void operator delete[](void* p, size_t) noexcept { std::free(p); }
+// the aligned ones too (the inline vectors' spill, boost-compat)
+void* operator new(size_t n, std::align_val_t al)
+{
+	if (t_counting)
+		t_allocs++;
+	const size_t align = (size_t)al < sizeof(void*) ? sizeof(void*) : (size_t)al;
+	void* raw = std::malloc(n + align + sizeof(void*));
+	if (!raw)
+		throw std::bad_alloc();
+	uintptr_t p = ((uintptr_t)raw + sizeof(void*) + align - 1) & ~(uintptr_t)(align - 1);
+	((void**)p)[-1] = raw;
+	return (void*)p;
+}
+void* operator new[](size_t n, std::align_val_t al) { return operator new(n, al); }
+void operator delete(void* p, std::align_val_t) noexcept
+{
+	if (p)
+		std::free(((void**)p)[-1]);
+}
+void operator delete[](void* p, std::align_val_t al) noexcept { operator delete(p, al); }
+void operator delete(void* p, size_t, std::align_val_t al) noexcept { operator delete(p, al); }
+void operator delete[](void* p, size_t, std::align_val_t al) noexcept { operator delete(p, al); }
+
+// a file opened, read whole and closed n times, and one not there looked
+// for: the allocations it took after the first round
+static uint64 OpenReadAllocs(const char* path, size_t size, int n)
+{
+	std::vector<uint8> buf(size + 1);
+	uint64 allocs = 0;
+	for (int round = 0; round <= n; round++)
+	{
+		t_allocs = 0;
+		t_counting = true;
+		sint32 st;
+		FSCVirtualFile* f = fsc_open(path, FSC_ACCESS_FLAG::OPEN_FILE | FSC_ACCESS_FLAG::READ_PERMISSION, &st);
+		const bool read = f && fsc_readFile(f, buf.data(), (uint32)buf.size()) == size;
+		if (f)
+			fsc_close(f);
+		FSCVirtualFile* none = fsc_open("/none/such/file/anywhere/at/all.bin", FSC_ACCESS_FLAG::OPEN_FILE | FSC_ACCESS_FLAG::READ_PERMISSION, &st);
+		t_counting = false;
+		CHECK(read && none == nullptr);
+		if (round)
+			allocs += t_allocs;
+	}
+	return allocs;
+}
+
+// FSA's translation as it was, in a std::string (iosu_fsa.cpp)
+static std::string TranslateRef(const std::string& cwd, std::string_view input, bool endWithSlash)
+{
+	std::string tmp;
+	if (input.empty())
+	{
+		tmp.assign(cwd);
+		if (endWithSlash)
+			tmp.push_back('/');
+		return tmp;
+	}
+	char c = input.front();
+	if (c == '/')
+		tmp.assign("/");
+	else if (c == '~')
+	{
+		input.remove_prefix(1);
+		tmp.assign("/");
+	}
+	else
+		tmp.assign(cwd);
+	size_t idx = 0;
+	auto popNode = [&] {
+		while (!tmp.empty())
+		{
+			if (tmp.back() == '/')
+			{
+				tmp.pop_back();
+				break;
+			}
+			tmp.pop_back();
+		}
+	};
+	while (idx < input.size())
+	{
+		c = input[idx];
+		if (c == '/')
+		{
+			idx++;
+			continue;
+		}
+		if (c == '.')
+		{
+			if ((input.size() - idx) >= 3 && input[idx + 1] == '.' && input[idx + 2] == '/')
+			{
+				popNode();
+				idx += 3;
+				continue;
+			}
+			else if ((input.size() - idx) == 2 && input[idx + 1] == '.')
+			{
+				popNode();
+				idx += 2;
+				continue;
+			}
+			else if ((input.size() - idx) >= 2 && input[idx + 1] == '/')
+			{
+				idx += 2;
+				continue;
+			}
+		}
+		if (!tmp.empty() && tmp.back() != '/')
+			tmp.push_back('/');
+		while (idx < input.size())
+		{
+			c = input[idx];
+			if (c == '/')
+				break;
+			tmp.push_back(c);
+			idx++;
+		}
+	}
+	if (endWithSlash)
+	{
+		if (tmp.empty() || tmp.back() != '/')
+			tmp.push_back('/');
+	}
+	return tmp;
+}
+
+static void TestFsaPath()
+{
+	std::mt19937 rng(9);
+	const char alphabet[] = {'/', '/', '.', '.', 'a', 'b', 'C', '~', '_'};
+	const char* cwds[] = {"/", "/vol/content", "/vol/content/", "/vol/save/80000001/", "", "relative/dir"};
+	uint32 compared = 0, differ = 0;
+	for (int i = 0; i < 200000; i++)
+	{
+		std::string input;
+		const size_t len = rng() % 24;
+		for (size_t k = 0; k < len; k++)
+			input.push_back(alphabet[rng() % sizeof(alphabet)]);
+		const char* cwd = cwds[rng() % std::size(cwds)];
+		const bool slash = rng() & 1;
+		char out[FSA_TRANSLATED_PATH_MAX];
+		const int n = fsa_path_translate(cwd, input.data(), input.size(), slash, out, sizeof(out));
+		const std::string want = TranslateRef(cwd, input, slash);
+		if (n != (int)want.size() || want != out)
+		{
+			if (differ++ < 5)
+				std::fprintf(stderr, "FAIL: fsa path '%s' in '%s'%s: '%s', was '%s'\n", input.c_str(), cwd, slash ? " (slash)" : "", out, want.c_str());
+		}
+		compared++;
+	}
+	std::printf("fsa paths: %u translated, %u not as before\n", compared, differ);
+	CHECK(differ == 0);
+	// too long for the buffer: nothing, and nothing written past it
+	char small[16];
+	std::memset(small, 'x', sizeof(small));
+	CHECK(fsa_path_translate("/vol/content/", "a/b/c/d", 7, 0, small, 8) == -1 && small[0] == '\0' && small[8] == 'x');
+	CHECK(fsa_path_translate("/v", "ab", 2, 1, small, 8) == 6 && std::string(small) == "/v/ab/");
+	CHECK(fsa_path_translate("/v", "abc", 3, 1, small, 7) == -1);
+	CHECK(fsa_path_translate("/v", "ab", 2, 0, small, 6) == 5);
 }
 
 // The hash as CafeSystem took it over the whole file, before it could be
@@ -116,6 +305,8 @@ int main()
 	}
 	uint8 small[16];
 	CHECK(!fsc_readFileInChunks("/t/code/none.bin", FSC_PRIORITY_MAX, small, sizeof(small), [](const uint8*, uint32) {}));
+
+	TestFsaPath();
 
 	// read straight into a buffer, as much as fits
 	uint8 into[5000];
@@ -257,6 +448,9 @@ int main()
 			}
 			uint8 one[1];
 			CHECK(fsc_readFileInto("/w/content/none.bin", one, 1) == -1);
+			const uint64 bundleAllocs = OpenReadAllocs("/w/content/sub/deep.dat", 4321, 200);
+			std::printf("bundle file opened, read and closed 200 times: %llu allocations\n", (unsigned long long)bundleAllocs);
+			CHECK(bundleAllocs == 0);
 			CHECK(fsc_unmount("/w/", FSC_PRIORITY_BASE));
 			wuhb_close(reader);
 		}
@@ -313,6 +507,9 @@ int main()
 				CHECK(fsc_readFileInto(p.c_str(), got.data(), (uint32)got.size()) == (sint64)e.data.size()
 					&& (e.data.empty() || memcmp(got.data(), e.data.data(), e.data.size()) == 0));
 			}
+			const uint64 archiveAllocs = OpenReadAllocs("/z/content/sub/deep.bin", 123457, 200);
+			std::printf("archive file opened, read and closed 200 times: %llu allocations\n", (unsigned long long)archiveAllocs);
+			CHECK(archiveAllocs == 0);
 			// a directory is no file, and a file no directory
 			CHECK(fsc_open("/z/content/sub", FSC_ACCESS_FLAG::OPEN_FILE | FSC_ACCESS_FLAG::READ_PERMISSION, &st) == nullptr);
 			CHECK(fsc_openDirIterator("/z/content/a.bin", &st) == nullptr);
@@ -321,6 +518,18 @@ int main()
 		}
 	}
 
+	// a host file at a path past the parser's old inline room (64 chars, 8
+	// nodes): no allocation of the core's
+	{
+		const char* deep = "code/one/two/three/four/five/six/seven/eight/nine/a_rather_long_file_name_for_a_file.bin";
+		fs::path p = base;
+		CHECK(FileStream::CreateDirectories(base / "code/one/two/three/four/five/six/seven/eight/nine"));
+		CHECK(FileStream::WriteFile(base / deep, onlyBase.data(), onlyBase.size()));
+		const std::string virt = std::string("/t/") + deep;
+		const uint64 hostAllocs = OpenReadAllocs(virt.c_str(), onlyBase.size(), 200);
+		std::printf("host file opened, read and closed 200 times: %llu allocations of the core's\n", (unsigned long long)hostAllocs);
+		CHECK(hostAllocs == 0);
+	}
 	fsc_unmountAll();
 	CHECK(fsc_liveMountTables() == 1);
 	FileStream::RemoveAll(dir);

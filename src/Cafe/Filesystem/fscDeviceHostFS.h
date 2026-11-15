@@ -1,11 +1,15 @@
 #include "Cafe/Filesystem/fsc.h"
 #include "Common/FileStream.h"
+#include "util/helpers/PoolNew.h"
 
-// a file or directory of a mounted host folder, over the C (host_fs.c)
-class FSCVirtualFile_Host : public FSCVirtualFile
+// a file or directory of a mounted host folder, over the C (host_fs.c); from
+// a pool (PoolNew.h), so that opening one allocates nothing of the core's
+class FSCVirtualFile_Host : public FSCVirtualFile, public PoolNew<FSCVirtualFile_Host>
 {
 public:
 	static FSCVirtualFile* OpenFile(const fs::path& path, FSC_ACCESS_FLAG accessFlags, sint32& fscStatus);
+	// utf8, as the device has its paths
+	static FSCVirtualFile* OpenFile(const char* utf8Path, FSC_ACCESS_FLAG accessFlags, sint32& fscStatus);
 	~FSCVirtualFile_Host() override;
 
 	sint32 fscGetType() override;

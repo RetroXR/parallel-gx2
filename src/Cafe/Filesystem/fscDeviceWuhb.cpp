@@ -1,8 +1,10 @@
 #include "Cafe/Filesystem/WUHB/wuhb.h"
 #include "Common/FileStream.h"
 #include "Cafe/Filesystem/fsc.h"
+#include "util/helpers/PoolNew.h"
 
-class FSCDeviceWuhbFileCtx : public FSCVirtualFile
+// from a pool (PoolNew.h): opening one allocates nothing
+class FSCDeviceWuhbFileCtx : public FSCVirtualFile, public PoolNew<FSCDeviceWuhbFileCtx>
 {
   public:
 	FSCDeviceWuhbFileCtx(wuhb_t* reader, uint32 entryOffset, uint32 fscType)

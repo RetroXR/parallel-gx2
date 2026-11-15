@@ -93,6 +93,11 @@ void FSCVirtualFile_Host::fscFlush()
 
 FSCVirtualFile* FSCVirtualFile_Host::OpenFile(const fs::path& path, FSC_ACCESS_FLAG accessFlags, sint32& fscStatus)
 {
+	return OpenFile(_pathToUtf8(path).c_str(), accessFlags, fscStatus);
+}
+
+FSCVirtualFile* FSCVirtualFile_Host::OpenFile(const char* utf8Path, FSC_ACCESS_FLAG accessFlags, sint32& fscStatus)
+{
 	if (!HAS_FLAG(accessFlags, FSC_ACCESS_FLAG::OPEN_FILE) && !HAS_FLAG(accessFlags, FSC_ACCESS_FLAG::OPEN_DIR))
 		cemu_assert_debug(false); // not allowed. At least one of both flags must be set
 
@@ -108,9 +113,9 @@ FSCVirtualFile* FSCVirtualFile_Host::OpenFile(const fs::path& path, FSC_ACCESS_F
 	else if (HAS_FLAG(accessFlags, FSC_ACCESS_FLAG::FILE_ALWAYS_CREATE))
 		flags |= HOST_FS_ALWAYS_CREATE;
 	bool createFailed = false;
-	host_fs_node* node = host_fs_open(_pathToUtf8(path).c_str(), flags, &createFailed);
+	host_fs_node* node = host_fs_open(utf8Path, flags, &createFailed);
 	if (createFailed)
-		cemuLog_log(LogType::Force, "FSC: File create failed for {}", _pathToUtf8(path));
+		cemuLog_log(LogType::Force, "FSC: File create failed for {}", utf8Path);
 	if (!node)
 	{
 		fscStatus = FSC_STATUS_FILE_NOT_FOUND;
@@ -128,7 +133,8 @@ public:
 	FSCVirtualFile* fscDeviceOpenByPath(std::string_view path, FSC_ACCESS_FLAG accessFlags, void* ctx, sint32* fscStatus) override
 	{
 		*fscStatus = FSC_STATUS_OK;
-		FSCVirtualFile* vf = FSCVirtualFile_Host::OpenFile(_utf8ToPath(path), accessFlags, *fscStatus);
+		// fsc's view ends with a NUL (FSCDevicePath)
+		FSCVirtualFile* vf = FSCVirtualFile_Host::OpenFile(path.data(), accessFlags, *fscStatus);
 		cemu_assert_debug((bool)vf == (*fscStatus == FSC_STATUS_OK));
 		return vf;
 	}
