@@ -175,7 +175,7 @@ void PPCRecompiler_attemptEnter(PPCInterpreter_t* hCPU, uint32 enterAddress)
 }
 bool PPCRecompiler_ApplyIMLPasses(ppcImlGenContext_t& ppcImlGenContext);
 
-PPCRecFunction_t* PPCRecompiler_recompileFunction(PPCFunctionBoundaryTracker::PPCRange_t range, std::set<uint32>& entryAddresses, std::vector<std::pair<MPTR, uint32>>& entryPointsOut, PPCFunctionBoundaryTracker& boundaryTracker)
+PPCRecFunction_t* PPCRecompiler_recompileFunction(PPCFunctionBoundaryTracker::PPCRange_t range, std::span<const uint32> entryAddresses, std::vector<std::pair<MPTR, uint32>>& entryPointsOut, PPCFunctionBoundaryTracker& boundaryTracker)
 {
 	if (range.startAddress >= PPC_REC_CODE_AREA_END)
 	{
@@ -207,6 +207,7 @@ PPCRecFunction_t* PPCRecompiler_recompileFunction(PPCFunctionBoundaryTracker::PP
 
 	// generate intermediate code
 	ppcImlGenContext_t ppcImlGenContext = { 0 };
+	ppcImlGenContext.segmentList2 = IMLScratchVector<IMLSegment*>::Take(); // given back by its destructor
 	ppcImlGenContext.debug_entryPPCAddress = range.startAddress;
 	bool compiledSuccessfully = PPCRecompiler_generateIntermediateCode(ppcImlGenContext, ppcRecFunc, entryAddresses, boundaryTracker);
 	if (compiledSuccessfully == false || ppcImlGenContext.tooManyRegisters)
@@ -383,7 +384,15 @@ static void PPCRecompiler_storeFunction(PPCRecFunction_t* func)
 	for (auto& r : func->list_ranges)
 	{
 		const size_t n = rec_store_nodes(&s_ppcRecompilerState.store, r.ppcAddress, r.ppcAddress + r.ppcSize);
-		rec_node_t* nodes = new rec_node_t[n];
+		rec_node_t* nodes;
+		if (n <= ppcRecRange_t::kInlineNodes)
+		{
+			nodes = r.InlineNodes();
+			for (size_t i = 0; i < n; i++)
+				new (nodes + i) rec_node_t();
+		}
+		else
+			nodes = new rec_node_t[n];
 		rec_store_insert(&s_ppcRecompilerState.store, nodes, func, r.ppcAddress, r.ppcAddress + r.ppcSize);
 		r.storedRange = nodes;
 	}
@@ -405,6 +414,13 @@ static void PPCRecompiler_unstoreFunction(PPCRecFunction_t* func)
 
 static void PPCRecompiler_freeNodes(rec_node_t* first, void*)
 {
+	// a range's own nodes go with its function
+	const PPCRecFunction_t* func = (const PPCRecFunction_t*)first->obj;
+	for (const auto& r : func->list_ranges)
+	{
+		if (first == r.InlineNodes())
+			return;
+	}
 	delete[] first;
 }
 
@@ -502,10 +518,11 @@ void PPCRecompiler_recompileAtAddress(uint32 address)
 	// todo - use info from previously compiled ranges to determine full size of this function (and merge all the entryAddresses)
 
 	// collect all currently known entry points for this range
-	std::set<uint32> entryAddresses;
-	entryAddresses.emplace(address);
+	// (sorted, as the code generator searches them)
+	const uint32 entryAddresses[1] = { address };
 
-	std::vector<std::pair<MPTR, uint32>> functionEntryPoints;
+	IMLScratch<std::pair<MPTR, uint32>> functionEntryPointsScratch;
+	std::vector<std::pair<MPTR, uint32>>& functionEntryPoints = functionEntryPointsScratch.v;
 	PPCRecFunction_t* func = PPCRecompiler_recompileFunction(range, entryAddresses, functionEntryPoints, funcBoundaries);
 	if (!func)
 		return; // recompilation failed
@@ -769,15 +786,17 @@ void PPCRecompiler_Shutdown()
         PPCRecFunction_t* func;
         while (lf_ring_pop(&s_ppcRecompilerState.dead, &func))
             ;
+        for (func = s_ppcRecompilerState.allFunctions; func; func = func->nextFunction)
+            PPCRecompiler_unstoreFunction(func);
+        // the nodes first: a function holds some of them, and they say whose
+        rec_store_collect(&s_ppcRecompilerState.store, PPCRecompiler_freeNodes, nullptr);
         for (func = s_ppcRecompilerState.allFunctions; func;)
         {
             PPCRecFunction_t* next = func->nextFunction;
-            PPCRecompiler_unstoreFunction(func);
             delete func;
             func = next;
         }
         s_ppcRecompilerState.allFunctions = nullptr;
-        rec_store_collect(&s_ppcRecompilerState.store, PPCRecompiler_freeNodes, nullptr);
     }
 #if defined(ARCH_X86_64)
     PPCRecompilerX64Gen_rewindCodeMemory();

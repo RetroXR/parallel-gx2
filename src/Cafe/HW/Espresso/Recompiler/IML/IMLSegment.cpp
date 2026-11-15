@@ -1,5 +1,52 @@
 #include "IMLInstruction.h"
 #include "IMLSegment.h"
+#include "IMLScratch.h"
+
+#include <new>
+
+// the compiling thread's segments, freed with it
+struct IMLSegmentPool
+{
+	std::vector<IMLSegment*> free;
+	~IMLSegmentPool()
+	{
+		for (IMLSegment* seg : free)
+			delete seg;
+	}
+};
+
+static IMLSegmentPool& SegmentPool()
+{
+	thread_local IMLSegmentPool s_pool;
+	return s_pool;
+}
+
+IMLSegment* IMLSegment_New()
+{
+	IMLSegmentPool& pool = SegmentPool();
+	if (pool.free.empty())
+		return new IMLSegment();
+	IMLSegment* seg = pool.free.back();
+	pool.free.pop_back();
+	return seg;
+}
+
+void IMLSegment_Free(IMLSegment* seg)
+{
+	// as new, but for the capacity of its vectors
+	std::vector<IMLInstruction> imlList = std::move(seg->imlList);
+	std::vector<IMLSegment*> prevSegments = std::move(seg->list_prevSegments);
+	std::vector<IMLSegment*> deadCodeHintBy = std::move(seg->list_deadCodeHintBy);
+	imlList.clear();
+	prevSegments.clear();
+	deadCodeHintBy.clear();
+	seg->~IMLSegment();
+	new (seg) IMLSegment();
+	seg->imlList = std::move(imlList);
+	seg->list_prevSegments = std::move(prevSegments);
+	seg->list_deadCodeHintBy = std::move(deadCodeHintBy);
+	SegmentPool().free.push_back(seg);
+}
 
 void IMLSegment::SetEnterable(uint32 enterAddress)
 {

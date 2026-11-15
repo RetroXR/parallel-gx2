@@ -12,9 +12,9 @@ bool PPCRecompiler_decodePPCInstruction(ppcImlGenContext_t* ppcImlGenContext);
 
 struct PPCBasicBlockInfo
 {
-	PPCBasicBlockInfo(uint32 startAddress, const std::set<uint32>& entryAddresses) : startAddress(startAddress), lastAddress(startAddress)
+	PPCBasicBlockInfo(uint32 startAddress, std::span<const uint32> entryAddresses) : startAddress(startAddress), lastAddress(startAddress)
 	{
-		isEnterable = entryAddresses.find(startAddress) != entryAddresses.end();
+		isEnterable = std::binary_search(entryAddresses.begin(), entryAddresses.end(), startAddress);
 	}
 
 	uint32 startAddress;
@@ -1930,7 +1930,7 @@ IMLInstruction* PPCRecompiler_appendInstruction(IMLSegment* imlSegment)
 
 IMLSegment* PPCRecompilerIml_appendSegment(ppcImlGenContext_t* ppcImlGenContext)
 {
-	IMLSegment* segment = new IMLSegment();
+	IMLSegment* segment = IMLSegment_New();
 	ppcImlGenContext->segmentList2.emplace_back(segment);
 	return segment;
 }
@@ -1939,7 +1939,7 @@ void PPCRecompilerIml_insertSegments(ppcImlGenContext_t* ppcImlGenContext, sint3
 {
 	ppcImlGenContext->segmentList2.insert(ppcImlGenContext->segmentList2.begin() + index, count, nullptr);
 	for (sint32 i = 0; i < count; i++)
-		ppcImlGenContext->segmentList2[index + i] = new IMLSegment();
+		ppcImlGenContext->segmentList2[index + i] = IMLSegment_New();
 }
 
 bool PPCRecompiler_decodePPCInstruction(ppcImlGenContext_t* ppcImlGenContext)
@@ -2897,7 +2897,7 @@ bool PPCRecompiler_CheckIfInstructionEndsSegment(PPCFunctionBoundaryTracker& bou
 	return false;
 }
 
-void PPCRecompiler_DetermineBasicBlockRange(std::vector<PPCBasicBlockInfo>& basicBlockList, PPCFunctionBoundaryTracker& boundaryTracker, uint32 ppcStart, uint32 ppcEnd, const std::set<uint32>& combinedBranchTargets, const std::set<uint32>& entryAddresses)
+void PPCRecompiler_DetermineBasicBlockRange(std::vector<PPCBasicBlockInfo>& basicBlockList, PPCFunctionBoundaryTracker& boundaryTracker, uint32 ppcStart, uint32 ppcEnd, std::span<const uint32> entryAddresses)
 {
 	cemu_assert_debug(ppcStart <= ppcEnd);
 
@@ -2930,7 +2930,8 @@ void PPCRecompiler_DetermineBasicBlockRange(std::vector<PPCBasicBlockInfo>& basi
 		currentAddr += 4;
 		if (currentAddr <= ppcEnd)
 		{
-			if (combinedBranchTargets.find(currentAddr) != combinedBranchTargets.end())
+			// a branch target or an entry point
+			if (boundaryTracker.IsBranchTarget(currentAddr) || std::binary_search(entryAddresses.begin(), entryAddresses.end(), currentAddr))
 			{
 				// instruction is branch target, start new basic block
 				curBlockInfo = &basicBlockList.emplace_back(currentAddr, entryAddresses);
@@ -2940,25 +2941,18 @@ void PPCRecompiler_DetermineBasicBlockRange(std::vector<PPCBasicBlockInfo>& basi
 	}
 }
 
-std::vector<PPCBasicBlockInfo> PPCRecompiler_DetermineBasicBlockRange(PPCFunctionBoundaryTracker& boundaryTracker, const std::set<uint32>& entryAddresses)
+// entryAddresses sorted
+void PPCRecompiler_DetermineBasicBlockRange(std::vector<PPCBasicBlockInfo>& basicBlockList, PPCFunctionBoundaryTracker& boundaryTracker, std::span<const uint32> entryAddresses)
 {
 	cemu_assert(!entryAddresses.empty());
-	std::vector<PPCBasicBlockInfo> basicBlockList;
-
-	const std::set<uint32> branchTargets = boundaryTracker.GetBranchTargets();
-	auto funcRanges = boundaryTracker.GetRanges();
-
-	std::set<uint32> combinedBranchTargets = branchTargets;
-	combinedBranchTargets.insert(entryAddresses.begin(), entryAddresses.end());
-
-	for (auto& funcRangeIt : funcRanges)
-		PPCRecompiler_DetermineBasicBlockRange(basicBlockList, boundaryTracker, funcRangeIt.startAddress, funcRangeIt.startAddress + funcRangeIt.length - 4, combinedBranchTargets, entryAddresses);
+	for (auto& funcRangeIt : boundaryTracker.GetRanges())
+		PPCRecompiler_DetermineBasicBlockRange(basicBlockList, boundaryTracker, funcRangeIt.startAddress, funcRangeIt.startAddress + funcRangeIt.length - 4, entryAddresses);
 
 	// mark all segments that start at entryAddresses as enterable (debug code for verification, can be removed)
 	size_t numMarkedEnterable = 0;
 	for (auto& basicBlockIt : basicBlockList)
 	{
-		if (entryAddresses.find(basicBlockIt.startAddress) != entryAddresses.end())
+		if (std::binary_search(entryAddresses.begin(), entryAddresses.end(), basicBlockIt.startAddress))
 		{
 			cemu_assert_debug(basicBlockIt.isEnterable);
 			numMarkedEnterable++;
@@ -2967,8 +2961,6 @@ std::vector<PPCBasicBlockInfo> PPCRecompiler_DetermineBasicBlockRange(PPCFunctio
 	cemu_assert_debug(numMarkedEnterable == entryAddresses.size());
 
 	// todo - inline BL, currently this is done in the instruction handler of BL but this will mean that instruction cycle increasing is ignored
-
-	return basicBlockList;
 }
 
 bool PPCIMLGen_FillBasicBlock(ppcImlGenContext_t& ppcImlGenContext, PPCBasicBlockInfo& basicBlockInfo)
@@ -3118,14 +3110,17 @@ void PPCRecompiler_SetSegmentsUncertainFlow(ppcImlGenContext_t& ppcImlGenContext
 	}
 }
 
-bool PPCRecompiler_GenerateIML(ppcImlGenContext_t& ppcImlGenContext, PPCFunctionBoundaryTracker& boundaryTracker, std::set<uint32>& entryAddresses)
+bool PPCRecompiler_GenerateIML(ppcImlGenContext_t& ppcImlGenContext, PPCFunctionBoundaryTracker& boundaryTracker, std::span<const uint32> entryAddresses)
 {
-	std::vector<PPCBasicBlockInfo> basicBlockList = PPCRecompiler_DetermineBasicBlockRange(boundaryTracker, entryAddresses);
+	IMLScratch<PPCBasicBlockInfo> basicBlockScratch;
+	std::vector<PPCBasicBlockInfo>& basicBlockList = basicBlockScratch.v;
+	PPCRecompiler_DetermineBasicBlockRange(basicBlockList, boundaryTracker, entryAddresses);
 
 	// create segments
 	// start address to block, sorted and searched (one allocation, where a
 	// hash map allocated a node per block)
-	std::vector<std::pair<uint32, PPCBasicBlockInfo*>> addrToBB;
+	IMLScratch<std::pair<uint32, PPCBasicBlockInfo*>> addrToBBScratch;
+	std::vector<std::pair<uint32, PPCBasicBlockInfo*>>& addrToBB = addrToBBScratch.v;
 	addrToBB.reserve(basicBlockList.size());
 	auto findBB = [&addrToBB](uint32 addr) -> PPCBasicBlockInfo* {
 		auto it = std::lower_bound(addrToBB.begin(), addrToBB.end(), addr, [](const std::pair<uint32, PPCBasicBlockInfo*>& e, uint32 a) { return e.first < a; });
@@ -3135,7 +3130,7 @@ bool PPCRecompiler_GenerateIML(ppcImlGenContext_t& ppcImlGenContext, PPCFunction
 	for (size_t i = 0; i < basicBlockList.size(); i++)
 	{
 		PPCBasicBlockInfo& basicBlockInfo = basicBlockList[i];
-		IMLSegment* seg = new IMLSegment();
+		IMLSegment* seg = IMLSegment_New();
 		seg->ppcAddress = basicBlockInfo.startAddress;
 		if(basicBlockInfo.isEnterable)
 			seg->SetEnterable(basicBlockInfo.startAddress);
@@ -3288,7 +3283,7 @@ bool PPCRecompiler_GenerateIML(ppcImlGenContext_t& ppcImlGenContext, PPCFunction
 	return true;
 }
 
-bool PPCRecompiler_generateIntermediateCode(ppcImlGenContext_t& ppcImlGenContext, PPCRecFunction_t* ppcRecFunc, std::set<uint32>& entryAddresses, PPCFunctionBoundaryTracker& boundaryTracker)
+bool PPCRecompiler_generateIntermediateCode(ppcImlGenContext_t& ppcImlGenContext, PPCRecFunction_t* ppcRecFunc, std::span<const uint32> entryAddresses, PPCFunctionBoundaryTracker& boundaryTracker)
 {
 	ppcImlGenContext.boundaryTracker = &boundaryTracker;
 	if (!PPCRecompiler_GenerateIML(ppcImlGenContext, boundaryTracker, entryAddresses))
@@ -3296,7 +3291,7 @@ bool PPCRecompiler_generateIntermediateCode(ppcImlGenContext_t& ppcImlGenContext
 
 	// set range
 	// todo - support non-continuous functions for the range tracking?
-	ppcRecRange_t recRange;
+	ppcRecRange_t recRange{};
 	recRange.ppcAddress = ppcRecFunc->ppcAddress;
 	recRange.ppcSize = ppcRecFunc->ppcSize;
 	ppcRecFunc->list_ranges.push_back(recRange);

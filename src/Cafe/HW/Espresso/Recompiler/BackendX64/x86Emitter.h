@@ -77,6 +77,8 @@ public:
 	// most functions' code fits, where growing a byte at a time reallocated
 	// over and over
 	x86Assembler64() { m_buffer.reserve(16 * 1024); }
+	// empty, the buffer's storage kept for the next function
+	void Reset() { m_buffer.clear(); }
 
 	u8* GetBufferPtr() { return m_buffer.data(); };
 	std::span<u8> GetBuffer() { return m_buffer; };

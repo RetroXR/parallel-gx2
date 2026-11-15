@@ -1,5 +1,6 @@
 #pragma once
 #include <boost/container/small_vector.hpp>
+#include "Cafe/HW/Espresso/Recompiler/rec_store.h"
 
 #define PPC_REC_CODE_AREA_START		(0x00000000) // lower bound of executable memory area. Recompiler expects this address to be 0
 #define PPC_REC_CODE_AREA_END		(0x10000000) // upper bound of executable memory area
@@ -14,6 +15,12 @@ struct ppcRecRange_t
 	uint32 ppcAddress;
 	uint32 ppcSize;
 	void* storedRange;
+	// room for the store's nodes for a range across as few buckets as most
+	// are, kept here rather than allocated (constructed when stored)
+	static constexpr size_t kInlineNodes = 2;
+	alignas(rec_node_t) unsigned char inlineNodeStorage[kInlineNodes * sizeof(rec_node_t)];
+	rec_node_t* InlineNodes() { return reinterpret_cast<rec_node_t*>(inlineNodeStorage); }
+	const rec_node_t* InlineNodes() const { return reinterpret_cast<const rec_node_t*>(inlineNodeStorage); }
 };
 
 struct PPCRecFunction_t
@@ -30,7 +37,7 @@ struct PPCRecFunction_t
 	uint32 ppcSize; // ppc code size of function
 	void*  x86Code; // pointer to x86 code
 	size_t x86Size;
-	std::vector<ppcRecRange_t> list_ranges;
+	boost::container::small_vector<ppcRecRange_t, 1> list_ranges; // most functions have one
 	boost::container::small_vector<JumpTableEntry, 2> jumpTableEntries;
 	// ended by an invalidation (or refused): its jump table entries gone
 	std::atomic<bool> dead{false};
@@ -40,6 +47,7 @@ struct PPCRecFunction_t
 
 #include "Cafe/HW/Espresso/Recompiler/IML/IMLInstruction.h"
 #include "Cafe/HW/Espresso/Recompiler/IML/IMLSegment.h"
+#include "Cafe/HW/Espresso/Recompiler/IML/IMLScratch.h"
 
 struct IMLInstruction* PPCRecompilerImlGen_generateNewEmptyInstruction(struct ppcImlGenContext_t* ppcImlGenContext);
 
@@ -130,8 +138,9 @@ struct ppcImlGenContext_t
 	~ppcImlGenContext_t()
 	{
 		for (IMLSegment* imlSegment : segmentList2)
-			delete imlSegment;
+			IMLSegment_Free(imlSegment);
 		segmentList2.clear();
+		IMLScratchVector<IMLSegment*>::Give(std::move(segmentList2));
 	}
 
 	// append raw instruction
@@ -142,7 +151,7 @@ struct ppcImlGenContext_t
 
 	IMLSegment* NewSegment()
 	{
-		IMLSegment* seg = new IMLSegment();
+		IMLSegment* seg = IMLSegment_New();
 		segmentList2.emplace_back(seg);
 		return seg;
 	}
@@ -160,7 +169,7 @@ struct ppcImlGenContext_t
 
 	IMLSegment* InsertSegment(size_t index)
 	{
-		IMLSegment* newSeg = new IMLSegment();
+		IMLSegment* newSeg = IMLSegment_New();
 		segmentList2.insert(segmentList2.begin() + index, 1, newSeg);
 		return newSeg;
 	}
@@ -169,7 +178,7 @@ struct ppcImlGenContext_t
 	{
 		segmentList2.insert(segmentList2.begin() + index, count, {});
 		for (size_t i = index; i < (index + count); i++)
-			segmentList2[i] = new IMLSegment();
+			segmentList2[i] = IMLSegment_New();
 		return { segmentList2.data() + index, count};
 	}
 

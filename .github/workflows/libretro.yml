@@ -849,9 +849,10 @@ jobs:
         # store, reservation and branch instructions compiled on the
         # recompiler's thread and run both ways must agree; its functions are
         # freed and its code memory used again when it shuts down; a compile
-        # allocates under a hundred times (its register sets and maps are
-        # fixed tables); plain, under ASan + UBSan (undefined behaviour fails
-        # it) and under TSan
+        # allocates only the function it makes (its scratch is kept from one
+        # function to the next), and the function boundary tracker agrees
+        # with the one it replaced; plain, under ASan + UBSan (undefined
+        # behaviour fails it) and under TSan
         run: |
           git submodule update --init --depth 1 dependencies/fmt dependencies/glm dependencies/Vulkan-Headers
           JOBS=4 ./test/recompiler/run_tests.sh

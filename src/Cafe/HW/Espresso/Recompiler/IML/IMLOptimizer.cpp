@@ -1,3 +1,4 @@
+#include "IMLScratch.h"
 #include "Cafe/HW/Espresso/Interpreter/PPCInterpreterInternal.h"
 #include "Cafe/HW/Espresso/Recompiler/IML/IML.h"
 #include "Cafe/HW/Espresso/Recompiler/IML/IMLInstruction.h"
@@ -267,6 +268,8 @@ class IMLOptimizerRegIOAnalysis
 	// constructor with segment pointer list as span
 	IMLOptimizerRegIOAnalysis(std::span<IMLSegment*> segmentList, uint32 maxRegId) : m_segmentList(segmentList), m_maxRegId(maxRegId)
 	{
+		// the compiling thread's storage, from one function to the next
+		m_segRegisterInOutList = IMLScratchVector<IMLSegmentRegisterInOut>::Take();
 		m_segRegisterInOutList.resize(segmentList.size());
 	}
 
@@ -324,7 +327,9 @@ class IMLOptimizerRegIOAnalysis
 		// broadcast dependencies across segment chains
 		// a bit per segment, taken lowest first (one allocation, where a hash
 		// set allocated a node per insert)
-		std::vector<uint64> segIdsWhichNeedUpdate((m_segmentList.size() + 63) / 64, ~0ull);
+		IMLScratch<uint64> segIdsScratch;
+		std::vector<uint64>& segIdsWhichNeedUpdate = segIdsScratch.v;
+		segIdsWhichNeedUpdate.assign((m_segmentList.size() + 63) / 64, ~0ull);
 		if (m_segmentList.size() % 64)
 			segIdsWhichNeedUpdate.back() = (1ull << (m_segmentList.size() % 64)) - 1;
 		auto takeLowest = [&segIdsWhichNeedUpdate]() -> sint32 {
@@ -455,6 +460,11 @@ class IMLOptimizerRegIOAnalysis
 
 	std::vector<IMLSegmentRegisterInOut> m_segRegisterInOutList;
 
+  public:
+	~IMLOptimizerRegIOAnalysis()
+	{
+		IMLScratchVector<IMLSegmentRegisterInOut>::Give(std::move(m_segRegisterInOutList));
+	}
 };
 
 // scan backwards starting from index and return the index of the first found instruction which writes to the given register (by id)

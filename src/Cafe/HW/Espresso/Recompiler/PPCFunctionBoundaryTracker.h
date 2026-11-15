@@ -1,10 +1,15 @@
 #pragma once
 #include "Cafe/HW/Espresso/EspressoISA.h"
 #include "Cafe/HW/MMU/MMU.h"
+#include "Cafe/HW/Espresso/Recompiler/IML/IMLScratch.h"
+
+#include <algorithm>
 
 bool GamePatch_IsNonReturnFunction(uint32 hleIndex);
 
-// utility class to determine shape of a function
+// utility class to determine shape of a function. Its ranges and branch
+// targets are sorted vectors, their storage the compiling thread's from one
+// function to the next (IMLScratch.h), where sets allocated a node apiece.
 class PPCFunctionBoundaryTracker
 {
 public:
@@ -21,71 +26,76 @@ public:
 	};
 
 public:
+	PPCFunctionBoundaryTracker()
+		: m_ranges(IMLScratchVector<PPCRange_t>::Take()),
+		  m_queuedBranchTargets(IMLScratchVector<uint32, 1>::Take()),
+		  m_branchTargetsAll(IMLScratchVector<uint32, 2>::Take())
+	{
+	}
+
 	~PPCFunctionBoundaryTracker()
 	{
-		while (!map_ranges.empty())
-		{
-			PPCRange_t* range = *map_ranges.begin();
-			delete range;
-			map_ranges.erase(map_ranges.begin());
-		}
+		IMLScratchVector<PPCRange_t>::Give(std::move(m_ranges));
+		IMLScratchVector<uint32, 1>::Give(std::move(m_queuedBranchTargets));
+		IMLScratchVector<uint32, 2>::Give(std::move(m_branchTargetsAll));
 	}
+
+	PPCFunctionBoundaryTracker(const PPCFunctionBoundaryTracker&) = delete;
+	PPCFunctionBoundaryTracker& operator=(const PPCFunctionBoundaryTracker&) = delete;
 
 	void trackStartPoint(MPTR startAddress)
 	{
-		processRange(startAddress, nullptr, nullptr);
+		processRange(startAddress, -1, -1);
 		processBranchTargets();
 	}
 
 	bool getRangeForAddress(uint32 address, PPCRange_t& range)
 	{
-		for (auto itr : map_ranges)
+		for (const PPCRange_t& r : m_ranges)
 		{
-			if (address >= itr->startAddress && address < (itr->startAddress + itr->length))
+			if (address >= r.startAddress && address < (r.startAddress + r.length))
 			{
-				range = *itr;
+				range = r;
 				return true;
 			}
 		}
 		return false;
 	}
 
-	std::vector<PPCRange_t> GetRanges()
+	// sorted by start address
+	const std::vector<PPCRange_t>& GetRanges() const
 	{
-		std::vector<PPCRange_t> r;
-		for (auto& it : map_ranges)
-			r.emplace_back(*it);
-		return r;
+		return m_ranges;
 	}
 
 	bool ContainsAddress(uint32 addr) const
 	{
-		for (auto& it : map_ranges)
+		for (const PPCRange_t& r : m_ranges)
 		{
-			if (addr >= it->startAddress && addr < it->getEndAddress())
+			if (addr >= r.startAddress && addr < r.getEndAddress())
 				return true;
 		}
 		return false;
 	}
 
-	const std::set<uint32>& GetBranchTargets() const
+	bool IsBranchTarget(uint32 addr) const
 	{
-		return map_branchTargetsAll;
+		return std::binary_search(m_branchTargetsAll.begin(), m_branchTargetsAll.end(), addr);
 	}
 
 private:
-	void addBranchDestination(PPCRange_t* sourceRange, MPTR address)
+	void addBranchDestination(MPTR address)
 	{
 		// data that gets scanned as code can decode as a branch to unmapped memory
 		if (!memory_isAddressRangeAccessible(address, 4))
 			return;
-		map_queuedBranchTargets.emplace(address);
-		map_branchTargetsAll.emplace(address);
+		InsertSorted(m_queuedBranchTargets, address);
+		InsertSorted(m_branchTargetsAll, address);
 	}
 
 	// process flow of instruction
 	// returns false if the IP cannot increment past the current instruction
-	bool processInstruction(PPCRange_t* range, MPTR address)
+	bool processInstruction(MPTR address)
 	{
 		// parse instructions
 		uint32 opcode = memory_readU32(address);
@@ -119,7 +129,7 @@ private:
 			Espresso::decodeOp_BC(opcode, BD, BO, BI, AA, LK);
 			uint32 branchTarget = AA ? BD : BD + address;
 			if (!LK)
-				addBranchDestination(range, branchTarget);
+				addBranchDestination(branchTarget);
 			break;
 		}
 		case Espresso::PrimaryOpcode::B:	
@@ -130,7 +140,7 @@ private:
 			uint32 branchTarget = AA ? LI : LI + address;
 			if (!LK)
 			{
-				addBranchDestination(range, branchTarget);
+				addBranchDestination(branchTarget);
 				// if the next two or previous two instructions are branch instructions, we assume that they are destinations of a jump table
 				// todo - can we make this more reliable by checking for BCTR or similar instructions first?
 				// example: The Swapper 0x01B1FC04
@@ -192,58 +202,61 @@ private:
 	{
 #ifdef CEMU_DEBUG_ASSERT
 		uint32 endOfPrevious = 0;
-		for (auto itr : map_ranges)
+		for (const PPCRange_t& r : m_ranges)
 		{
-			if (endOfPrevious > itr->startAddress)
+			if (endOfPrevious > r.startAddress)
 			{
 				cemu_assert_debug(false);
 			}
-			endOfPrevious = itr->startAddress + itr->length;
+			endOfPrevious = r.startAddress + r.length;
 		}
 #endif
 	}
 
-	// nextRange must point to the closest range after startAddress, or NULL if there is none
-	void processRange(MPTR startAddress, PPCRange_t* previousRange, PPCRange_t* nextRange)
+	// nextRange is the index of the closest range after startAddress, or -1
+	// if there is none; previousRange that of the one it extends, or -1
+	void processRange(MPTR startAddress, sint32 previousRange, sint32 nextRange)
 	{
 		checkForCollisions();
-		cemu_assert_debug(previousRange == nullptr || (startAddress == (previousRange->startAddress + previousRange->length)));
-		PPCRange_t* newRange;
-		if (previousRange && (previousRange->startAddress + previousRange->length) == startAddress)
+		cemu_assert_debug(previousRange < 0 || (startAddress == m_ranges[previousRange].getEndAddress()));
+		sint32 cur;
+		if (previousRange >= 0 && m_ranges[previousRange].getEndAddress() == startAddress)
 		{
-			newRange = previousRange;
+			cur = previousRange;
 		}
 		else
 		{
-			cemu_assert_debug(previousRange == nullptr);
-			newRange = new PPCRange_t(startAddress);
-			map_ranges.emplace(newRange);
+			cemu_assert_debug(previousRange < 0);
+			auto it = std::lower_bound(m_ranges.begin(), m_ranges.end(), startAddress, [](const PPCRange_t& r, uint32 a) { return r.startAddress < a; });
+			cur = (sint32)(it - m_ranges.begin());
+			m_ranges.insert(it, PPCRange_t(startAddress));
+			if (nextRange >= cur)
+				nextRange++;
 		}
 		// process instruction flow until it is interrupted by a non-conditional branch
 		MPTR currentAddress = startAddress;
 		MPTR endAddress = 0xFFFFFFFF;
-		if (nextRange)
-			endAddress = nextRange->startAddress;
+		if (nextRange >= 0)
+			endAddress = m_ranges[nextRange].startAddress;
 		// don't scan past the end of the mapped region
 		if (MMURange* mmuRange = memory_getMMURangeByAddress(startAddress); mmuRange && mmuRange->getEnd() < endAddress)
 			endAddress = mmuRange->getEnd();
 		while (currentAddress < endAddress)
 		{
-			if (!processInstruction(newRange, currentAddress))
+			if (!processInstruction(currentAddress))
 			{
 				currentAddress += 4;
 				break;
 			}
 			currentAddress += 4;
 		}
-		newRange->length = currentAddress - newRange->startAddress;
+		m_ranges[cur].length = currentAddress - m_ranges[cur].startAddress;
 
-		if (nextRange && currentAddress >= nextRange->startAddress)
+		if (nextRange >= 0 && currentAddress >= m_ranges[nextRange].startAddress)
 		{
 			// merge with next range
-			newRange->length = (nextRange->startAddress + nextRange->length) - newRange->startAddress;
-			map_ranges.erase(nextRange);
-			delete nextRange;
+			m_ranges[cur].length = m_ranges[nextRange].getEndAddress() - m_ranges[cur].startAddress;
+			m_ranges.erase(m_ranges.begin() + nextRange);
 			checkForCollisions();
 			return;
 		}
@@ -254,40 +267,39 @@ private:
 	// return true if method should be called again
 	bool processBranchTargetsSinglePass()
 	{
-		cemu_assert_debug(!map_ranges.empty());
-		auto rangeItr = map_ranges.begin();
-
-		PPCRange_t* previousRange = nullptr;
-		for (std::set<uint32_t>::const_iterator targetItr = map_queuedBranchTargets.begin() ; targetItr != map_queuedBranchTargets.end(); )
+		cemu_assert_debug(!m_ranges.empty());
+		size_t rangeIdx = 0;
+		sint32 previousRange = -1;
+		for (size_t targetIdx = 0; targetIdx < m_queuedBranchTargets.size(); )
 		{
-			while (rangeItr != map_ranges.end() && ((*rangeItr)->startAddress + (*rangeItr)->length) <= (*targetItr))
+			const uint32 target = m_queuedBranchTargets[targetIdx];
+			while (rangeIdx < m_ranges.size() && m_ranges[rangeIdx].getEndAddress() <= target)
 			{
-				previousRange = *rangeItr;
-				rangeItr++;
-				if (rangeItr == map_ranges.end())
+				previousRange = (sint32)rangeIdx;
+				rangeIdx++;
+				if (rangeIdx == m_ranges.size())
 				{
 					// last range reached
-					if ((previousRange->startAddress + previousRange->length) == *targetItr)
-						processRange(*targetItr, previousRange, nullptr);
+					if (m_ranges[previousRange].getEndAddress() == target)
+						processRange(target, previousRange, -1);
 					else
-						processRange(*targetItr, nullptr, nullptr);
+						processRange(target, -1, -1);
 					return true;
 				}
 			}
 
-			if ((*targetItr) >= (*rangeItr)->startAddress &&
-				(*targetItr) < ((*rangeItr)->startAddress + (*rangeItr)->length))
+			if (target >= m_ranges[rangeIdx].startAddress && target < m_ranges[rangeIdx].getEndAddress())
 			{
 				// delete visited targets
-				targetItr = map_queuedBranchTargets.erase(targetItr);
+				m_queuedBranchTargets.erase(m_queuedBranchTargets.begin() + targetIdx);
 				continue;
 			}
 
-			cemu_assert_debug((*rangeItr)->startAddress > (*targetItr));
-			if (previousRange && (previousRange->startAddress + previousRange->length) == *targetItr)
-				processRange(*targetItr, previousRange, *rangeItr); // extend previousRange
+			cemu_assert_debug(m_ranges[rangeIdx].startAddress > target);
+			if (previousRange >= 0 && m_ranges[previousRange].getEndAddress() == target)
+				processRange(target, previousRange, (sint32)rangeIdx); // extend previousRange
 			else
-				processRange(*targetItr, nullptr, *rangeItr);
+				processRange(target, -1, (sint32)rangeIdx);
 			return true;
 		}
 		return false;
@@ -296,6 +308,13 @@ private:
 	void processBranchTargets()
 	{
 		while (processBranchTargetsSinglePass());
+	}
+
+	static void InsertSorted(std::vector<uint32>& v, uint32 value)
+	{
+		auto it = std::lower_bound(v.begin(), v.end(), value);
+		if (it == v.end() || *it != value)
+			v.insert(it, value);
 	}
 
 	private:
@@ -324,15 +343,7 @@ private:
 	}
 
 private:
-	struct RangePtrCmp
-	{
-		bool operator()(const PPCRange_t* lhs, const PPCRange_t* rhs) const
-		{
-			return lhs->startAddress < rhs->startAddress;
-		}
-	};
-
-	std::set<PPCRange_t*, RangePtrCmp> map_ranges;
-	std::set<uint32> map_queuedBranchTargets;
-	std::set<uint32> map_branchTargetsAll;
+	std::vector<PPCRange_t> m_ranges; // sorted by start, not overlapping
+	std::vector<uint32> m_queuedBranchTargets; // sorted
+	std::vector<uint32> m_branchTargetsAll; // sorted
 };

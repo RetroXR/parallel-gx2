@@ -17,14 +17,27 @@ struct x64GenContext_t
 	x86Assembler64* emitter;
 	sint32 m_currentInstructionEmitIndex;
 
+	// the emitter and the relocations are the compiling thread's, emptied for
+	// each function and their storage kept (IMLScratch.h)
 	x64GenContext_t()
 	{
-		emitter = new x86Assembler64();
+		emitter = &ThreadEmitter();
+		emitter->Reset();
+		relocateOffsetTable2 = IMLScratchVector<x64RelocEntry_t>::Take();
 	}
 
 	~x64GenContext_t()
 	{
-		delete emitter;
+		IMLScratchVector<x64RelocEntry_t>::Give(std::move(relocateOffsetTable2));
+	}
+
+	x64GenContext_t(const x64GenContext_t&) = delete;
+	x64GenContext_t& operator=(const x64GenContext_t&) = delete;
+
+	static x86Assembler64& ThreadEmitter()
+	{
+		thread_local x86Assembler64 s_emitter;
+		return s_emitter;
 	}
 
 	IMLInstruction* GetNextInstruction(sint32 relativeIndex = 1)

@@ -316,9 +316,11 @@ struct raLivenessRange
 	// processing
 	uint32 lastIterationIndex;
 	// instruction read/write locations
-	std::vector<raAccessLocation> list_accessLocations;
+	// inline for as many as most ranges have: a range comes from a pool and
+	// goes back to it, and its lists are not allocated on the way
+	boost::container::small_vector<raAccessLocation, 8> list_accessLocations;
 	// ordered list of all raInstructionEdge indices which require a fixed register
-	std::vector<raFixedRegRequirement> list_fixedRegRequirements;
+	boost::container::small_vector<raFixedRegRequirement, 2> list_fixedRegRequirements;
 	// linked list (subranges with same GPR virtual register)
 	raLivenessSubrangeLink link_sameVirtualRegister;
 	// linked list (all subranges for this segment)

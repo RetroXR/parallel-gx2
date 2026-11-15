@@ -4,6 +4,7 @@
 #include "../PPCRecompilerIml.h"
 #include "IMLRegisterAllocator.h"
 #include "IMLRegisterAllocatorRanges.h"
+#include "IMLScratch.h"
 
 #include "../BackendX64/BackendX64.h"
 #ifdef __aarch64__
@@ -41,8 +42,18 @@ struct IMLRegisterAllocatorContext
 	ppcImlGenContext_t* deprGenContext; // deprecated. Try to decouple IMLRA from other parts of IML/PPCRec
 
 	IMLRegIdMap<IMLRegFormat> regIdToBaseFormat;
-	// first pass
-	std::vector<IMLRegIdMap<IMLRARegAbstractLiveness>> perSegmentAbstractRanges;
+	// first pass (the compiling thread's storage, from one function to the
+	// next: IMLScratch.h)
+	std::vector<IMLRegIdMap<IMLRARegAbstractLiveness>> perSegmentAbstractRanges = IMLScratchVector<IMLRegIdMap<IMLRARegAbstractLiveness>>::Take();
+
+	IMLRegisterAllocatorContext() = default;
+	IMLRegisterAllocatorContext(const IMLRegisterAllocatorContext&) = delete;
+	IMLRegisterAllocatorContext& operator=(const IMLRegisterAllocatorContext&) = delete;
+	~IMLRegisterAllocatorContext()
+	{
+		perSegmentAbstractRanges.clear();
+		IMLScratchVector<IMLRegIdMap<IMLRARegAbstractLiveness>>::Give(std::move(perSegmentAbstractRanges));
+	}
 
 	// helper methods
 	inline IMLRegIdMap<IMLRARegAbstractLiveness>& GetSegmentAbstractRangeMap(IMLSegment* imlSegment)
@@ -535,9 +546,10 @@ struct raFixedRegRequirementWithVGPR
 	IMLRegID regId;
 };
 
-std::vector<raFixedRegRequirementWithVGPR> IMLRA_BuildSegmentInstructionFixedRegList(IMLSegment* imlSegment)
+// into frrList, emptied first
+void IMLRA_BuildSegmentInstructionFixedRegList(IMLSegment* imlSegment, std::vector<raFixedRegRequirementWithVGPR>& frrList)
 {
-	std::vector<raFixedRegRequirementWithVGPR> frrList;
+	frrList.clear();
 	size_t index = 0;
 	while (index < imlSegment->imlList.size())
 	{
@@ -556,7 +568,6 @@ std::vector<raFixedRegRequirementWithVGPR> IMLRA_BuildSegmentInstructionFixedReg
 		}
 		index++;
 	}
-	return frrList;
 }
 
 boost::container::small_vector<raLivenessRange*, 8> IMLRA_GetRangeWithFixedRegReservationOverlappingPos(IMLSegment* imlSegment, raInstructionEdge pos, IMLPhysReg physReg)
@@ -614,8 +625,12 @@ void IMLRA_HandleFixedRegisters(ppcImlGenContext_t* ppcImlGenContext, IMLSegment
 		cemu_assert_unimplemented();
 	}
 	// third pass - assign fixed registers, split ranges if needed
-	std::vector<raFixedRegRequirementWithVGPR> frr = IMLRA_BuildSegmentInstructionFixedRegList(imlSegment);
-	std::unordered_map<IMLPhysReg, IMLRegID> lastVGPR;
+	IMLScratch<raFixedRegRequirementWithVGPR> frrScratch;
+	std::vector<raFixedRegRequirementWithVGPR>& frr = frrScratch.v;
+	IMLRA_BuildSegmentInstructionFixedRegList(imlSegment, frr);
+	// the virtual register last seen per physical one (of the 64 a set holds)
+	std::array<IMLRegID, 64> lastVGPR;
+	std::array<bool, 64> hasLastVGPR{};
 	for (size_t i = 0; i < frr.size(); i++)
 	{
 		raFixedRegRequirementWithVGPR& entry = frr[i];
@@ -626,12 +641,12 @@ void IMLRA_HandleFixedRegisters(ppcImlGenContext_t* ppcImlGenContext, IMLSegment
 		{
 			// check if the assigned vGPR has changed
 			bool vgprHasChanged = false;
-			auto it = lastVGPR.find(physReg);
-			if (it != lastVGPR.end())
-				vgprHasChanged = it->second != entry.regId;
+			if (hasLastVGPR[physReg])
+				vgprHasChanged = lastVGPR[physReg] != entry.regId;
 			else
 				vgprHasChanged = true;
 			lastVGPR[physReg] = entry.regId;
+			hasLastVGPR[physReg] = true;
 
 			if (!vgprHasChanged)
 				continue;
@@ -1663,17 +1678,19 @@ void PPCRecRA_mergeCloseRangesForSegmentV2(IMLRegisterAllocatorContext& ctx, IML
 
 void PPCRecRA_followFlowAndExtendRanges(IMLRegisterAllocatorContext& ctx, IMLSegment* imlSegment)
 {
-	std::vector<IMLSegment*> list_segments;
-	std::vector<bool> list_processedSegment;
+	IMLScratch<IMLSegment*, 1> listSegmentsScratch;
+	IMLScratch<uint8> listProcessedScratch;
+	std::vector<IMLSegment*>& list_segments = listSegmentsScratch.v;
+	std::vector<uint8>& list_processedSegment = listProcessedScratch.v;
 	size_t segmentCount = ctx.deprGenContext->segmentList2.size();
 	list_segments.reserve(segmentCount + 1);
 	list_processedSegment.resize(segmentCount);
 
 	auto markSegProcessed = [&list_processedSegment](IMLSegment* seg) {
-		list_processedSegment[seg->momentaryIndex] = true;
+		list_processedSegment[seg->momentaryIndex] = 1;
 	};
 	auto isSegProcessed = [&list_processedSegment](IMLSegment* seg) -> bool {
-		return list_processedSegment[seg->momentaryIndex];
+		return list_processedSegment[seg->momentaryIndex] != 0;
 	};
 	markSegProcessed(imlSegment);
 
@@ -1965,9 +1982,9 @@ void IMLRA_GenerateSegmentMoveInstructions2(IMLRegisterAllocatorContext& ctx, IM
 
 	bool hadSuffixInstruction = imlSegment->HasSuffixInstruction();
 
-	std::vector<IMLInstruction> rebuiltInstructions;
-	// the segment's own and room for the loads and stores the ranges add,
-	// rather than grown a few times over
+	// the compiling thread's, from one segment to the next: the segment's
+	// own list goes back as the next one's scratch
+	std::vector<IMLInstruction> rebuiltInstructions = IMLScratchVector<IMLInstruction>::Take();
 	rebuiltInstructions.reserve(imlSegment->imlList.size() * 2 + 16);
 	sint32 numInstructionsWithoutSuffix = (sint32)imlSegment->imlList.size() - (imlSegment->HasSuffixInstruction() ? 1 : 0);
 
@@ -1993,7 +2010,7 @@ void IMLRA_GenerateSegmentMoveInstructions2(IMLRegisterAllocatorContext& ctx, IM
 			}
 			currentRange = currentRange->link_allSegmentRanges.next;
 		}
-		imlSegment->imlList = std::move(rebuiltInstructions);
+		{ std::swap(imlSegment->imlList, rebuiltInstructions); IMLScratchVector<IMLInstruction>::Give(std::move(rebuiltInstructions)); }
 		return;
 	}
 
@@ -2122,7 +2139,7 @@ void IMLRA_GenerateSegmentMoveInstructions2(IMLRegisterAllocatorContext& ctx, IM
 		}
 	}
 
-	imlSegment->imlList = std::move(rebuiltInstructions);
+	{ std::swap(imlSegment->imlList, rebuiltInstructions); IMLScratchVector<IMLInstruction>::Give(std::move(rebuiltInstructions)); }
 	cemu_assert_debug(hadSuffixInstruction == imlSegment->HasSuffixInstruction());
 
 #if DEBUG_RA_INSTRUCTION_GEN
@@ -2144,7 +2161,8 @@ void IMLRA_GenerateMoveInstructions(IMLRegisterAllocatorContext& ctx)
 static void DbgVerifyFixedRegRequirements(IMLSegment* imlSegment)
 {
 #if DEBUG_RA_EXTRA_VALIDATION
-	std::vector<raFixedRegRequirementWithVGPR> frr = IMLRA_BuildSegmentInstructionFixedRegList(imlSegment);
+	std::vector<raFixedRegRequirementWithVGPR> frr;
+	IMLRA_BuildSegmentInstructionFixedRegList(imlSegment, frr);
 	for(auto& fixedReq : frr)
 	{
 		for (raLivenessRange* range = imlSegment->raInfo.linkedList_allSubranges; range; range = range->link_allSegmentRanges.next)

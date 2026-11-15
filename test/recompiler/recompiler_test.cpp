@@ -11,6 +11,8 @@
 #include "Cafe/HW/Espresso/PPCState.h"
 #include "Cafe/HW/Espresso/Recompiler/PPCRecompiler.h"
 #include "Cafe/HW/Espresso/Recompiler/IML/IMLRegIdMap.h"
+#include "Cafe/HW/Espresso/Recompiler/PPCFunctionBoundaryTracker.h"
+#include "boundary_tracker_ref.h"
 #include "Cafe/HW/MMU/MMU.h"
 #include "util/MemMapper/MemMapper.h"
 
@@ -260,6 +262,10 @@ struct RunStats
 	uint32 refused = 0;
 	uint64 allocationsTotal = 0;
 	uint64 allocationsMax = 0;
+	// once the first hundred compiles have grown the recompiler's scratch
+	uint32 warmCompiled = 0;
+	uint64 warmTotal = 0;
+	uint64 warmMax = 0;
 };
 
 static uint32 s_nextFunction = 0;
@@ -314,6 +320,12 @@ static bool RunOne(const std::vector<uint32>& body, uint32 seed, RunStats& stats
 	s_lastCode = fn;
 	stats.allocationsTotal += used;
 	stats.allocationsMax = std::max(stats.allocationsMax, used);
+	if (stats.compiled > 100)
+	{
+		stats.warmCompiled++;
+		stats.warmTotal += used;
+		stats.warmMax = std::max(stats.warmMax, used);
+	}
 
 	static State interp, rec;
 	Setup(interp.cpu, entry, seed);
@@ -433,6 +445,88 @@ static void TestRegIdContainers()
 	CHECK(names->find(0xFFFFFFF0u) == nullptr);
 }
 
+// The function boundary tracker, now on sorted vectors from the recompiler
+// thread's scratch, against the set-based one it replaced
+// (boundary_tracker_ref.h): random code with forward and backward branches,
+// conditional ones, calls, returns, switch jumps and holes, from several
+// start points - the same ranges, the same branch targets, every address in
+// the same range
+static void TestBoundaryTracker()
+{
+	constexpr uint32 kArea = kCodeBase + 0x200000;
+	constexpr uint32 kWords = 1024;
+	std::mt19937 rng(4242);
+	uint32 rangesSeen = 0;
+	for (int round = 0; round < 300; round++)
+	{
+		const uint32 words = 64 + rng() % (kWords - 64);
+		for (uint32 i = 0; i < kWords; i++)
+		{
+			const uint32 at = kArea + i * 4;
+			if (i >= words)
+			{
+				Put(at, 0);
+				continue;
+			}
+			const uint32 pick = rng() % 100;
+			// a target within the area, up to 64 instructions away
+			const sint32 delta = ((sint32)(rng() % 129) - 64) * 4;
+			sint32 target = (sint32)(i * 4) + delta;
+			target = std::clamp<sint32>(target, 0, (sint32)(words - 1) * 4);
+			const uint32 rel = (uint32)(target - (sint32)(i * 4));
+			uint32 op;
+			if (pick < 50)
+				op = D(14, rng() % 32, rng() % 32, rng());
+			else if (pick < 60)
+				op = 0x60000000; // nop
+			else if (pick < 68)
+				op = (18u << 26) | (rel & 0x03FFFFFC); // b
+			else if (pick < 71)
+				op = (18u << 26) | (rel & 0x03FFFFFC) | 1; // bl
+			else if (pick < 83)
+				op = (16u << 26) | (12u << 21) | ((rng() % 32) << 16) | (rel & 0xFFFC); // bc
+			else if (pick < 88)
+				op = 0x4E800020; // blr
+			else if (pick < 91)
+				op = 0x4E800420; // bctr
+			else if (pick < 94)
+				op = 0; // a hole
+			else
+				op = X(rng() % 32, rng() % 32, rng() % 32, 266); // add
+			Put(at, op);
+		}
+		const uint32 start = kArea + (rng() % words) * 4;
+		PPCFunctionBoundaryTracker tracker;
+		PPCFunctionBoundaryTrackerRef ref;
+		tracker.trackStartPoint(start);
+		ref.trackStartPoint(start);
+		const std::vector<PPCFunctionBoundaryTrackerRef::PPCRange_t> refRanges = ref.GetRanges();
+		const std::vector<PPCFunctionBoundaryTracker::PPCRange_t>& ranges = tracker.GetRanges();
+		CHECK(ranges.size() == refRanges.size());
+		for (size_t i = 0; i < std::min(ranges.size(), refRanges.size()); i++)
+		{
+			CHECK(ranges[i].startAddress == refRanges[i].startAddress);
+			CHECK(ranges[i].length == refRanges[i].length);
+		}
+		rangesSeen += (uint32)ranges.size();
+		for (uint32 at = kArea - 0x100; at < kArea + kWords * 4 + 0x100; at += 4)
+		{
+			CHECK(tracker.IsBranchTarget(at) == (ref.GetBranchTargets().count(at) != 0));
+			PPCFunctionBoundaryTracker::PPCRange_t r{};
+			PPCFunctionBoundaryTrackerRef::PPCRange_t rr{};
+			const bool found = tracker.getRangeForAddress(at, r);
+			CHECK(found == ref.getRangeForAddress(at, rr));
+			if (found)
+				CHECK(r.startAddress == rr.startAddress && r.length == rr.length);
+			CHECK(tracker.ContainsAddress(at) == ref.ContainsAddress(at));
+		}
+	}
+	// the code above has holes: functions of more than one range came up
+	CHECK(rangesSeen > 300);
+	for (uint32 i = 0; i < kWords; i++)
+		Put(kArea + i * 4, 0);
+}
+
 int main()
 {
 	memory_base = (uint8*)MemMapper::ReserveMemory(nullptr, (size_t)0x100000000ull, MemMapper::PAGE_PERMISSION::P_RW);
@@ -443,6 +537,7 @@ int main()
 	CHECK(MemMapper::AllocateMemory(memory_base + kCodeBase, kCodeSize, MemMapper::PAGE_PERMISSION::P_RW, true) != nullptr);
 	CHECK(MemMapper::AllocateMemory(memory_base + kDataBase, kDataSize + 0x1000, MemMapper::PAGE_PERMISSION::P_RW, true) != nullptr);
 	TestRegIdContainers();
+	TestBoundaryTracker();
 	std::mt19937 drng(12345);
 	for (auto& b : s_dataInit)
 		b = (uint8)drng();
@@ -476,15 +571,20 @@ int main()
 		if (!RunOne(code, f, stats, "mixed"))
 			failures++;
 	}
-	std::printf("recompiler: %u functions compiled and run both ways, %u left to the interpreter; a compile (with its marker's) allocated %.1f times on average, %llu at most\n",
-		stats.compiled, stats.refused, stats.compiled ? (double)stats.allocationsTotal / stats.compiled : 0.0, (unsigned long long)stats.allocationsMax);
-	// A compile runs while a title plays: its register sets and maps are
-	// fixed tables and its scratch and code buffer are reserved up front, so
-	// it allocates under a hundred times rather than hundreds (722 on average and 3853 at most, when
-	// each register id had a hash node)
-	CHECK(stats.compiled > 0);
-	CHECK(stats.allocationsTotal <= 92 * (uint64)stats.compiled);
+	std::printf("recompiler: %u functions compiled and run both ways, %u left to the interpreter; a compile (with its marker's) allocated %.1f times on average, %llu at most; after the first hundred %.2f, %llu at most\n",
+		stats.compiled, stats.refused, stats.compiled ? (double)stats.allocationsTotal / stats.compiled : 0.0, (unsigned long long)stats.allocationsMax,
+		stats.warmCompiled ? (double)stats.warmTotal / stats.warmCompiled : 0.0, (unsigned long long)stats.warmMax);
+	// A compile runs while a title plays. Its register sets and maps are
+	// fixed tables, and every other piece of its scratch - the segments, their
+	// instruction lists, the boundary tracker's ranges and targets, the
+	// emitter's buffer - is the recompiler thread's, kept from one function
+	// to the next: once the first compiles have grown it, a function allocates
+	// only itself (its PPCRecFunction, with its store nodes inside), where it
+	// allocated 722 times on average and 3853 at most
+	CHECK(stats.compiled > 100);
+	CHECK(stats.allocationsTotal <= 6 * (uint64)stats.compiled);
 	CHECK(stats.allocationsMax <= 400);
+	CHECK(stats.warmTotal <= 5 * (uint64)stats.warmCompiled);
 	// The next title: the recompiler shut down and started again. Its
 	// functions were freed with it (LeakSanitizer sees to that), and its code
 	// memory is filled again from the start - the same first function lands
