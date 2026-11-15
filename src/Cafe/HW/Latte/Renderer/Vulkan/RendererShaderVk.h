@@ -50,6 +50,10 @@ public:
 		list_pipelineInfo.Remove(p);
 	}
 
+	// its pipeline parts made ahead for the render passes and state seen so
+	// far (VulkanPipelineCompiler.cpp): queued once, by the GPU thread
+	struct AheadParts* m_aheadParts{nullptr};
+
 	void PreponeCompilation(bool isRenderThread) override;
 	bool IsCompiled() override;
 	bool WaitForCompiled() override;

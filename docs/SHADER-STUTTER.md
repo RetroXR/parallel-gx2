@@ -287,10 +287,22 @@ both CIs, where any error fails. `test/pipeline_key` checks which part
 each dynamic state goes to, what moves each part's key, and the cache with
 eight threads racing for 4000 keys (each made once; under TSan in CI).
 
-Next: make the parts before a pipeline needs them, so that the first
-pipeline of a new shader links too (the shader's parts for the render
-passes seen so far, on the compile threads, as soon as its module is
-compiled); then the draws async skips.
+Parts are also made before a pipeline needs them. The GPU thread keeps
+the pre-rasterization and fragment shader state of the pipelines it sets
+up as templates (`VulkanPipelinePartTemplates`, the 64 most recently used,
+each keeping its render pass alive), and the first time a shader is in a
+pipeline, a compile thread makes its part for every other template seen so
+far - from its module, once compiled, and the template - so that its first
+pipeline with another render pass or state links what is made
+(`PipelineCompiler::PrepareAheadParts`). A template a job holds is never
+replaced; a shader that goes retires its job. `test/pipeline_key` checks
+that a part made from a template is keyed as its pipeline looks it up, for
+random state, and the table (four threads reading what they hold while it
+is recorded over, under TSan); `test/dynstate` makes a new shader pair's
+parts ahead on lavapipe, and its first pipeline then makes no part and
+draws what the baked pipeline draws, under the validation layer.
+
+Next: the draws async skips.
 
 - **Graphics pipeline libraries** where the device has them
   (`VK_EXT_graphics_pipeline_library`): vertex input, pre-rasterization

@@ -102,3 +102,100 @@ private:
 	std::atomic<size_t> m_count[VULKAN_PIPELINE_LIBRARY_PARTS];
 	FixedList<VkPipeline> m_adopted;
 };
+
+// Parts made ahead (docs/SHADER-STUTTER.md M2): the state of a shader part -
+// the pre-rasterization shaders' or the fragment shader's - taken from a
+// pipeline the renderer made, without its shaders, so that a new shader's
+// part can be made from it on a compile thread before a pipeline needs it,
+// one per render pass and state seen so far. Copies, with no pointer into
+// the pipeline it came from.
+struct VulkanPipelinePartTemplate
+{
+	VulkanPipelineLibraryPart part; // PRE_RASTERIZATION or FRAGMENT_SHADER
+	uint64 key; // the part's key with no shaders, which tells templates apart
+	uint64 renderPassHash;
+	VkRenderPass renderPass;
+	uint32 subpass;
+	uint32 dynamicCount;
+	VkDynamicState dynamic[32]; // the part's own
+	VkPipelineViewportStateCreateInfo viewport;
+	VkViewport viewports[1];
+	VkRect2D scissors[1];
+	VkPipelineRasterizationStateCreateInfo rasterizer;
+	VkPipelineRasterizationDepthClipStateCreateInfoEXT depthClip;
+	bool hasDepthClip;
+	VkPipelineDepthStencilStateCreateInfo depthStencil;
+	VkPipelineMultisampleStateCreateInfo multisample;
+	VkSampleMask sampleMask;
+	bool hasSampleMask;
+};
+// The template of part in full; false for a part with no template (vertex
+// input, fragment output) or state it cannot copy (more than one viewport,
+// an unknown structure chained to the rasterizer)
+bool VulkanPipelineLibrary_Template(VulkanPipelineLibraryPart part, const VkGraphicsPipelineCreateInfo& full,
+	uint64 renderPassHash, VulkanPipelinePartTemplate& out);
+
+// A pipeline's create info as a template and a shader stage make it: what
+// VulkanPipelineLibrary_Key and _Create take for the part. stage: the
+// part's shader (the vertex shader, no geometry shader, for
+// pre-rasterization), null for none; next: what is chained to the pipeline
+// (robust buffer access)
+struct VulkanPipelinePartAhead
+{
+	VkGraphicsPipelineCreateInfo full;
+	VkPipelineShaderStageCreateInfo stage;
+	VkPipelineDynamicStateCreateInfo dynamicState;
+	VkPipelineViewportStateCreateInfo viewport;
+	VkPipelineRasterizationStateCreateInfo rasterizer;
+	VkPipelineRasterizationDepthClipStateCreateInfoEXT depthClip;
+	VkPipelineDepthStencilStateCreateInfo depthStencil;
+	VkPipelineMultisampleStateCreateInfo multisample;
+};
+void VulkanPipelineLibrary_FromTemplate(const VulkanPipelinePartTemplate& t, const VkPipelineShaderStageCreateInfo* stage,
+	const void* next, VulkanPipelinePartAhead& out);
+
+// The templates seen so far: a fixed table of the most recently used, which
+// the GPU thread records into and takes from, and the compile threads read
+// the slots they were given. A slot given out is not replaced until every
+// job given it has dropped it. The render pass a template was made with is
+// kept alive by the slot (retain and release, on the recording thread).
+class VulkanPipelinePartTemplates
+{
+public:
+	static constexpr uint32 kSlots = 64;
+	using RetainFn = void (*)(void* owner, bool retain);
+
+	explicit VulkanPipelinePartTemplates(RetainFn retain) : m_retain(retain) {}
+	~VulkanPipelinePartTemplates() { Clear(); }
+	VulkanPipelinePartTemplates(const VulkanPipelinePartTemplates&) = delete;
+	VulkanPipelinePartTemplates& operator=(const VulkanPipelinePartTemplates&) = delete;
+
+	// The recording thread's: the template seen again, or kept in a free
+	// slot or the least recently used one no job holds; false when every
+	// slot is held
+	bool Record(const VulkanPipelinePartTemplate& t, void* owner);
+	// The recording thread's: the slots of a part's templates, but the one
+	// keyed skipKey, each held by the caller until it drops them
+	uint64 Take(VulkanPipelineLibraryPart part, uint64 skipKey);
+	// Any thread's, for a slot it holds
+	const VulkanPipelinePartTemplate& Get(uint32 slot) const { return m_slots[slot].t; }
+	// Any thread's: the slots let go of
+	void Drop(uint64 slots);
+	// The recording thread's, with no slot held: every template forgotten
+	void Clear();
+	uint32 Count() const;
+	uint32 Held(uint32 slot) const { return m_slots[slot].users.load(std::memory_order_acquire); }
+
+private:
+	struct Slot
+	{
+		VulkanPipelinePartTemplate t{};
+		void* owner{};
+		uint64 lastUse{};
+		bool used{};
+		std::atomic<uint32> users{0};
+	};
+	Slot m_slots[kSlots];
+	uint64 m_clock{0};
+	RetainFn m_retain;
+};

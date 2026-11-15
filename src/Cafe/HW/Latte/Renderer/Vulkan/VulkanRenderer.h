@@ -673,6 +673,9 @@ private:
 	VkPipelineCache m_pipeline_cache{ nullptr };
 	// the parts of pipelines made so far, with graphics pipeline libraries
 	std::unique_ptr<VulkanPipelineLibraryCache> m_pipelineLibraries;
+	// the parts' state seen so far, for a new shader's parts made ahead
+	// (PipelineCompiler::PrepareAheadParts); with m_pipelineLibraries
+	std::unique_ptr<VulkanPipelinePartTemplates> m_partTemplates;
 	std::unordered_map<uint64, VkDescriptorSet> m_backbufferBlitDescriptorSetCache;
 	VkPipelineLayout m_pipelineLayout{nullptr};
 	VkCommandPool m_commandPool{ nullptr };

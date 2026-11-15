@@ -408,12 +408,20 @@ static void DestroyContext(Context& c)
 // libraries: linked from parts as the renderer links them (the state left
 // to the draw then), the parts kept in the cache under their keys, or made
 // for this pipeline alone and adopted by it (adopt)
+// identity: the parts' (the renderer's for this test's shaders by default);
+// templates: the shader parts' templates taken from the pipeline
+// (VulkanPipelineLibrary_Template), pre-rasterization then fragment shader;
+// made: counts the parts made for it
 struct Libraries
 {
 	VulkanPipelineLibraryCache* cache;
 	bool optimize;
 	bool adopt;
+	const VulkanPipelineLibraryIdentity* identity = nullptr;
+	VulkanPipelinePartTemplate* templates = nullptr;
+	int* made = nullptr;
 };
+static const VulkanPipelineLibraryIdentity kIdentity{0x1111, 0, 0x2222, 0x3333, false};
 static VkPipeline MakePipeline(const Context& c, const LatteContextRegister& lcr, const VertexLayout& layout, bool dynamicState,
 	const Libraries* libraries = nullptr)
 {
@@ -523,7 +531,12 @@ static VkPipeline MakePipeline(const Context& c, const LatteContextRegister& lcr
 	// the renderer's identity of the parts: the shaders by hash, the render
 	// pass by compatibility
 	gp.layout = c.libraryLayout;
-	const VulkanPipelineLibraryIdentity identity{0x1111, 0, 0x2222, 0x3333, false};
+	const VulkanPipelineLibraryIdentity identity = libraries->identity ? *libraries->identity : kIdentity;
+	if (libraries->templates)
+	{
+		CHECK(VulkanPipelineLibrary_Template(VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION, gp, identity.renderPass, libraries->templates[0]));
+		CHECK(VulkanPipelineLibrary_Template(VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER, gp, identity.renderPass, libraries->templates[1]));
+	}
 	VkPipeline parts[VULKAN_PIPELINE_LIBRARY_PARTS]{};
 	for (int i = 0; i < VULKAN_PIPELINE_LIBRARY_PARTS; i++)
 	{
@@ -542,9 +555,39 @@ static VkPipeline MakePipeline(const Context& c, const LatteContextRegister& lcr
 		CHECK(libraries->cache->Claim(part, key));
 		VKCHECK(VulkanPipelineLibrary_Create(c.device, VK_NULL_HANDLE, part, gp, partLayout, &parts[i]));
 		libraries->cache->Publish(part, key, parts[i]);
+		if (libraries->made)
+			(*libraries->made)++;
 	}
 	VKCHECK(VulkanPipelineLibrary_Link(c.device, VK_NULL_HANDLE, parts, c.libraryLayout, libraries->optimize, &p));
 	return p;
+}
+
+// A new shader's parts made ahead from templates, as
+// PipelineCompiler::BuildAheadParts makes them: its pre-rasterization part
+// (identity's vertex shader) and fragment shader part (its pixel shader).
+// Returns how many it made.
+static int MakeAhead(const Context& c, VulkanPipelineLibraryCache& cache, const VulkanPipelinePartTemplate templates[2],
+	const VulkanPipelineLibraryIdentity& identity)
+{
+	int made = 0;
+	for (int i = 0; i < 2; i++)
+	{
+		const VulkanPipelinePartTemplate& t = templates[i];
+		VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+		stage.stage = t.part == VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT;
+		stage.module = t.part == VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION ? c.vs : c.fs;
+		stage.pName = "main";
+		VulkanPipelinePartAhead ahead;
+		VulkanPipelineLibrary_FromTemplate(t, &stage, nullptr, ahead);
+		const uint64 key = VulkanPipelineLibrary_Key(t.part, ahead.full, identity);
+		VkPipeline library;
+		if (cache.Find(t.part, key, library) != VulkanPipelineLibraryCache::State::Missing || !cache.Claim(t.part, key))
+			continue;
+		VKCHECK(VulkanPipelineLibrary_Create(c.device, VK_NULL_HANDLE, t.part, ahead.full, c.libraryLayout, &library));
+		cache.Publish(t.part, key, library);
+		made++;
+	}
+	return made;
 }
 
 // four overlapping triangles over a cleared depth and stencil, drawn with
@@ -821,6 +864,53 @@ int main()
 			cache->Count(VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER), cache->Count(VULKAN_PIPELINE_LIBRARY_FRAGMENT_OUTPUT));
 		for (int p = 0; p < VULKAN_PIPELINE_LIBRARY_PARTS; p++)
 			CHECK(cache->Count((VulkanPipelineLibraryPart)p) == 1);
+
+
+		// Parts made ahead (docs/SHADER-STUTTER.md M2): for states baked in
+		// and left to the draw, the shader parts' templates taken from a
+		// pipeline with the shaders the game had, a new shader pair's parts
+		// made from them before any pipeline needs them; that pair's first
+		// pipeline then makes no part, only links, and draws what the baked
+		// pipeline draws
+		int aheadStates = 0, aheadMade = 0, madeAtDraw = 0, aheadDiffering = 0;
+		for (int i = 0; i < 40; i++)
+		{
+			std::memset(lcr.get(), 0, sizeof(LatteContextRegister));
+			RandomState(rng, *lcr);
+			const bool dynamicState = i % 2 == 0;
+			// a pipeline without a pixel shader takes no fragment template
+			if (!dynamicState && VulkanPipelineKey_Rasterizer(*lcr).rasterizerDiscardEnable)
+				continue;
+			auto layout = std::make_unique<VertexLayout>();
+			RandomLayout(rng, *lcr, *layout, c.vertexData);
+			VulkanPipelinePartTemplate templates[2];
+			const VulkanPipelineLibraryIdentity seen{0x1111, 0, 0x2222, 0x3333, false};
+			const VulkanPipelineLibraryIdentity fresh{0xA000 + (uint64)i, 0, 0xB000 + (uint64)i, 0x3333, false};
+			Libraries record{cache.get(), false, false, &seen, templates};
+			VkPipeline first = MakePipeline(c, *lcr, *layout, dynamicState, &record);
+			vkDestroyPipeline(c.device, first, nullptr);
+			aheadMade += MakeAhead(c, *cache, templates, fresh);
+			int made = 0;
+			Libraries later{cache.get(), false, false, &fresh, nullptr, &made};
+			VkPipeline linked = MakePipeline(c, *lcr, *layout, dynamicState, &later);
+			VkPipeline baked = MakePipeline(c, *lcr, *layout, false);
+			if (Draw(c, linked, *lcr, *layout, dynamicState, true) != Draw(c, baked, *lcr, *layout, false))
+			{
+				if (aheadDiffering++ < 5)
+					std::printf("FAIL: state %d draws differently linked from parts made ahead\n", i);
+			}
+			vkDestroyPipeline(c.device, linked, nullptr);
+			vkDestroyPipeline(c.device, baked, nullptr);
+			madeAtDraw += made;
+			aheadStates++;
+		}
+		std::printf("parts made ahead for %d new shader pairs: %d made ahead, %d made at their first pipeline, %d draw differently\n",
+			aheadStates, aheadMade, madeAtDraw, aheadDiffering);
+		CHECK(aheadStates > 10);
+		CHECK(aheadMade == 2 * aheadStates);
+		CHECK(madeAtDraw == 0);
+		s_failures += aheadDiffering;
+
 		// the parts last, every pipeline linked from them gone
 		cache->DestroyAll(c.device);
 		adopted->DestroyAll(c.device);

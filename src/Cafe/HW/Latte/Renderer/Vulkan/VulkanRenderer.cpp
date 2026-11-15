@@ -431,7 +431,17 @@ VulkanRenderer::VulkanRenderer(VkInstance instance, VkPhysicalDevice physDevice,
 	// runs.
 	RendererShaderVk::Init();                    // shaders
 	if (m_featureControl.deviceExtensions.graphics_pipeline_library)
+	{
 		m_pipelineLibraries = std::make_unique<VulkanPipelineLibraryCache>();
+		// a template keeps the render pass it was made with alive
+		m_partTemplates = std::make_unique<VulkanPipelinePartTemplates>([](void* owner, bool retain) {
+			VKRObjectRenderPass* renderPass = (VKRObjectRenderPass*)owner;
+			if (retain)
+				renderPass->incRef();
+			else
+				renderPass->decRef();
+		});
+	}
 	PipelineCompiler::CompileThreadPool_Start(); // pipelines
 	cemuLog_log(LogType::Force, "VulkanRenderer (libretro shared device) initialized successfully");
 }
@@ -711,6 +721,9 @@ VulkanRenderer::~VulkanRenderer()
 		vkDestroyDebugUtilsMessengerEXT(m_instance, m_debugCallback, nullptr);
 	}
 
+	// the render passes the parts' templates kept
+	if (m_partTemplates)
+		m_partTemplates->Clear();
 	while (m_destructionQueueSize.load(std::memory_order_relaxed) != 0)
 		ProcessDestructionQueue();
 	// the pipelines' parts, once no pipeline linked from them is left

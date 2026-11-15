@@ -126,6 +126,16 @@ public:
 	// a job for a compile thread that only builds a prepared pipeline
 	PreparedPipeline::Ticket* m_preparedTicket{};
 
+	// The GPU thread's, for a pipeline it set up (InitFromCurrentGPUState):
+	// its pre-rasterization and fragment shader state kept as templates, and
+	// for a shader of it seen for the first time, its parts for the other
+	// templates queued for the compile threads (docs/SHADER-STUTTER.md M2)
+	void PrepareAheadParts(PipelineInfo* pipelineInfo);
+	// a shader's, as it goes: not made if not started, waited for if under way
+	static void RetireAheadParts(struct AheadParts* ahead);
+	// a compile thread's: the parts made
+	static void BuildAheadParts(struct AheadParts* ahead, bool onCompileThread);
+
 private:
 	bool CompileFromLibraries(const VkGraphicsPipelineCreateInfo& full, bool forceCompile, bool isRenderThread);
 public:

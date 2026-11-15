@@ -1,4 +1,5 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/RendererShaderVk.h"
+#include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
 #include "config/ActiveSettings.h"
@@ -100,6 +101,9 @@ RendererShaderVk::RendererShaderVk(ShaderType type, uint64 baseHash, uint64 auxH
 
 RendererShaderVk::~RendererShaderVk()
 {
+	// first: a compile thread making them may be compiling this shader
+	if (m_aheadParts)
+		PipelineCompiler::RetireAheadParts(m_aheadParts);
 	if (m_ticket)
 	{
 		// Never compiled: the queue lets go of the ticket without touching this.

@@ -22,6 +22,12 @@
 //    leaves out exactly what its dynamic states make the draw's, and the
 //    lock-free cache of parts gives each key to one maker however many
 //    threads race for it;
+//  - parts made ahead (docs/SHADER-STUTTER.md M2): a shader part's template
+//    taken from a pipeline makes, with another shader, the very key that
+//    shader's pipeline with the same state looks its part up by, for random
+//    state; state a template cannot copy is refused; the table of templates
+//    keeps one per state, the most recently used, never replaces one a job
+//    holds, and lets every render pass it kept go;
 //  - a new pipeline's descriptor set bindings and dynamic states, built in
 //    place, are what the vectors built before (the reference below) for
 //    every resource mapping and every set of dynamic state, and building
@@ -32,6 +38,7 @@
 #include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.h"
 
 #include <atomic>
+#include <bit>
 #include <cstdio>
 #include <cstdlib>
 #include <new>
@@ -164,6 +171,249 @@ static bool SameBinding(const VkDescriptorSetLayoutBinding& a, const VkDescripto
 {
 	return a.binding == b.binding && a.descriptorType == b.descriptorType && a.descriptorCount == b.descriptorCount &&
 		a.stageFlags == b.stageFlags && a.pImmutableSamplers == b.pImmutableSamplers;
+}
+
+// a pipeline's create info with random state of every kind a part keys on
+struct RandomPipeline
+{
+	VkGraphicsPipelineCreateInfo full{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+	VkPipelineShaderStageCreateInfo stages[2]{};
+	VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+	VkViewport viewport{};
+	VkRect2D scissor{};
+	VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+	VkPipelineRasterizationDepthClipStateCreateInfoEXT clip{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT};
+	VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+	VkSampleMask mask{};
+	VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+	VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+	VkPipelineDynamicStateCreateInfo dyn{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+	VkDynamicState states[VULKAN_PIPELINE_MAX_DYNAMIC_STATES];
+
+	RandomPipeline(std::mt19937& rng, VkShaderModule vs, VkShaderModule fs)
+	{
+		auto bit = [&] { return (VkBool32)(rng() & 1); };
+		stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vs, "main"};
+		stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fs, "main"};
+		full.stageCount = 2;
+		full.pStages = stages;
+		viewport = {0, 0, (float)(rng() % 1280), (float)(rng() % 720), 0, 1};
+		scissor = {{0, 0}, {(uint32)(rng() % 1280), (uint32)(rng() % 720)}};
+		vp.viewportCount = vp.scissorCount = 1;
+		if (bit())
+		{
+			vp.pViewports = &viewport;
+			vp.pScissors = &scissor;
+		}
+		rs.depthClampEnable = bit();
+		rs.rasterizerDiscardEnable = bit();
+		rs.polygonMode = bit() ? VK_POLYGON_MODE_FILL : VK_POLYGON_MODE_FILL_RECTANGLE_NV;
+		rs.cullMode = rng() % 4;
+		rs.frontFace = (VkFrontFace)(rng() % 2);
+		rs.depthBiasEnable = bit();
+		rs.depthBiasConstantFactor = (float)(rng() % 8);
+		rs.lineWidth = 1.0f + (rng() % 2);
+		clip.depthClipEnable = bit();
+		if (bit())
+			rs.pNext = &clip;
+		ms.rasterizationSamples = bit() ? VK_SAMPLE_COUNT_1_BIT : VK_SAMPLE_COUNT_4_BIT;
+		ms.alphaToCoverageEnable = bit();
+		mask = rng();
+		if (bit())
+			ms.pSampleMask = &mask;
+		ds.depthTestEnable = bit();
+		ds.depthWriteEnable = bit();
+		ds.depthCompareOp = (VkCompareOp)(rng() % 8);
+		ds.stencilTestEnable = bit();
+		ds.front = {(VkStencilOp)(rng() % 8), (VkStencilOp)(rng() % 8), (VkStencilOp)(rng() % 8), (VkCompareOp)(rng() % 8), (uint32)(rng() & 0xFF), (uint32)(rng() & 0xFF), (uint32)(rng() & 0xFF)};
+		ds.back = {(VkStencilOp)(rng() % 8), (VkStencilOp)(rng() % 8), (VkStencilOp)(rng() % 8), (VkCompareOp)(rng() % 8), (uint32)(rng() & 0xFF), (uint32)(rng() & 0xFF), (uint32)(rng() & 0xFF)};
+		dyn.dynamicStateCount = VulkanPipelineKey_DynamicStates(rng() % 32, rng() % 8, states);
+		dyn.pDynamicStates = states;
+		// the viewport and scissor baked in too (the renderer's are dynamic)
+		if (bit())
+		{
+			dyn.pDynamicStates = states + 2;
+			dyn.dynamicStateCount -= 2;
+		}
+		full.pViewportState = &vp;
+		full.pRasterizationState = &rs;
+		full.pMultisampleState = &ms;
+		full.pDepthStencilState = &ds;
+		full.pColorBlendState = &cb;
+		full.pDynamicState = &dyn;
+		full.renderPass = (VkRenderPass)(uintptr_t)(0x100 + rng() % 4);
+	}
+};
+
+static void TestPartTemplates()
+{
+	std::mt19937 rng(77);
+	const VulkanPipelineLibraryPart parts[2] = {VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION, VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER};
+	uint32 compared = 0, mismatched = 0, emptyMismatched = 0;
+	for (uint32 it = 0; it < 4000; it++)
+	{
+		// the state as the game left it, with the shaders it had; and the
+		// same state with a new shader, whose part is made ahead
+		const VkShaderModule vs = (VkShaderModule)(uintptr_t)0x10, fs = (VkShaderModule)(uintptr_t)0x20;
+		const VkShaderModule newVs = (VkShaderModule)(uintptr_t)0x30, newFs = (VkShaderModule)(uintptr_t)0x40;
+		std::mt19937 replay = rng;
+		RandomPipeline seen(rng, vs, fs);
+		RandomPipeline later(replay, newVs, newFs);
+		const uint64 renderPassHash = 0x5000 + (uint64)(uintptr_t)seen.full.renderPass;
+		const bool robust = it & 1;
+		for (VulkanPipelineLibraryPart part : parts)
+		{
+			VulkanPipelinePartTemplate t;
+			CHECK(VulkanPipelineLibrary_Template(part, seen.full, renderPassHash, t));
+			const bool pre = part == VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION;
+			VulkanPipelineLibraryIdentity identity{pre ? 0x777ull + it : 0, 0, pre ? 0 : 0x999ull + it, renderPassHash, robust};
+			VulkanPipelineLibraryIdentity none{0, 0, 0, renderPassHash, false};
+			if (t.key != VulkanPipelineLibrary_Key(part, seen.full, none))
+				emptyMismatched++;
+			VulkanPipelinePartAhead ahead;
+			VulkanPipelinePartTemplate copy = t; // as the table keeps it
+			VulkanPipelineLibrary_FromTemplate(copy, &later.stages[pre ? 0 : 1], nullptr, ahead);
+			if (VulkanPipelineLibrary_Key(part, ahead.full, identity) != VulkanPipelineLibrary_Key(part, later.full, identity))
+				mismatched++;
+			CHECK(ahead.full.stageCount == 1 && ahead.full.pStages[0].module == (pre ? newVs : newFs));
+			compared++;
+		}
+	}
+	std::printf("part templates: %u parts made ahead from random state, %u keyed apart from their pipeline's, %u templates mis-keyed\n",
+		compared, mismatched, emptyMismatched);
+	CHECK(mismatched == 0 && emptyMismatched == 0);
+
+	// what a template cannot copy, refused
+	{
+		RandomPipeline p(rng, VK_NULL_HANDLE, VK_NULL_HANDLE);
+		VulkanPipelinePartTemplate t;
+		CHECK(!VulkanPipelineLibrary_Template(VULKAN_PIPELINE_LIBRARY_VERTEX_INPUT, p.full, 1, t));
+		CHECK(!VulkanPipelineLibrary_Template(VULKAN_PIPELINE_LIBRARY_FRAGMENT_OUTPUT, p.full, 1, t));
+		p.vp.viewportCount = 2;
+		CHECK(!VulkanPipelineLibrary_Template(VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION, p.full, 1, t));
+		p.vp.viewportCount = 1;
+		VkPipelineRasterizationLineStateCreateInfoEXT line{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_LINE_STATE_CREATE_INFO_EXT};
+		p.rs.pNext = &line;
+		CHECK(!VulkanPipelineLibrary_Template(VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION, p.full, 1, t));
+		CHECK(VulkanPipelineLibrary_Template(VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER, p.full, 1, t));
+	}
+
+	// the table: render passes kept as long as a template has them
+	static int s_retained;
+	s_retained = 0;
+	{
+		VulkanPipelinePartTemplates table([](void* owner, bool retain) { s_retained += retain ? 1 : -1; });
+		auto make = [&](VulkanPipelineLibraryPart part, uint64 key) {
+			VulkanPipelinePartTemplate t{};
+			t.part = part;
+			t.key = key;
+			return t;
+		};
+		int owners[200];
+		// one per state, seen again or not
+		CHECK(table.Record(make(VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION, 1), &owners[0]));
+		CHECK(table.Record(make(VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION, 1), &owners[0]));
+		CHECK(table.Record(make(VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER, 1), &owners[1]));
+		CHECK(table.Record(make(VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION, 2), &owners[2]));
+		CHECK(table.Count() == 3 && s_retained == 3);
+		// a part's templates but the pipeline's own, each held
+		const uint64 pre = table.Take(VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION, 2);
+		CHECK(std::popcount(pre) == 1 && table.Get((uint32)std::countr_zero(pre)).key == 1);
+		CHECK(table.Held((uint32)std::countr_zero(pre)) == 1);
+		CHECK(std::popcount(table.Take(VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER, 0)) == 1);
+		// filled past its slots: the least recently used go, the held stay
+		for (int i = 0; i < 200; i++)
+			CHECK(table.Record(make(VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION, 100 + i), &owners[i % 200]));
+		CHECK(table.Count() == VulkanPipelinePartTemplates::kSlots);
+		CHECK(table.Get((uint32)std::countr_zero(pre)).key == 1);
+		bool newestKept = false;
+		for (uint32 i = 0; i < VulkanPipelinePartTemplates::kSlots; i++)
+			newestKept |= table.Get(i).key == 299;
+		CHECK(newestKept);
+		CHECK(s_retained == (int)VulkanPipelinePartTemplates::kSlots);
+		// every slot held: nothing recorded, nothing replaced
+		const uint64 all = table.Take(VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION, 0);
+		uint64 frag = 0;
+		for (uint32 i = 0; i < VulkanPipelinePartTemplates::kSlots; i++)
+			if (table.Get(i).part == VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER)
+				frag |= 1ull << i;
+		table.Take(VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER, 0);
+		CHECK(!table.Record(make(VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION, 5000), &owners[0]));
+		table.Drop(all);
+		table.Drop(pre);
+		table.Drop(frag);
+		table.Drop(frag);
+		CHECK(table.Record(make(VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION, 5000), &owners[0]));
+		CHECK(s_retained == (int)VulkanPipelinePartTemplates::kSlots);
+		table.Clear();
+		CHECK(table.Count() == 0 && s_retained == 0);
+		CHECK(table.Record(make(VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION, 7), &owners[0]));
+	}
+	// and when it goes
+	CHECK(s_retained == 0);
+
+	// compile threads reading and dropping the templates they were given
+	// while the GPU thread records over the rest (under TSan in CI): a held
+	// template is never written
+	{
+		VulkanPipelinePartTemplates table([](void*, bool) {});
+		std::atomic<uint64> handoff[4];
+		for (auto& h : handoff)
+			h.store(0);
+		std::atomic<bool> stop{false};
+		std::atomic<uint32> torn{0};
+		std::vector<std::thread> workers;
+		for (int w = 0; w < 4; w++)
+			workers.emplace_back([&, w] {
+				for (;;)
+				{
+					uint64 slots = handoff[w].exchange(0, std::memory_order_acquire);
+					if (!slots)
+					{
+						if (stop.load())
+							return;
+						std::this_thread::yield();
+						continue;
+					}
+					for (uint64 m = slots; m; m &= m - 1)
+					{
+						const VulkanPipelinePartTemplate& t = table.Get((uint32)std::countr_zero(m));
+						if (t.renderPassHash != t.key * 3)
+							torn++;
+					}
+					table.Drop(slots);
+				}
+			});
+		uint32 handed = 0;
+		for (uint64 i = 1; i <= 20000; i++)
+		{
+			VulkanPipelinePartTemplate t{};
+			t.part = VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION;
+			t.key = i;
+			t.renderPassHash = i * 3;
+			table.Record(t, nullptr);
+			if (i % 16 == 0)
+			{
+				const uint64 slots = table.Take(VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION, 0);
+				uint64 expected = 0;
+				if (handoff[i / 16 % 4].compare_exchange_strong(expected, slots, std::memory_order_release))
+					handed++;
+				else
+					table.Drop(slots);
+			}
+		}
+		stop = true;
+		for (auto& t : workers)
+			t.join();
+		for (auto& h : handoff)
+			table.Drop(h.exchange(0));
+		uint32 held = 0;
+		for (uint32 i = 0; i < VulkanPipelinePartTemplates::kSlots; i++)
+			held += table.Held(i);
+		std::printf("part templates: %u sets handed to 4 threads while recorded over, %u read torn, %u left held\n", handed, torn.load(), held);
+		CHECK(handed > 0 && torn == 0 && held == 0);
+	}
+	std::printf("part templates table: %u slots, render passes all let go\n", VulkanPipelinePartTemplates::kSlots);
 }
 
 static void TestPipelineState()
@@ -930,6 +1180,7 @@ int main()
 		CHECK(d.cullMode == VK_CULL_MODE_FRONT_BIT);
 	}
 	TestPipelineState();
+	TestPartTemplates();
 	if (s_failures)
 	{
 		std::printf("%d failed\n", s_failures);

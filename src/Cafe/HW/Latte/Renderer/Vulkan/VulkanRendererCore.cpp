@@ -155,6 +155,8 @@ PipelineInfo* VulkanRenderer::draw_createGraphicsPipeline(uint32 indexCount)
 	bool requiresRobustBufferAccess = PipelineCompiler::CalcRobustBufferAccessRequirement(vertexShader, pixelShader, geometryShader);
 	pipelineCompiler->InitFromCurrentGPUState(pipelineInfo, LatteGPUState.contextNew, vkFBO->GetRenderPassObj(), requiresRobustBufferAccess);
 	pipelineCompiler->TrackAsCached(vsBaseHash, pipelineHash);
+	if (m_partTemplates && pipelineCompiler->m_renderPassObj)
+		pipelineCompiler->PrepareAheadParts(pipelineInfo);
 
 	// use heuristics based on parameter patterns to determine if the current drawcall is essential (non-skipable)
 	bool allowAsyncCompile = false;

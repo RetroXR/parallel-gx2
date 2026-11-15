@@ -793,6 +793,156 @@ bool PipelineCompiler::CompileFromLibraries(const VkGraphicsPipelineCreateInfo& 
 	return true;
 }
 
+// A shader's parts made ahead (docs/SHADER-STUTTER.md M2): its
+// pre-rasterization part (a vertex shader, no geometry shader) or fragment
+// shader part for each template the GPU thread had seen when it first set up
+// a pipeline with it - the render passes and state other than that
+// pipeline's - so that the shader's first pipeline with one of them links
+// what is made rather than compiling. Built once, by a compile thread, from
+// what the GPU thread took for it; owned by the shader.
+struct AheadParts : PoolNew<AheadParts, 64>
+{
+	RendererShaderVk* shader;
+	VulkanPipelineLibraryPart part;
+	uint64 shaderHash;
+	bool robust;
+	uint64 slots; // the templates', held until built or retired
+	VulkanDescriptorBindings bindings;
+	// last, so that it is retired first
+	PreparedPipeline prepared{&AheadParts::Build, this};
+
+	static VkPipeline Build(void* self, bool onCompileThread)
+	{
+		PipelineCompiler::BuildAheadParts((AheadParts*)self, onCompileThread);
+		return VK_NULL_HANDLE;
+	}
+};
+
+void PipelineCompiler::BuildAheadParts(AheadParts* a, bool onCompileThread)
+{
+	VulkanRenderer* vkRenderer = VulkanRenderer::GetInstance();
+	VulkanPipelinePartTemplates& templates = *vkRenderer->m_partTemplates;
+	const VkDevice device = vkRenderer->m_logicalDevice;
+	if (!a->shader->IsCompiled())
+		a->shader->PreponeCompilation(!onCompileThread);
+	VkShaderModule module = a->shader->GetShaderModule();
+	VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
+	VkPipelineLayout layout = VK_NULL_HANDLE;
+	if (module != VK_NULL_HANDLE)
+	{
+		VkDescriptorSetLayoutCreateInfo setInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+		setInfo.bindingCount = a->bindings.count;
+		setInfo.pBindings = a->bindings.bindings;
+		// the sets as the pipeline compiler lays them out: the vertex
+		// shader's 0, the pixel shader's 1
+		const bool pre = a->part == VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION;
+		VkDescriptorSetLayout sets[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+		VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+		layoutInfo.flags = VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT;
+		layoutInfo.setLayoutCount = 2;
+		layoutInfo.pSetLayouts = sets;
+		if (vkCreateDescriptorSetLayout(device, &setInfo, nullptr, &setLayout) == VK_SUCCESS)
+		{
+			sets[pre ? 0 : 1] = setLayout;
+			if (vkCreatePipelineLayout(device, &layoutInfo, nullptr, &layout) != VK_SUCCESS)
+				layout = VK_NULL_HANDLE;
+		}
+	}
+	if (layout != VK_NULL_HANDLE)
+	{
+		VkPipelineRobustnessCreateInfoEXT robustness{VK_STRUCTURE_TYPE_PIPELINE_ROBUSTNESS_CREATE_INFO_EXT};
+		robustness.storageBuffers = VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_EXT;
+		robustness.uniformBuffers = VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_EXT;
+		robustness.vertexInputs = VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DEVICE_DEFAULT_EXT;
+		robustness.images = VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_DEVICE_DEFAULT_EXT;
+		const void* next = (vkRenderer->m_featureControl.deviceExtensions.pipeline_robustness && a->robust) ? &robustness : nullptr;
+		const VkPipelineShaderStageCreateInfo stage = vkRenderer->CreatePipelineShaderStageCreateInfo(
+			a->part == VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT, module, "main");
+		VulkanPipelineLibraryCache& cache = *vkRenderer->m_pipelineLibraries;
+		for (uint64 slots = a->slots; slots; slots &= slots - 1)
+		{
+			const VulkanPipelinePartTemplate& t = templates.Get((uint32)std::countr_zero(slots));
+			VulkanPipelinePartAhead ahead;
+			VulkanPipelineLibrary_FromTemplate(t, &stage, next, ahead);
+			VulkanPipelineLibraryIdentity identity{};
+			if (a->part == VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION)
+				identity.vertexShader = a->shaderHash;
+			else
+				identity.pixelShader = a->shaderHash;
+			identity.renderPass = t.renderPassHash;
+			identity.robustBufferAccess = a->robust;
+			const uint64 key = VulkanPipelineLibrary_Key(a->part, ahead.full, identity);
+			VkPipeline library = VK_NULL_HANDLE;
+			if (cache.Find(a->part, key, library) != VulkanPipelineLibraryCache::State::Missing || !cache.Claim(a->part, key))
+				continue;
+			PSO_TRACE_SCOPE("pipeline library ahead", key);
+			vkRenderer->m_pipeline_cache_builds.Enter();
+			const VkResult result = VulkanPipelineLibrary_Create(device, vkRenderer->m_pipeline_cache, a->part, ahead.full, layout, &library);
+			vkRenderer->m_pipeline_cache_builds.Leave();
+			cache.Publish(a->part, key, result == VK_SUCCESS ? library : VK_NULL_HANDLE);
+		}
+		vkDestroyPipelineLayout(device, layout, nullptr);
+	}
+	if (setLayout != VK_NULL_HANDLE)
+		vkDestroyDescriptorSetLayout(device, setLayout, nullptr);
+	templates.Drop(a->slots);
+	a->slots = 0;
+}
+
+void PipelineCompiler::RetireAheadParts(AheadParts* ahead)
+{
+	ahead->prepared.Retire();
+	if (!ahead->prepared.IsBuilt())
+		VulkanRenderer::GetInstance()->m_partTemplates->Drop(ahead->slots);
+	delete ahead;
+}
+
+void PipelineCompiler::PrepareAheadParts(PipelineInfo* pipelineInfo)
+{
+	VulkanRenderer* vkRenderer = VulkanRenderer::GetInstance();
+	VulkanPipelinePartTemplates& templates = *vkRenderer->m_partTemplates;
+	// this pipeline's state, kept: what its parts are made from, without
+	// the shaders
+	VkGraphicsPipelineCreateInfo full{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+	full.pViewportState = &viewportState;
+	full.pRasterizationState = &rasterizer;
+	full.pMultisampleState = &multisampling;
+	full.pDepthStencilState = &depthStencilState;
+	full.pDynamicState = &dynamicState;
+	full.renderPass = m_renderPassObj->m_renderPass;
+	const VulkanPipelineLibraryPart parts[2] = {VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION, VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER};
+	uint64 keys[2] = {0, 0};
+	for (int i = 0; i < 2; i++)
+	{
+		VulkanPipelinePartTemplate t;
+		if (!VulkanPipelineLibrary_Template(parts[i], full, m_renderPassObj->m_hashForPipeline, t))
+			continue;
+		keys[i] = t.key;
+		templates.Record(t, m_renderPassObj);
+	}
+	// a shader's first pipeline: its parts for the other templates
+	auto queue = [&](RendererShaderVk* shader, LatteDecompilerShader* decompiled, VulkanPipelineLibraryPart part, uint64 skipKey,
+		VkShaderStageFlags stage) {
+		if (!shader || !decompiled || shader->m_aheadParts)
+			return;
+		const uint64 slots = templates.Take(part, skipKey);
+		if (!slots)
+			return;
+		AheadParts* ahead = new AheadParts();
+		ahead->shader = shader;
+		ahead->part = part;
+		ahead->shaderHash = shader->GetBaseHash() * 0x9E3779B97F4A7C15ull + shader->GetAuxHash() + 1;
+		ahead->robust = m_requestRobustBufferAccess;
+		ahead->slots = slots;
+		VulkanPipelineKey_DescriptorBindings(decompiled->resourceMapping, stage, ahead->bindings);
+		shader->m_aheadParts = ahead;
+		CompileThreadPool_QueuePrepared(ahead->prepared);
+	};
+	if (!m_vkGeometryShader && !m_rectEmulationGS)
+		queue(m_vkVertexShader, pipelineInfo->vertexShader, VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION, keys[0], VK_SHADER_STAGE_VERTEX_BIT);
+	queue(m_vkPixelShader, pipelineInfo->pixelShader, VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER, keys[1], VK_SHADER_STAGE_FRAGMENT_BIT);
+}
+
 // a compile thread's: the parts linked optimized, handed to the GPU thread
 bool PipelineCompiler::LinkOptimized()
 {

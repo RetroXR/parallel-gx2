@@ -467,3 +467,182 @@ size_t VulkanPipelineLibraryCache::Count(VulkanPipelineLibraryPart part) const
 {
 	return m_count[part].load(std::memory_order_relaxed);
 }
+
+// --- parts made ahead ---------------------------------------------------------
+
+bool VulkanPipelineLibrary_Template(VulkanPipelineLibraryPart part, const VkGraphicsPipelineCreateInfo& full,
+	uint64 renderPassHash, VulkanPipelinePartTemplate& out)
+{
+	if (part != VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION && part != VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER)
+		return false;
+	out = VulkanPipelinePartTemplate{};
+	out.part = part;
+	out.renderPassHash = renderPassHash;
+	out.renderPass = full.renderPass;
+	out.subpass = full.subpass;
+	const PartDynamicStates dyn(part, full);
+	if (dyn.count > std::size(out.dynamic))
+		return false;
+	std::copy(dyn.states, dyn.states + dyn.count, out.dynamic);
+	out.dynamicCount = dyn.count;
+	if (part == VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION)
+	{
+		if (!full.pViewportState || !full.pRasterizationState || full.pTessellationState)
+			return false;
+		const VkPipelineViewportStateCreateInfo& vp = *full.pViewportState;
+		if (vp.pNext || vp.viewportCount > 1 || vp.scissorCount > 1)
+			return false;
+		out.viewport = vp;
+		if (vp.pViewports && vp.viewportCount)
+			out.viewports[0] = vp.pViewports[0];
+		if (vp.pScissors && vp.scissorCount)
+			out.scissors[0] = vp.pScissors[0];
+		out.rasterizer = *full.pRasterizationState;
+		out.rasterizer.pNext = nullptr;
+		for (const VkBaseInStructure* ext = (const VkBaseInStructure*)full.pRasterizationState->pNext; ext; ext = ext->pNext)
+		{
+			if (ext->sType != VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT || out.hasDepthClip)
+				return false;
+			out.depthClip = *(const VkPipelineRasterizationDepthClipStateCreateInfoEXT*)ext;
+			out.depthClip.pNext = nullptr;
+			out.hasDepthClip = true;
+		}
+	}
+	else
+	{
+		if (!full.pMultisampleState || full.pMultisampleState->pNext)
+			return false;
+		if (full.pDepthStencilState)
+		{
+			if (full.pDepthStencilState->pNext)
+				return false;
+			out.depthStencil = *full.pDepthStencilState;
+		}
+		out.multisample = *full.pMultisampleState;
+		if (out.multisample.pSampleMask)
+		{
+			out.sampleMask = out.multisample.pSampleMask[0];
+			out.hasSampleMask = true;
+		}
+	}
+	VulkanPipelinePartAhead ahead;
+	VulkanPipelineLibrary_FromTemplate(out, nullptr, nullptr, ahead);
+	const VulkanPipelineLibraryIdentity none{0, 0, 0, renderPassHash, false};
+	out.key = VulkanPipelineLibrary_Key(part, ahead.full, none);
+	return true;
+}
+
+void VulkanPipelineLibrary_FromTemplate(const VulkanPipelinePartTemplate& t, const VkPipelineShaderStageCreateInfo* stage,
+	const void* next, VulkanPipelinePartAhead& out)
+{
+	out = VulkanPipelinePartAhead{};
+	VkGraphicsPipelineCreateInfo& ci = out.full;
+	ci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+	ci.pNext = next;
+	ci.renderPass = t.renderPass;
+	ci.subpass = t.subpass;
+	if (stage)
+	{
+		out.stage = *stage;
+		ci.stageCount = 1;
+		ci.pStages = &out.stage;
+	}
+	out.dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+	out.dynamicState.dynamicStateCount = t.dynamicCount;
+	out.dynamicState.pDynamicStates = t.dynamic;
+	ci.pDynamicState = &out.dynamicState;
+	if (t.part == VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION)
+	{
+		out.viewport = t.viewport;
+		out.viewport.pViewports = t.viewport.pViewports ? t.viewports : nullptr;
+		out.viewport.pScissors = t.viewport.pScissors ? t.scissors : nullptr;
+		out.rasterizer = t.rasterizer;
+		if (t.hasDepthClip)
+		{
+			out.depthClip = t.depthClip;
+			out.rasterizer.pNext = &out.depthClip;
+		}
+		ci.pViewportState = &out.viewport;
+		ci.pRasterizationState = &out.rasterizer;
+	}
+	else
+	{
+		out.depthStencil = t.depthStencil;
+		out.multisample = t.multisample;
+		out.multisample.pSampleMask = t.hasSampleMask ? &t.sampleMask : nullptr;
+		ci.pDepthStencilState = t.depthStencil.sType ? &out.depthStencil : nullptr;
+		ci.pMultisampleState = &out.multisample;
+	}
+}
+
+bool VulkanPipelinePartTemplates::Record(const VulkanPipelinePartTemplate& t, void* owner)
+{
+	m_clock++;
+	Slot* victim = nullptr;
+	for (Slot& slot : m_slots)
+	{
+		if (slot.used && slot.t.part == t.part && slot.t.key == t.key)
+		{
+			slot.lastUse = m_clock;
+			return true;
+		}
+		if (slot.users.load(std::memory_order_acquire) != 0)
+			continue;
+		if (!victim || (victim->used && (!slot.used || slot.lastUse < victim->lastUse)))
+			victim = &slot;
+	}
+	if (!victim)
+		return false;
+	if (victim->used && victim->owner)
+		m_retain(victim->owner, false);
+	victim->t = t;
+	victim->owner = owner;
+	victim->lastUse = m_clock;
+	victim->used = true;
+	if (owner)
+		m_retain(owner, true);
+	return true;
+}
+
+uint64 VulkanPipelinePartTemplates::Take(VulkanPipelineLibraryPart part, uint64 skipKey)
+{
+	uint64 slots = 0;
+	for (uint32 i = 0; i < kSlots; i++)
+	{
+		Slot& slot = m_slots[i];
+		if (!slot.used || slot.t.part != part || slot.t.key == skipKey)
+			continue;
+		slot.users.fetch_add(1, std::memory_order_relaxed);
+		slots |= 1ull << i;
+	}
+	return slots;
+}
+
+void VulkanPipelinePartTemplates::Drop(uint64 slots)
+{
+	while (slots)
+	{
+		const int i = std::countr_zero(slots);
+		slots &= slots - 1;
+		m_slots[i].users.fetch_sub(1, std::memory_order_release);
+	}
+}
+
+void VulkanPipelinePartTemplates::Clear()
+{
+	for (Slot& slot : m_slots)
+	{
+		if (slot.used && slot.owner)
+			m_retain(slot.owner, false);
+		slot.used = false;
+		slot.owner = nullptr;
+	}
+}
+
+uint32 VulkanPipelinePartTemplates::Count() const
+{
+	uint32 n = 0;
+	for (const Slot& slot : m_slots)
+		n += slot.used;
+	return n;
+}
