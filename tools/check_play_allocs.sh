@@ -2,8 +2,9 @@
 # Fails if a function on the list below - code that runs while a game plays,
 # per frame, per draw, per new state or per guest call (AGENTS.md: no
 # allocations mid-game) - declares a container or string of its own, formats
-# a string, makes something with make_unique/make_shared/malloc, or news an
-# object of a class that does not come from a pool (PoolNew.h). What it
+# a string, makes something with make_unique/make_shared/malloc, news an
+# array, or news an object of a class that does not come from a pool
+# (PoolNew.h). What it
 # keeps static, or borrows by reference, it may. Each function is checked
 # by its body, so what it calls is checked where it is listed itself. The
 # list only grows: a function on it has been made allocation-free, and an
@@ -13,6 +14,10 @@ cd "$(dirname "$0")/.." || exit 2
 list='
 src/Cafe/HW/Latte/Core/LatteTexture.cpp LatteTexture_Invalidate
 src/Cafe/HW/Latte/Core/LatteTexture.cpp LatteTC_ForEachTextureAtPhysAddr
+src/Cafe/HW/Latte/Core/LatteTexture.cpp LatteTexture_InitSliceAndMipInfo
+src/Cafe/HW/Latte/Core/LatteTexture.cpp LatteTexture_AllocSliceMipInfo
+src/Cafe/HW/Latte/Core/LatteTexture.cpp LatteTexture_TrackTextureRelation
+src/Cafe/HW/Latte/Core/LatteTexture.cpp LatteTexture_DeleteTextureRelations
 src/Cafe/HW/Latte/Core/LatteRenderTarget.cpp LatteRenderTarget_itHLEClearColorDepthStencil
 src/Cafe/HW/Latte/Core/LatteTextureReadback.cpp LatteTextureReadback_StartTransfer
 src/Cafe/HW/Latte/Core/LatteTextureReadback.cpp LatteTextureReadback_Update
@@ -47,6 +52,8 @@ src/Cafe/IOSU/fsa/iosu_fsa.cpp __FSATranslatePath
 src/Cafe/IOSU/fsa/iosu_fsa.cpp __FSAOpenNode
 src/Cafe/IOSU/fsa/iosu_fsa.cpp __FSAOpenFile
 src/Cafe/IOSU/fsa/iosu_fsa.cpp __FSA_GetFileStat
+src/Cafe/IOSU/kernel/iosu_kernel.cpp _IPCHandlerIn_IOS_Open
+src/Cafe/IOSU/kernel/iosu_kernel.cpp _IPCCreateResourceHandle
 '
 
 # the body of every definition of $2 in $1 (overloads too), its lines numbered
@@ -103,7 +110,7 @@ out=$(echo "$list" | while read -r file fn; do
 	bad=$(printf '%s\n' "$code" | grep -E \
 		-e 'std::(vector|string|wstring|u8string|deque|queue|list|map|multimap|set|unordered_map|unordered_set|function)(<[^;()&]*>)?[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*([;=({]|$)' \
 		-e 'fs::path[[:space:]]+[A-Za-z_]' -e 'fmt::format\(' -e 'std::to_string\(' -e 'make_(unique|shared)<' \
-		-e '(^|[^A-Za-z0-9_])(malloc|calloc|realloc|strdup)\(' | grep -v -e ':[[:space:]]*static[[:space:]]' -e 'thread_local')
+		-e '(^|[^A-Za-z0-9_])(malloc|calloc|realloc|strdup)\(' -e 'new[[:space:]]+[A-Za-z_][A-Za-z0-9_:<>, ]*\[' | grep -v -e ':[[:space:]]*static[[:space:]]' -e 'thread_local')
 	news=$(printf '%s\n' "$code" | grep -oE 'new[[:space:]]+[A-Za-z_][A-Za-z0-9_:]*[[:space:]]*[({]' | sed -E 's/new[[:space:]]+//; s/[[:space:]]*[({]$//' | sort -u)
 	for t in $news; do
 		if ! pooled "${t##*::}"; then

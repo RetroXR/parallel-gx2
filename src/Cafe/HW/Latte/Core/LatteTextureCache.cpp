@@ -355,7 +355,7 @@ void LatteTexture_Delete(LatteTexture* texture)
 	// free memory
 	if (texture->sliceMipInfo)
 	{
-		delete[] texture->sliceMipInfo;
+		LatteTexture_FreeSliceMipInfo(texture->sliceMipInfo, texture->sliceMipInfoCount);
 		texture->sliceMipInfo = nullptr;
 	}
 	delete texture;

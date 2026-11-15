@@ -1,6 +1,7 @@
 #pragma once
 
 #include "util/helpers/SmallVec.h"
+#include "util/helpers/PoolNew.h"
 
 // Whether an active graphic pack resizes textures, i.e. a resolution pack.
 bool LatteTexture_graphicPackSetsResolution();
@@ -149,7 +150,10 @@ public:
 	bool isDepth;
 	bool hasStencil{}; // for depth textures
 	// info per mip/slice
+	// from blocks kept for reuse (LatteTexture_InitSliceAndMipInfo): a texture
+	// made while a game plays allocates nothing for them once warm
 	struct LatteTextureSliceMipInfo* sliceMipInfo{};
+	sint32 sliceMipInfoCount{};
 	// physical offsets for start and end of data (calculated on texture load)
 	MPTR texDataPtrLow{};
 	MPTR texDataPtrHigh{};
@@ -268,7 +272,9 @@ struct LatteTextureSliceMipInfo
 	SmallVec<LatteTextureSliceMipDataOverlap_t, 2> list_dataOverlap;
 };
 
-struct LatteTextureRelation
+// from a pool (PoolNew.h): relating a new texture to those it shares memory
+// with allocates nothing (malloc'd one at a time before)
+struct LatteTextureRelation : PoolNew<LatteTextureRelation>
 {
 	LatteTexture* baseTexture;
 	LatteTexture* subTexture; // texture which is contained within baseTexture
@@ -361,6 +367,9 @@ void LatteTexture_DeleteDataOverlapTracking(LatteTexture* texture);
 LatteTextureView* LatteTexture_CreateMapping(MPTR physAddr, MPTR physMipAddr, sint32 width, sint32 height, sint32 depth, sint32 pitch, Latte::E_HWTILEMODE tileMode, uint32 swizzle, sint32 firstMip, sint32 numMip, sint32 firstSlice, sint32 numSlice, Latte::E_GX2SURFFMT format, Latte::E_DIM dimBase, Latte::E_DIM dimView, bool isDepth, bool allowCreateNewDataTexture = true);
 
 LatteTextureView* LatteTC_LookupTextureByData(MPTR physAddr, sint32 width, sint32 height, sint32 pitch, sint32 firstMip, sint32 numMip, sint32 firstSlice, sint32 numSlice, sint32* searchIndex);
+// a texture's slice and mip infos (sliceMipInfo), constructed, and back
+struct LatteTextureSliceMipInfo* LatteTexture_AllocSliceMipInfo(sint32 count);
+void LatteTexture_FreeSliceMipInfo(struct LatteTextureSliceMipInfo* infos, sint32 count);
 void LatteTC_LookupTexturesByPhysAddr(MPTR physAddr, std::vector<LatteTexture*>& list_textures);
 // fn for each texture based at physAddr, once for each of its slices and mips
 // there (no list collected)

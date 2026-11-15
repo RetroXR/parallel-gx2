@@ -702,10 +702,15 @@ namespace iosu
 			uint32 flags = cmd.args[2];
 			cemu_assert_debug(flags == 0);
 
-			std::string devicePath{ name, nameLenPlusOne - 1 };
+			// in place: an open allocates nothing (a device's path is short)
+			char devicePath[256];
+			if (nameLenPlusOne > sizeof(devicePath))
+				return IOS_ERROR_INVALID;
+			std::memcpy(devicePath, name, nameLenPlusOne - 1);
+			devicePath[nameLenPlusOne - 1] = '\0';
 
 			IOSDevHandle handle;
-			IOS_ERROR r = _IPCCreateResourceHandle(devicePath.c_str(), handle);
+			IOS_ERROR r = _IPCCreateResourceHandle(devicePath, handle);
 			if (r != IOS_ERROR_OK)
 				return r;
 			dispatchCmd->replyHandle = handle;

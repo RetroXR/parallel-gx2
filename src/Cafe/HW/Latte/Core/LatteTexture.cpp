@@ -2,6 +2,7 @@
 #include "Cafe/HW/Latte/Core/LatteShader.h"
 #include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
 #include "Cafe/HW/Latte/Core/LatteTexture.h"
+#include "util/helpers/size_blocks.h"
 
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
 #include "Cafe/HW/Latte/LatteAddrLib/LatteAddrLib.h"
@@ -197,12 +198,45 @@ void LatteTexture_EstimateMipSliceAccessedDataRange(LatteTexture* texture, sint3
 	sliceMipInfo->estDataAddrEnd = estAddrEnd;
 }
 
+// A texture's slice and mip infos, in blocks of a power of two of them kept
+// for reuse (size_blocks.c; the GPU thread's, as textures are), each
+// constructed in place: textures made while a game plays allocate nothing
+// for them once ones with as many have been made
+static struct SliceMipInfoBlocks
+{
+	size_blocks_t blocks;
+	SliceMipInfoBlocks() { size_blocks_init(&blocks, sizeof(LatteTextureSliceMipInfo), 16); }
+	~SliceMipInfoBlocks() { size_blocks_free_all(&blocks); }
+} s_sliceMipInfoBlocks;
+
+LatteTextureSliceMipInfo* LatteTexture_AllocSliceMipInfo(sint32 count)
+{
+	static_assert(alignof(LatteTextureSliceMipInfo) <= alignof(std::max_align_t));
+	void* block = size_blocks_take(&s_sliceMipInfoBlocks.blocks, (size_t)count, nullptr);
+	if (!block)
+		throw std::bad_alloc();
+	LatteTextureSliceMipInfo* infos = (LatteTextureSliceMipInfo*)block;
+	for (sint32 i = 0; i < count; i++)
+		new (infos + i) LatteTextureSliceMipInfo();
+	return infos;
+}
+
+void LatteTexture_FreeSliceMipInfo(LatteTextureSliceMipInfo* infos, sint32 count)
+{
+	if (!infos)
+		return;
+	for (sint32 i = 0; i < count; i++)
+		infos[i].~LatteTextureSliceMipInfo();
+	size_blocks_give(&s_sliceMipInfoBlocks.blocks, infos, (size_t)count);
+}
+
 void LatteTexture_InitSliceAndMipInfo(LatteTexture* texture)
 {
 	cemu_assert_debug(texture->mipLevels > 0);
 	cemu_assert_debug(texture->depth > 0);
 	sint32 mipSliceCount = texture->GetSliceMipArraySize();
-	texture->sliceMipInfo = new LatteTextureSliceMipInfo[mipSliceCount]();
+	texture->sliceMipInfo = LatteTexture_AllocSliceMipInfo(mipSliceCount);
+	texture->sliceMipInfoCount = mipSliceCount;
 	// todo - mipLevels can be greater than maximum possible mip count. How to handle this? Probably should differentiate between mipLevels and effective mip levels
 	sint32 mipLevels = texture->mipLevels;
 	sint32 sliceCount = texture->depth;
@@ -661,8 +695,7 @@ void LatteTexture_TrackTextureRelation(LatteTexture* texture1, LatteTexture* tex
 		cemu_assert_debug(compatibleDepthRange > 0);
 
 		// create association
-		LatteTextureRelation* rel = (LatteTextureRelation*)malloc(sizeof(LatteTextureRelation));
-		memset(rel, 0, sizeof(LatteTextureRelation));
+		LatteTextureRelation* rel = new LatteTextureRelation();
 		rel->baseTexture = texture1;
 		rel->subTexture = texture2;
 		rel->baseMipIndex = baseMipIndex;
@@ -798,7 +831,7 @@ void LatteTexture_DeleteTextureRelations(LatteTexture* texture)
 		LatteTextureRelation* rel = texture->list_compatibleRelations[0];
 		rel->baseTexture->list_compatibleRelations.erase(std::find(rel->baseTexture->list_compatibleRelations.begin(), rel->baseTexture->list_compatibleRelations.end(), rel));
 		rel->subTexture->list_compatibleRelations.erase(std::find(rel->subTexture->list_compatibleRelations.begin(), rel->subTexture->list_compatibleRelations.end(), rel));
-		free(rel);
+		delete rel;
 	}
 	texture->list_compatibleRelations.clear();
 }
