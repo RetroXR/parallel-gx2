@@ -40,12 +40,12 @@ struct IMLRegisterAllocatorContext
 	IMLRegisterAllocatorParameters* raParam;
 	ppcImlGenContext_t* deprGenContext; // deprecated. Try to decouple IMLRA from other parts of IML/PPCRec
 
-	std::unordered_map<IMLRegID, IMLRegFormat> regIdToBaseFormat;
+	IMLRegIdMap<IMLRegFormat> regIdToBaseFormat;
 	// first pass
-	std::vector<std::unordered_map<IMLRegID, IMLRARegAbstractLiveness>> perSegmentAbstractRanges;
+	std::vector<IMLRegIdMap<IMLRARegAbstractLiveness>> perSegmentAbstractRanges;
 
 	// helper methods
-	inline std::unordered_map<IMLRegID, IMLRARegAbstractLiveness>& GetSegmentAbstractRangeMap(IMLSegment* imlSegment)
+	inline IMLRegIdMap<IMLRARegAbstractLiveness>& GetSegmentAbstractRangeMap(IMLSegment* imlSegment)
 	{
 		return perSegmentAbstractRanges[imlSegment->momentaryIndex];
 	}
@@ -512,7 +512,7 @@ void _sortSegmentAllSubrangesLinkedList(IMLSegment* imlSegment)
 #endif
 }
 
-std::unordered_map<IMLRegID, raLivenessRange*>& IMLRA_GetSubrangeMap(IMLSegment* imlSegment)
+IMLRegIdMap<raLivenessRange*>& IMLRA_GetSubrangeMap(IMLSegment* imlSegment)
 {
 	return imlSegment->raInfo.linkedList_perVirtualRegister;
 }
@@ -1471,7 +1471,7 @@ void IMLRA_UpdateOrAddSubrangeLocation(raLivenessRange* subrange, raInstructionE
 // take abstract range data and create LivenessRanges
 void IMLRA_ConvertAbstractToLivenessRanges(IMLRegisterAllocatorContext& ctx, IMLSegment* imlSegment)
 {
-	const std::unordered_map<IMLRegID, raLivenessRange*>& regToSubrange = IMLRA_GetSubrangeMap(imlSegment);
+	const IMLRegIdMap<raLivenessRange*>& regToSubrange = IMLRA_GetSubrangeMap(imlSegment);
 
 	auto AddOrUpdateFixedRegRequirement = [&](IMLRegID regId, sint32 instructionIndex, bool isInput, const IMLPhysRegisterSet& physRegSet) {
 		raLivenessRange* subrange = regToSubrange.find(regId)->second;
@@ -1920,7 +1920,7 @@ inline IMLReg _MakeNativeReg(IMLRegFormat baseFormat, IMLRegID regId)
 // prepass for IMLRA_GenerateSegmentMoveInstructions which updates all virtual registers to their physical counterparts
 void IMLRA_RewriteRegisters(IMLRegisterAllocatorContext& ctx, IMLSegment* imlSegment)
 {
-	std::unordered_map<IMLRegID, IMLRegID> virtId2PhysReg;
+	IMLRegIdMap<IMLRegID> virtId2PhysReg;
 	boost::container::small_vector<raLivenessRange*, 64> activeRanges;
 	raLivenessRange* currentRange = imlSegment->raInfo.linkedList_allSubranges;
 	raInstructionEdge currentEdge;
@@ -1966,6 +1966,9 @@ void IMLRA_GenerateSegmentMoveInstructions2(IMLRegisterAllocatorContext& ctx, IM
 	bool hadSuffixInstruction = imlSegment->HasSuffixInstruction();
 
 	std::vector<IMLInstruction> rebuiltInstructions;
+	// the segment's own and room for the loads and stores the ranges add,
+	// rather than grown a few times over
+	rebuiltInstructions.reserve(imlSegment->imlList.size() * 2 + 16);
 	sint32 numInstructionsWithoutSuffix = (sint32)imlSegment->imlList.size() - (imlSegment->HasSuffixInstruction() ? 1 : 0);
 
 	if (imlSegment->imlList.empty())

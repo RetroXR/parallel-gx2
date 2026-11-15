@@ -1,4 +1,5 @@
 #include "IMLInstruction.h"
+#include "IMLRegIdMap.h"
 #include "IML.h"
 
 #include "../PPCRecompiler.h"
@@ -336,7 +337,7 @@ void IMLInstruction::CheckRegisterUsage(IMLUsedRegisters* registersUsed) const
 	}
 }
 
-IMLReg replaceRegisterIdMultiple(IMLReg reg, const std::unordered_map<IMLRegID, IMLRegID>& translationTable)
+IMLReg replaceRegisterIdMultiple(IMLReg reg, const IMLRegIdMap<IMLRegID>& translationTable)
 {
 	if (reg.IsInvalid())
 		return reg;
@@ -347,7 +348,7 @@ IMLReg replaceRegisterIdMultiple(IMLReg reg, const std::unordered_map<IMLRegID, 
 	return alteredReg;
 }
 
-void IMLInstruction::RewriteGPR(const std::unordered_map<IMLRegID, IMLRegID>& translationTable)
+void IMLInstruction::RewriteGPR(const IMLRegIdMap<IMLRegID>& translationTable)
 {
 	if (type == PPCREC_IML_TYPE_R_NAME)
 	{

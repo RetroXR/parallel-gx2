@@ -924,7 +924,8 @@ test-hle-table:
 
 # The recompiler against the interpreter: random runs of instructions
 # compiled on its thread and run both ways must agree; its functions are
-# freed and its code memory used again when it shuts down.
+# freed and its code memory used again when it shuts down; a compile
+# allocates under a hundred times, its register sets and maps fixed tables.
 test-recompiler:
   stage: test
   image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports

@@ -10,6 +10,7 @@
 // It also counts what the compile of each function allocates.
 #include "Cafe/HW/Espresso/PPCState.h"
 #include "Cafe/HW/Espresso/Recompiler/PPCRecompiler.h"
+#include "Cafe/HW/Espresso/Recompiler/IML/IMLRegIdMap.h"
 #include "Cafe/HW/MMU/MMU.h"
 #include "util/MemMapper/MemMapper.h"
 
@@ -18,6 +19,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
+#include <memory>
+#include <string>
 #include <new>
 #include <random>
 #include <thread>
@@ -333,6 +337,102 @@ static bool RunOne(const std::vector<uint32>& body, uint32 seed, RunStats& stats
 	return ok;
 }
 
+// The register-id set and map stand in for std::unordered_set and
+// std::unordered_map in the register allocator: checked here against
+// std::map under random use, with a value that owns memory (so a value not
+// destroyed, or destroyed twice, shows under the sanitizers)
+static void TestRegIdContainers()
+{
+	std::mt19937 rng(777);
+	IMLRegIdSet set;
+	IMLRegIdMap<std::string> map;
+	std::map<IMLRegID, std::string> ref;
+	for (int step = 0; step < 20000; step++)
+	{
+		const IMLRegID id = (IMLRegID)(rng() % IML_REG_ID_CAPACITY);
+		const uint32 op = rng() % 8;
+		if (op < 3)
+		{
+			const std::string v(40 + rng() % 40, (char)('a' + rng() % 26));
+			const bool newSet = set.insert(id).second;
+			const bool newMap = map.try_emplace(id, v).second;
+			const bool newRef = ref.try_emplace(id, v).second;
+			CHECK(newSet == newRef);
+			CHECK(newMap == newRef);
+		}
+		else if (op == 3)
+		{
+			map[id] += "x";
+			ref[id] += "x";
+			set.insert(id);
+		}
+		else if (op < 6)
+		{
+			const size_t n = ref.erase(id);
+			CHECK(set.erase(id) == n);
+			CHECK(map.erase(id) == n);
+		}
+		else if (op == 6 && rng() % 64 == 0)
+		{
+			IMLRegIdMap<std::string> copy(map);
+			map.clear();
+			set.clear();
+			CHECK(map.empty() && set.empty());
+			map = copy;
+			for (const auto& kv : copy)
+				set.insert(kv.first);
+		}
+		CHECK(set.contains(id) == (ref.count(id) != 0));
+		CHECK(map.count(id) == ref.count(id));
+	}
+	CHECK(set.size() == ref.size());
+	CHECK(map.size() == ref.size());
+	// both hand out the registers lowest first, the map with each value
+	auto r = ref.begin();
+	for (IMLRegID id : set)
+	{
+		CHECK(r != ref.end() && id == r->first);
+		++r;
+	}
+	r = ref.begin();
+	for (const auto& kv : map)
+	{
+		CHECK(r != ref.end() && kv.first == r->first && kv.second == r->second);
+		++r;
+	}
+	CHECK(r == ref.end());
+	IMLRegIdSet other;
+	other.insert(IML_REG_ID_CAPACITY - 1);
+	other.insert(0);
+	set.insert_all(other);
+	CHECK(set.contains(0) && set.contains(IML_REG_ID_CAPACITY - 1));
+	CHECK(!set.contains(IML_REG_ID_CAPACITY));
+
+	// the generator's guest-name to register map: every name found again,
+	// however their hashes collide, and no more than a register id numbers
+	auto names = std::make_unique<IMLNameRegMap>();
+	std::vector<IMLName> added;
+	// random names (a run of names, as the generator's are, spreads too
+	// evenly to collide)
+	while (added.size() < IML_REG_ID_CAPACITY)
+	{
+		const IMLName name = (IMLName)(rng() & 0x7FFFFFFF);
+		if (names->find(name))
+			continue;
+		CHECK(names->add(name, IMLReg(IMLRegFormat::I32, IMLRegFormat::I32, 0, (IMLRegID)added.size())));
+		added.push_back(name);
+	}
+	CHECK(!names->add(0xFFFFFFF0u, IMLReg(IMLRegFormat::I32, IMLRegFormat::I32, 0, 0)));
+	CHECK(names->size() == IML_REG_ID_CAPACITY);
+	for (size_t i = 0; i < added.size(); i++)
+	{
+		const IMLReg* reg = names->find(added[i]);
+		CHECK(reg && reg->GetRegID() == (IMLRegID)i);
+		CHECK(names->name(i) == added[i]);
+	}
+	CHECK(names->find(0xFFFFFFF0u) == nullptr);
+}
+
 int main()
 {
 	memory_base = (uint8*)MemMapper::ReserveMemory(nullptr, (size_t)0x100000000ull, MemMapper::PAGE_PERMISSION::P_RW);
@@ -342,6 +442,7 @@ int main()
 	CHECK(MemMapper::AllocateMemory(memory_base, 0x10000, MemMapper::PAGE_PERMISSION::P_RW, true) != nullptr);
 	CHECK(MemMapper::AllocateMemory(memory_base + kCodeBase, kCodeSize, MemMapper::PAGE_PERMISSION::P_RW, true) != nullptr);
 	CHECK(MemMapper::AllocateMemory(memory_base + kDataBase, kDataSize + 0x1000, MemMapper::PAGE_PERMISSION::P_RW, true) != nullptr);
+	TestRegIdContainers();
 	std::mt19937 drng(12345);
 	for (auto& b : s_dataInit)
 		b = (uint8)drng();
@@ -377,6 +478,13 @@ int main()
 	}
 	std::printf("recompiler: %u functions compiled and run both ways, %u left to the interpreter; a compile (with its marker's) allocated %.1f times on average, %llu at most\n",
 		stats.compiled, stats.refused, stats.compiled ? (double)stats.allocationsTotal / stats.compiled : 0.0, (unsigned long long)stats.allocationsMax);
+	// A compile runs while a title plays: its register sets and maps are
+	// fixed tables and its scratch and code buffer are reserved up front, so
+	// it allocates under a hundred times rather than hundreds (722 on average and 3853 at most, when
+	// each register id had a hash node)
+	CHECK(stats.compiled > 0);
+	CHECK(stats.allocationsTotal <= 92 * (uint64)stats.compiled);
+	CHECK(stats.allocationsMax <= 400);
 	// The next title: the recompiler shut down and started again. Its
 	// functions were freed with it (LeakSanitizer sees to that), and its code
 	// memory is filled again from the start - the same first function lands

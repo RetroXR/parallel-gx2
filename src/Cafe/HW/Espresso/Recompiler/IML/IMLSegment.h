@@ -1,5 +1,6 @@
 #pragma once
 #include "IMLInstruction.h"
+#include "IMLRegIdMap.h"
 
 #include <boost/container/small_vector.hpp>
 
@@ -127,7 +128,7 @@ struct PPCSegmentRegisterAllocatorInfo_t
 	sint32 lastIterationIndex{};
 	// linked lists
 	struct raLivenessRange* linkedList_allSubranges{};
-	std::unordered_map<IMLRegID, struct raLivenessRange*> linkedList_perVirtualRegister;
+	IMLRegIdMap<struct raLivenessRange*> linkedList_perVirtualRegister;
 };
 
 struct IMLSegment

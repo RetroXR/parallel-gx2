@@ -209,7 +209,7 @@ PPCRecFunction_t* PPCRecompiler_recompileFunction(PPCFunctionBoundaryTracker::PP
 	ppcImlGenContext_t ppcImlGenContext = { 0 };
 	ppcImlGenContext.debug_entryPPCAddress = range.startAddress;
 	bool compiledSuccessfully = PPCRecompiler_generateIntermediateCode(ppcImlGenContext, ppcRecFunc, entryAddresses, boundaryTracker);
-	if (compiledSuccessfully == false)
+	if (compiledSuccessfully == false || ppcImlGenContext.tooManyRegisters)
 	{
 		delete ppcRecFunc;
 		return nullptr;
@@ -291,8 +291,8 @@ void PPCRecompiler_NativeRegisterAllocatorPass(ppcImlGenContext_t& ppcImlGenCont
 {
 	IMLRegisterAllocatorParameters raParam;
 
-	for (auto& it : ppcImlGenContext.mappedRegs)
-		raParam.regIdToName.try_emplace(it.second.GetRegID(), it.first);
+	for (size_t i = 0; i < ppcImlGenContext.mappedRegs.size(); i++)
+		raParam.regIdToName.try_emplace(ppcImlGenContext.mappedRegs.reg(i).GetRegID(), ppcImlGenContext.mappedRegs.name(i));
 
 #if defined(ARCH_X86_64)
 	auto& gprPhysPool = raParam.GetPhysRegPool(IMLRegFormat::I64);

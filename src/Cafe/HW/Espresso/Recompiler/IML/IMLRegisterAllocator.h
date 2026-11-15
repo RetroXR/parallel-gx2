@@ -1,5 +1,7 @@
 #pragma once
 
+#include "IMLRegIdMap.h"
+
 // container for storing a set of register indices
 // specifically optimized towards storing typical range of physical register indices (expected to be below 64)
 class IMLPhysRegisterSet
@@ -119,7 +121,7 @@ struct IMLRegisterAllocatorParameters
 	}
 
 	IMLPhysRegisterSet perTypePhysPool[stdx::to_underlying(IMLRegFormat::TYPE_COUNT)];
-	std::unordered_map<IMLRegID, IMLName> regIdToName;
+	IMLRegIdMap<IMLName> regIdToName;
 };
 
 void IMLRegisterAllocator_AllocateRegisters(ppcImlGenContext_t* ppcImlGenContext, IMLRegisterAllocatorParameters& raParam);

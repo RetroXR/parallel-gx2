@@ -111,7 +111,7 @@ IMLPhysRegisterSet raLivenessRange::GetAllowedRegisters(IMLPhysRegisterSet regPo
 	return fixedRegRequirements;
 }
 
-void PPCRecRARange_addLink_perVirtualGPR(std::unordered_map<IMLRegID, raLivenessRange*>& root, raLivenessRange* subrange)
+void PPCRecRARange_addLink_perVirtualGPR(IMLRegIdMap<raLivenessRange*>& root, raLivenessRange* subrange)
 {
 	IMLRegID regId = subrange->GetVirtualRegister();
 	auto it = root.find(regId);
@@ -142,7 +142,7 @@ void PPCRecRARange_addLink_allSegmentRanges(raLivenessRange** root, raLivenessRa
 	*root = subrange;
 }
 
-void PPCRecRARange_removeLink_perVirtualGPR(std::unordered_map<IMLRegID, raLivenessRange*>& root, raLivenessRange* subrange)
+void PPCRecRARange_removeLink_perVirtualGPR(IMLRegIdMap<raLivenessRange*>& root, raLivenessRange* subrange)
 {
 #ifdef CEMU_DEBUG_ASSERT
 	raLivenessRange* cur = root.find(subrange->GetVirtualRegister())->second;

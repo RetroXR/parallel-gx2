@@ -235,9 +235,8 @@ void PPCIMLGen_CreateSegmentBranchedPathMultiple(ppcImlGenContext_t& ppcImlGenCo
 
 IMLReg PPCRecompilerImlGen_LookupReg(ppcImlGenContext_t* ppcImlGenContext, IMLName mappedName, IMLRegFormat regFormat)
 {
-	auto it = ppcImlGenContext->mappedRegs.find(mappedName);
-	if (it != ppcImlGenContext->mappedRegs.end())
-		return it->second;
+	if (const IMLReg* reg = ppcImlGenContext->mappedRegs.find(mappedName))
+		return *reg;
 	// create new reg entry
 	IMLRegFormat baseFormat;
 	if (regFormat == IMLRegFormat::F64)
@@ -248,18 +247,23 @@ IMLReg PPCRecompilerImlGen_LookupReg(ppcImlGenContext_t* ppcImlGenContext, IMLNa
 	{
 		cemu_assert_suspicious();
 	}
-	IMLRegID newRegId = ppcImlGenContext->mappedRegs.size();
+	IMLRegID newRegId = (IMLRegID)ppcImlGenContext->mappedRegs.size();
 	IMLReg newReg(baseFormat, regFormat, 0, newRegId);
-	ppcImlGenContext->mappedRegs.try_emplace(mappedName, newReg);
+	if (!ppcImlGenContext->mappedRegs.add(mappedName, newReg))
+	{
+		// the compile is given up once the instructions are generated
+		ppcImlGenContext->tooManyRegisters = true;
+		return IMLReg(baseFormat, regFormat, 0, 0);
+	}
 	return newReg;
 }
 
 IMLName PPCRecompilerImlGen_GetRegName(ppcImlGenContext_t* ppcImlGenContext, IMLReg reg)
 {
-	for (auto& it : ppcImlGenContext->mappedRegs)
+	for (size_t i = 0; i < ppcImlGenContext->mappedRegs.size(); i++)
 	{
-		if (it.second.GetRegID() == reg.GetRegID())
-			return it.first;
+		if (ppcImlGenContext->mappedRegs.reg(i).GetRegID() == reg.GetRegID())
+			return ppcImlGenContext->mappedRegs.name(i);
 	}
 	cemu_assert(false);
 	return 0;
@@ -3119,7 +3123,14 @@ bool PPCRecompiler_GenerateIML(ppcImlGenContext_t& ppcImlGenContext, PPCFunction
 	std::vector<PPCBasicBlockInfo> basicBlockList = PPCRecompiler_DetermineBasicBlockRange(boundaryTracker, entryAddresses);
 
 	// create segments
-	std::unordered_map<uint32, PPCBasicBlockInfo*> addrToBB;
+	// start address to block, sorted and searched (one allocation, where a
+	// hash map allocated a node per block)
+	std::vector<std::pair<uint32, PPCBasicBlockInfo*>> addrToBB;
+	addrToBB.reserve(basicBlockList.size());
+	auto findBB = [&addrToBB](uint32 addr) -> PPCBasicBlockInfo* {
+		auto it = std::lower_bound(addrToBB.begin(), addrToBB.end(), addr, [](const std::pair<uint32, PPCBasicBlockInfo*>& e, uint32 a) { return e.first < a; });
+		return (it != addrToBB.end() && it->first == addr) ? it->second : nullptr;
+	};
 	ppcImlGenContext.segmentList2.resize(basicBlockList.size());
 	for (size_t i = 0; i < basicBlockList.size(); i++)
 	{
@@ -3129,10 +3140,11 @@ bool PPCRecompiler_GenerateIML(ppcImlGenContext_t& ppcImlGenContext, PPCFunction
 		if(basicBlockInfo.isEnterable)
 			seg->SetEnterable(basicBlockInfo.startAddress);
 		ppcImlGenContext.segmentList2[i] = seg;
-		cemu_assert_debug(addrToBB.find(basicBlockInfo.startAddress) == addrToBB.end());
 		basicBlockInfo.SetInitialSegment(seg);
-		addrToBB.emplace(basicBlockInfo.startAddress, &basicBlockInfo);
+		addrToBB.emplace_back(basicBlockInfo.startAddress, &basicBlockInfo);
 	}
+	std::sort(addrToBB.begin(), addrToBB.end(), [](const std::pair<uint32, PPCBasicBlockInfo*>& a, const std::pair<uint32, PPCBasicBlockInfo*>& b) { return a.first < b.first; });
+	cemu_assert_debug(std::adjacent_find(addrToBB.begin(), addrToBB.end(), [](const std::pair<uint32, PPCBasicBlockInfo*>& a, const std::pair<uint32, PPCBasicBlockInfo*>& b) { return a.first == b.first; }) == addrToBB.end());
 	// link segments
 	for (size_t i = 0; i < basicBlockList.size(); i++)
 	{
@@ -3141,13 +3153,13 @@ bool PPCRecompiler_GenerateIML(ppcImlGenContext_t& ppcImlGenContext, PPCFunction
 		IMLSegment* seg = ppcImlGenContext.segmentList2[i];
 		if (bbInfo.hasBranchTarget)
 		{
-			PPCBasicBlockInfo* targetBB = addrToBB[bbInfo.branchTarget];
+			PPCBasicBlockInfo* targetBB = findBB(bbInfo.branchTarget);
 			cemu_assert_debug(targetBB);
 			IMLSegment_SetLinkBranchTaken(seg, targetBB->GetFirstSegmentInChain());
 		}
 		if (bbInfo.hasContinuedFlow)
 		{
-			PPCBasicBlockInfo* targetBB = addrToBB[bbInfo.lastAddress + 4];
+			PPCBasicBlockInfo* targetBB = findBB(bbInfo.lastAddress + 4);
 			if (!targetBB)
 			{
 				cemuLog_log(LogType::Recompiler, "Recompiler was unable to link segment [0x{:08x}-0x{:08x}] to 0x{:08x}", bbInfo.startAddress, bbInfo.lastAddress, bbInfo.lastAddress + 4);

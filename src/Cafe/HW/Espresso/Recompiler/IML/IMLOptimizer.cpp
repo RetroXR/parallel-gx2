@@ -1,6 +1,7 @@
 #include "Cafe/HW/Espresso/Interpreter/PPCInterpreterInternal.h"
 #include "Cafe/HW/Espresso/Recompiler/IML/IML.h"
 #include "Cafe/HW/Espresso/Recompiler/IML/IMLInstruction.h"
+#include "Cafe/HW/Espresso/Recompiler/IML/IMLRegIdMap.h"
 
 #include "../PPCRecompiler.h"
 #include "../PPCRecompilerIml.h"
@@ -272,9 +273,9 @@ class IMLOptimizerRegIOAnalysis
 	struct IMLSegmentRegisterInOut
 	{
 		// todo - since our register ID range is usually pretty small (<64) we could use integer bitmasks to accelerate this? There is a helper class used in RA code already
-		std::unordered_set<IMLRegID> regWritten; // registers which are modified in this segment
-		std::unordered_set<IMLRegID> regImported; // registers which are read in this segment before they are written (importing value from previous segments)
-		std::unordered_set<IMLRegID> regForward; // registers which are not read or written in this segment, but are imported into a later segment (propagated info)
+		IMLRegIdSet regWritten; // registers which are modified in this segment
+		IMLRegIdSet regImported; // registers which are read in this segment before they are written (importing value from previous segments)
+		IMLRegIdSet regForward; // registers which are not read or written in this segment, but are imported into a later segment (propagated info)
 	};
 
 	// calculate which registers are imported (read-before-written) and forwarded (read-before-written by a later segment) per segment
@@ -321,16 +322,26 @@ class IMLOptimizerRegIOAnalysis
 			}
 		}
 		// broadcast dependencies across segment chains
-		std::unordered_set<uint32> segIdsWhichNeedUpdate;
-		for (uint32 i = 0; i < m_segmentList.size(); i++)
+		// a bit per segment, taken lowest first (one allocation, where a hash
+		// set allocated a node per insert)
+		std::vector<uint64> segIdsWhichNeedUpdate((m_segmentList.size() + 63) / 64, ~0ull);
+		if (m_segmentList.size() % 64)
+			segIdsWhichNeedUpdate.back() = (1ull << (m_segmentList.size() % 64)) - 1;
+		auto takeLowest = [&segIdsWhichNeedUpdate]() -> sint32 {
+			for (size_t w = 0; w < segIdsWhichNeedUpdate.size(); w++)
+			{
+				if (uint64 bits = segIdsWhichNeedUpdate[w])
+				{
+					const uint32 b = (uint32)std::countr_zero(bits);
+					segIdsWhichNeedUpdate[w] &= ~(1ull << b);
+					return (sint32)(w * 64 + b);
+				}
+			}
+			return -1;
+		};
+		for (sint32 nextSeg = takeLowest(); nextSeg >= 0; nextSeg = takeLowest())
 		{
-			segIdsWhichNeedUpdate.insert(i);
-		}
-		while(!segIdsWhichNeedUpdate.empty())
-		{
-			auto firstIt = segIdsWhichNeedUpdate.begin();
-			uint32 segId = *firstIt;
-			segIdsWhichNeedUpdate.erase(firstIt);
+			uint32 segId = (uint32)nextSeg;
 			// forward regImported and regForward to earlier segments into their regForward, unless the register is written
 			auto& curSeg = m_segmentList[segId];
 			IMLSegmentRegisterInOut& curSegIO = segRegisterInOutList[segId];
@@ -349,7 +360,7 @@ class IMLOptimizerRegIOAnalysis
 						prevSegChanged |= prevSegIO.regForward.insert(regId).second;
 				}
 				if(prevSegChanged)
-					segIdsWhichNeedUpdate.insert(prevSeg->momentaryIndex);
+					segIdsWhichNeedUpdate[prevSeg->momentaryIndex / 64] |= 1ull << (prevSeg->momentaryIndex % 64);
 			}
 			// same for hint links
 			for(auto& prevSeg : curSeg->list_deadCodeHintBy)
@@ -367,14 +378,14 @@ class IMLOptimizerRegIOAnalysis
 						prevSegChanged |= prevSegIO.regForward.insert(regId).second;
 				}
 				if(prevSegChanged)
-					segIdsWhichNeedUpdate.insert(prevSeg->momentaryIndex);
+					segIdsWhichNeedUpdate[prevSeg->momentaryIndex / 64] |= 1ull << (prevSeg->momentaryIndex % 64);
 			}
 		}
 	}
 
-	std::unordered_set<IMLRegID> GetRegistersNeededAtEndOfSegment(IMLSegment& seg)
+	IMLRegIdSet GetRegistersNeededAtEndOfSegment(IMLSegment& seg)
 	{
-		std::unordered_set<IMLRegID> regsNeeded;
+		IMLRegIdSet regsNeeded;
 		if(seg.nextSegmentIsUncertain)
 		{
 			if(seg.deadCodeEliminationHintSeg)
@@ -576,7 +587,7 @@ void IMLOptimizer_RemoveDeadCodeFromSegment(IMLOptimizerRegIOAnalysis& regIoAnal
 	// - Maintain a list of registers which are read at a later point (initially this is the list from the first step)
 	// - If an instruction only modifies registers which are not in the read list and has no side effects, then it is dead code and can be replaced with a no-op
 
-	std::unordered_set<IMLRegID> regsNeeded = regIoAnalysis.GetRegistersNeededAtEndOfSegment(seg);
+	IMLRegIdSet regsNeeded = regIoAnalysis.GetRegistersNeededAtEndOfSegment(seg);
 
 	// start with suffix instruction
 	if(seg.HasSuffixInstruction())

@@ -74,6 +74,10 @@ private:
 	std::vector<u8> m_buffer;
 
 public:
+	// most functions' code fits, where growing a byte at a time reallocated
+	// over and over
+	x86Assembler64() { m_buffer.reserve(16 * 1024); }
+
 	u8* GetBufferPtr() { return m_buffer.data(); };
 	std::span<u8> GetBuffer() { return m_buffer; };
 	u32 GetWriteIndex() { return (u32)m_buffer.size(); };

@@ -1,6 +1,9 @@
 #pragma once
 
 using IMLRegID = uint16; // 16 bit ID
+
+template<typename V>
+class IMLRegIdMap; // IMLRegIdMap.h
 using IMLPhysReg = sint32; // arbitrary value that is up to the architecture backend, usually this will be the register index. A value of -1 is reserved and means not assigned
 
 // format of IMLReg:
@@ -816,7 +819,7 @@ struct IMLInstruction
 	void CheckRegisterUsage(IMLUsedRegisters* registersUsed) const;
 	bool HasSideEffects() const; // returns true if the instruction has side effects beyond just reading and writing registers. Dead code elimination uses this to know if an instruction can be dropped when the regular register outputs are not used
 
-	void RewriteGPR(const std::unordered_map<IMLRegID, IMLRegID>& translationTable);
+	void RewriteGPR(const IMLRegIdMap<IMLRegID>& translationTable);
 };
 
 // architecture specific constants

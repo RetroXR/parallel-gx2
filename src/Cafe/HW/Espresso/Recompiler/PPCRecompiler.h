@@ -43,6 +43,55 @@ struct PPCRecFunction_t
 
 struct IMLInstruction* PPCRecompilerImlGen_generateNewEmptyInstruction(struct ppcImlGenContext_t* ppcImlGenContext);
 
+// The register names a function uses and the virtual register each was given,
+// numbered from 0 in the order they were first used: in the object, found
+// through a small open-addressed index, where an std::unordered_map
+// allocated a node per name.
+class IMLNameRegMap
+{
+	static constexpr size_t kIndexSlots = 1024; // a power of two, four times the names
+
+public:
+	const IMLReg* find(IMLName name) const
+	{
+		for (size_t i = Hash(name);; i = (i + 1) & (kIndexSlots - 1))
+		{
+			const uint16 slot = m_index[i];
+			if (slot == 0)
+				return nullptr;
+			if (m_names[slot - 1] == name)
+				return &m_regs[slot - 1];
+		}
+	}
+
+	// false when it has as many as a register ID can number
+	bool add(IMLName name, const IMLReg& reg)
+	{
+		if (m_count >= IML_REG_ID_CAPACITY)
+			return false;
+		size_t i = Hash(name);
+		while (m_index[i] != 0)
+			i = (i + 1) & (kIndexSlots - 1);
+		m_names[m_count] = name;
+		m_regs[m_count] = reg;
+		m_index[i] = (uint16)(++m_count);
+		return true;
+	}
+
+	size_t size() const { return m_count; }
+	bool empty() const { return m_count == 0; }
+	IMLName name(size_t i) const { return m_names[i]; }
+	const IMLReg& reg(size_t i) const { return m_regs[i]; }
+
+private:
+	static size_t Hash(IMLName name) { return (name * 2654435761u) >> (32 - 10); }
+
+	std::array<uint16, kIndexSlots> m_index{}; // a name's position + 1, or 0
+	std::array<IMLName, IML_REG_ID_CAPACITY> m_names{};
+	std::array<IMLReg, IML_REG_ID_CAPACITY> m_regs{};
+	size_t m_count = 0;
+};
+
 struct ppcImlGenContext_t
 {
 	class PPCFunctionBoundaryTracker* boundaryTracker;
@@ -55,7 +104,9 @@ struct ppcImlGenContext_t
 	bool PSE{ true };
 	// cycle counter
 	uint32 cyclesSinceLastBranch; // used to track ppc cycles
-	std::unordered_map<IMLName, IMLReg> mappedRegs;
+	IMLNameRegMap mappedRegs;
+	// more register names than IML_REG_ID_CAPACITY: left to the interpreter
+	bool tooManyRegisters{false};
 
 	uint32 GetMaxRegId() const
 	{
