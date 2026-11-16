@@ -29,7 +29,8 @@ thread:
    when the draw needs it now.
    A shader the SPIR-V emitter covers (`LatteDecompilerEmitSPIRV.cpp`:
    pixel and vertex shaders of ALU clauses, control flow, texture samples,
-   attributes and exports so far, more as it grows) is
+   shadow compares, gathers, texel fetches and texture queries, attributes
+   and exports so far, more as it grows) is
    written as SPIR-V by the decompiler and skips rslc; only its module is
    made. It mirrors what rslc makes of the GLSL - the same operations,
    folding and branches - and `test/decompiler` holds the two to the same

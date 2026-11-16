@@ -153,6 +153,9 @@ static void test_dedup(void)
    CHECK(spv_type_image(&w, tF, SpvDimension2D, 0) != spv_type_image(&w, tF, SpvDimension2D, 1));
    CHECK(spv_type_image(&w, tF, SpvDimension2D, 0) != spv_type_image(&w, tF, SpvDimension3D, 0));
    CHECK(spv_type_image(&w, tF, SpvDimension2D, 0) != spv_type_image(&w, tU, SpvDimension2D, 0));
+   CHECK(spv_type_depth_image(&w, tF, SpvDimension2D, 0) == spv_type_depth_image(&w, tF, SpvDimension2D, 0));
+   CHECK(spv_type_depth_image(&w, tF, SpvDimension2D, 0) != spv_type_image(&w, tF, SpvDimension2D, 0));
+   CHECK(spv_type_depth_image(&w, tF, SpvDimension2D, 1) != spv_type_depth_image(&w, tF, SpvDimension2D, 0));
    CHECK(spv_type_sampled_image(&w, spv_type_image(&w, tF, SpvDimension2D, 0)) ==
       spv_type_sampled_image(&w, spv_type_image(&w, tF, SpvDimension2D, 0)));
    CHECK(spv_type_sampled_image(&w, spv_type_image(&w, tF, SpvDimension2D, 0)) !=
