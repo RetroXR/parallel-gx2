@@ -148,6 +148,7 @@ typedef struct job
    uint64_t name2;
    int is_delete;
    size_t size;
+   file_cache_build_t build; /* the data made from the octets, or NULL */
    struct job *next;
    /* then size octets */
 } job_t;
@@ -210,6 +211,14 @@ static void writer_thread(void *arg)
          retro_atomic_fetch_sub_int(&s_writer.queued, 1);
          if (fifo->is_delete)
             delete_internal(fc, fifo->name1, fifo->name2);
+         else if (fifo->build)
+         {
+            size_t built_size = 0;
+            void *built = fifo->build(fifo + 1, fifo->size, &built_size);
+            if (built)
+               add_internal(fc, fifo->name1, fifo->name2, (const uint8_t*)built, built_size, 0);
+            free(built);
+         }
          else
             add_internal(fc, fifo->name1, fifo->name2, (const uint8_t*)(fifo + 1), fifo->size, 0);
          free(fifo);
@@ -257,11 +266,12 @@ void file_cache_stop_writer(void)
 }
 
 static void writer_add(file_cache_t *fc, uint64_t name1, uint64_t name2,
-      const void *data, size_t size, int is_delete)
+      const void *data, size_t size, int is_delete, file_cache_build_t build)
 {
    job_t *job = (job_t*)malloc(sizeof(*job) + size);
    if (!job)
       return;
+   job->build = build;
    job->fc = fc;
    job->name1 = name1;
    job->name2 = name2;
@@ -1151,7 +1161,15 @@ void file_cache_use_compression(file_cache_t *fc, bool enable)
 void file_cache_add(file_cache_t *fc, uint64_t name1, uint64_t name2,
       const void *data, size_t size)
 {
-   writer_add(fc, name1, name2, data, size, 0);
+   writer_add(fc, name1, name2, data, size, 0, NULL);
+}
+
+void file_cache_add_built(file_cache_t *fc, uint64_t name1, uint64_t name2,
+      const void *inputs, size_t size, file_cache_build_t build)
+{
+   if (!build)
+      return;
+   writer_add(fc, name1, name2, inputs, size, 0, build);
 }
 
 static int writes_done(file_cache_t *fc)
@@ -1181,7 +1199,7 @@ bool file_cache_delete(file_cache_t *fc, uint64_t name1, uint64_t name2)
    file_cache_wait(fc);
    if (!find_published(fc, name1, name2))
       return false;
-   writer_add(fc, name1, name2, NULL, 0, 1);
+   writer_add(fc, name1, name2, NULL, 0, 1, NULL);
    file_cache_wait(fc);
    return true;
 }

@@ -15,7 +15,10 @@
 //    back (those on Linux only: the stream is per platform);
 //  - the register file a cached shader or pipeline is rebuilt with at boot:
 //    the heap allocations and bytes allocated to rebuild 1000; and the
-//    programs a cached shader is inflated into: those to inflate 1000;
+//    programs a cached shader is inflated into: those to inflate 1000; and
+//    a new shader's cache entry, built by the cache's writer thread from what
+//    the GPU thread took (BuildShaderCacheEntry), is to the byte the entry
+//    the GPU thread serialized itself before, for each type;
 //  - the pipelines a replayed draw sequence makes (the Vulkan renderer's
 //    pipeline key, VulkanPipelineKey_Graphics), with each set of state the
 //    device can leave to the draw: a frame's shape from a seed, shader sets
@@ -260,6 +263,79 @@ static void MeasureProgramInflate()
 	}
 	s_metrics["cache entry programs: allocations per 1000 inflated"] = s_allocs.load();
 	s_metrics["cache entry programs: bytes allocated per 1000 inflated"] = s_allocBytes.load();
+}
+
+// the entry as LatteShaderCache_writeSeparable*Shader serialized it on the
+// GPU thread before
+static std::vector<uint8> EntryAsBefore(const Latte::ShaderCacheEntryInputs& in, const uint8* programs)
+{
+	MemStreamWriter w(128 * 1024);
+	w.writeBE<uint8>(in.versionAndType);
+	w.writeBE<uint64>(in.baseHash);
+	w.writeBE<uint64>(in.auxHash);
+	if ((in.versionAndType >> 4) == 1)
+		w.writeBE<uint16>(in.vsRingParameterCount);
+	else
+		w.writeBE<uint8>(in.usesGeometryShader);
+	Latte::GPUCompactedRegisterState regs = in.regs;
+	Latte::SerializeRegisterState(regs, w);
+	for (uint32 i = 0; i < in.programCount; i++)
+	{
+		Latte::SerializeShaderProgram((void*)programs, in.programSize[i], w);
+		programs += in.programSize[i];
+	}
+	std::span<uint8> b = w.getResult();
+	return std::vector<uint8>(b.begin(), b.end());
+}
+
+static void CheckBuiltCacheEntries()
+{
+	Latte::InitShaderSerializer();
+	Latte::InitRegisterSerializer();
+	std::mt19937 rng(42);
+	int built = 0, differing = 0;
+	for (int i = 0; i < 60; i++)
+	{
+		const uint32 type = (uint32)(i % 3);
+		Latte::ShaderCacheEntryInputs in{};
+		in.versionAndType = (uint8)(1 | (type << 4));
+		in.usesGeometryShader = (uint8)(rng() & 1);
+		in.vsRingParameterCount = type == 1 ? (uint16)(rng() % 64) : 0;
+		in.programCount = type == 2 ? 1 : 2;
+		in.baseHash = ((uint64)rng() << 32) | rng();
+		in.auxHash = ((uint64)rng() << 32) | rng();
+		for (auto& reg : in.regs.rawArray)
+			reg = rng() % 4 ? 0 : rng();
+		std::vector<uint8> buf(sizeof(in));
+		for (uint32 p = 0; p < in.programCount; p++)
+		{
+			// a fetch shader may be empty
+			in.programSize[p] = (i % 7 == 0 && p == 0) ? 0 : (uint32)(8 * (1 + rng() % 512));
+			for (uint32 k = 0; k < in.programSize[p]; k++)
+				buf.push_back((uint8)(k % 5 ? rng() & 0x1F : rng()));
+		}
+		std::memcpy(buf.data(), &in, sizeof(in));
+		const std::vector<uint8> want = EntryAsBefore(in, buf.data() + sizeof(in));
+		size_t size = 0;
+		void* got = Latte::BuildShaderCacheEntry(buf.data(), buf.size(), &size);
+		if (!got || size != want.size() || std::memcmp(got, want.data(), size) != 0)
+			differing++;
+		free(got);
+		built++;
+	}
+	// what does not add up is no entry
+	Latte::ShaderCacheEntryInputs bad{};
+	bad.programCount = 2;
+	bad.programSize[0] = 100;
+	size_t size = 0;
+	const bool refused = Latte::BuildShaderCacheEntry(&bad, sizeof(bad), &size) == nullptr;
+	std::printf("shader cache entries built on the writer: %d, %d not as the GPU thread wrote them, short inputs %s\n", built, differing,
+		refused ? "refused" : "taken");
+	if (differing || !refused)
+	{
+		std::printf("FAIL: a shader cache entry built on the writer differs\n");
+		s_failures++;
+	}
 }
 
 static void MeasureRegisterRebuild()
@@ -589,6 +665,11 @@ static int Compare(const std::map<std::string, uint64_t>& base)
 
 int main(int argc, char** argv)
 {
+	// the dictionaries the core loads at boot (CafeSystem): a recording's
+	// registers are compressed with it, a title's as the gate's own, and
+	// read back with it
+	Latte::InitShaderSerializer();
+	Latte::InitRegisterSerializer();
 	if (argc == 3 && !std::strcmp(argv[1], "--replay"))
 		return Replay(argv[2]);
 	if (argc < 2)
@@ -615,6 +696,7 @@ int main(int argc, char** argv)
 	MeasureFileCache();
 	MeasureRegisterRebuild();
 	MeasureProgramInflate();
+	CheckBuiltCacheEntries();
 	MeasureReplay();
 	if (s_failures)
 	{

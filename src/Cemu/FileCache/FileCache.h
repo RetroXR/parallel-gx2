@@ -81,6 +81,12 @@ public:
 		if (fileSize >= 0)
 			file_cache_add(m_fc, name.name1, name.name2, fileData, (size_t)fileSize);
 	}
+	// The data made from the inputs by the writer thread, in its turn
+	// (file_cache_add_built): the inputs copied, so the caller's may go
+	void AddFileBuilt(const FileName& name, const uint8* inputs, size_t size, file_cache_build_t build)
+	{
+		file_cache_add_built(m_fc, name.name1, name.name2, inputs, size, build);
+	}
 	// Whether it was there; gone when this returns (it waits for the writes
 	// asked for before it, and for itself: for a load, not a draw)
 	bool DeleteFile(const FileName&& name) { return file_cache_delete(m_fc, name.name1, name.name2); }

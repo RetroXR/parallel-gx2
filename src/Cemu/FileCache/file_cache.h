@@ -48,6 +48,15 @@ void file_cache_use_compression(file_cache_t *fc, bool enable);
  * read once written, which file_cache_wait waits for */
 void file_cache_add(file_cache_t *fc, uint64_t name1, uint64_t name2,
       const void *data, size_t size);
+/* The entry's data made by the writer thread, in its turn among the writes:
+ * build(inputs, size, &out_size) is given the size octets at inputs (copied
+ * here, so the caller's may go) and returns the data, malloc'd (the writer
+ * frees it), or NULL for no entry. For an entry whose making - serializing,
+ * compressing - is work for a thread that cannot wait (the GPU thread's new
+ * shader). Found by a read once written, as file_cache_add's. */
+typedef void *(*file_cache_build_t)(const void *inputs, size_t size, size_t *out_size);
+void file_cache_add_built(file_cache_t *fc, uint64_t name1, uint64_t name2,
+      const void *inputs, size_t size, file_cache_build_t build);
 /* Whether it was there; gone when this returns (it waits for the writes
  * asked for before it, and for itself) */
 bool file_cache_delete(file_cache_t *fc, uint64_t name1, uint64_t name2);

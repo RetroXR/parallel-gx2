@@ -6,7 +6,10 @@
  * growth and where the file says it is, files opened again and written
  * to, a V2 file's flags, two entries under one name, an entry whose size
  * does not match its stream, the extra version, and compression turned
- * off. C89, as the C89 lane builds it; the file included, so that what it
+ * off, and entries the writer thread makes from the inputs it is given
+ * (file_cache_add_built): on that thread, in their turn among the adds
+ * and deletes, from a copy of the inputs, and none when the maker has
+ * none. C89, as the C89 lane builds it; the file included, so that what it
  * keeps to itself can be looked at. */
 
 #include <stdio.h>
@@ -452,6 +455,96 @@ static void test_v2(void)
    remove(PATH);
 }
 
+/* the inputs: a seed and a size; the data made: entry_data of them */
+static uintptr_t s_main_thread;
+static int s_built_elsewhere;
+static int s_builds;
+
+static void *build_entry(const void *inputs, size_t size, size_t *out_size)
+{
+   uint32_t in[2];
+   unsigned char *out;
+   s_builds++;
+   if (sthread_get_current_thread_id() != s_main_thread)
+      s_built_elsewhere++;
+   if (size != sizeof(in))
+      return NULL;
+   memcpy(in, inputs, sizeof(in));
+   if (in[1] == 0)
+      return NULL; /* nothing to make: no entry */
+   out = (unsigned char*)malloc(in[1]);
+   if (!out)
+      return NULL;
+   entry_data(out, in[1], in[0]);
+   *out_size = in[1];
+   return out;
+}
+
+static void add_built(file_cache_t *fc, uint64_t n1, uint64_t n2, size_t size, uint32_t seed)
+{
+   uint32_t in[2];
+   in[0] = seed;
+   in[1] = (uint32_t)size;
+   file_cache_add_built(fc, n1, n2, in, sizeof(in), build_entry);
+   /* the caller's inputs may go at once */
+   in[0] = 0xDEADBEEF;
+   in[1] = 3;
+}
+
+static void test_built(void)
+{
+   file_cache_t *fc;
+   int i;
+   remove(PATH);
+   s_main_thread = sthread_get_current_thread_id();
+   s_built_elsewhere = 0;
+   s_builds = 0;
+   fc = file_cache_create(PATH, 3);
+   CHECK(fc != NULL);
+   if (!fc)
+      return;
+   /* in their turn: each name made, written over, deleted and made again,
+    * adds and made entries in between */
+   for (i = 0; i < 40; i++)
+   {
+      add_built(fc, 5, (uint64_t)i, 100 + (size_t)i * 37, (uint32_t)i);
+      add(fc, 5, (uint64_t)i, 60, 1000u + (uint32_t)i);
+      if (i % 2)
+         add_built(fc, 5, (uint64_t)i, 3000, 2000u + (uint32_t)i);
+   }
+   file_cache_wait(fc);
+   for (i = 0; i < 40; i++)
+   {
+      if (i % 2)
+         CHECK(entry_is(fc, 5, (uint64_t)i, 3000, 2000u + (uint32_t)i));
+      else
+         CHECK(entry_is(fc, 5, (uint64_t)i, 60, 1000u + (uint32_t)i));
+   }
+   CHECK(file_cache_delete(fc, 5, 7));
+   add_built(fc, 5, 7, 500, 77);
+   file_cache_wait(fc);
+   CHECK(entry_is(fc, 5, 7, 500, 77));
+   /* nothing made: no entry, the one there kept */
+   add_built(fc, 5, 100, 0, 1);
+   add_built(fc, 5, 8, 0, 1);
+   file_cache_add_built(fc, 5, 101, "x", 1, NULL);
+   file_cache_wait(fc);
+   CHECK(!file_cache_has(fc, 5, 100) && !file_cache_has(fc, 5, 101));
+   CHECK(entry_is(fc, 5, 8, 60, 1008));
+   CHECK(file_cache_count(fc) == 40);
+   CHECK(s_builds == 40 + 20 + 1 + 2 && s_built_elsewhere == s_builds);
+   file_cache_close(fc);
+   /* and kept in the file */
+   fc = file_cache_open(PATH, false, 3, NULL);
+   CHECK(fc != NULL);
+   if (fc)
+   {
+      CHECK(entry_is(fc, 5, 7, 500, 77) && entry_is(fc, 5, 39, 3000, 2039));
+      file_cache_close(fc);
+   }
+   remove(PATH);
+}
+
 int main(void)
 {
    if (!file_cache_global_init())
@@ -464,6 +557,7 @@ int main(void)
    test_file();
    test_compression();
    test_v2();
+   test_built();
    file_cache_stop_writer();
    if (failures)
    {

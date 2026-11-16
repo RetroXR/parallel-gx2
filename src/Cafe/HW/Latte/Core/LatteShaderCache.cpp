@@ -404,74 +404,51 @@ uint64 LatteShaderCache_getShaderNameInTransferableCache(uint64 baseHash, uint32
 	return baseHash;
 }
 
-void LatteShaderCache_writeSeparableVertexShader(uint64 shaderBaseHash, uint64 shaderAuxHash, uint8* fetchShader, uint32 fetchShaderSize, uint8* vertexShader, uint32 vertexShaderSize, uint32* contextRegisters, bool usesGeometryShader)
+// the GPU thread's part: the inputs into a buffer of its own, kept, which the
+// cache copies
+static void LatteShaderCache_queueSeparableShader(uint32 type, uint64 shaderBaseHash, uint64 shaderAuxHash, uint8 usesGeometryShader,
+	uint16 vsRingParameterCount, uint32* contextRegisters, const uint8* program0, uint32 size0, const uint8* program1, uint32 size1)
 {
 	if (!s_shaderCacheGeneric)
 		return;
-	MemStreamWriter streamWriter(128 * 1024);
-	// header
-	streamWriter.writeBE<uint8>(1 | (SHADER_CACHE_TYPE_VERTEX << 4)); // version and type (shared field)
-	streamWriter.writeBE<uint64>(shaderBaseHash);
-	streamWriter.writeBE<uint64>(shaderAuxHash);
-	streamWriter.writeBE<uint8>(usesGeometryShader ? 1 : 0);
-	// register state
-	Latte::GPUCompactedRegisterState compactRegState;
-	Latte::StoreGPURegisterState(*(LatteContextRegister*)contextRegisters, compactRegState);
-	Latte::SerializeRegisterState(compactRegState, streamWriter);
-	// fetch shader
-	Latte::SerializeShaderProgram(fetchShader, fetchShaderSize, streamWriter);
-	// vertex shader
-	Latte::SerializeShaderProgram(vertexShader, vertexShaderSize, streamWriter);
-	// write to cache
-	uint64 shaderCacheName = LatteShaderCache_getShaderNameInTransferableCache(shaderBaseHash, SHADER_CACHE_TYPE_VERTEX);
-	std::span<uint8> dataBlob = streamWriter.getResult();
-	s_shaderCacheGeneric->AddFileAsync({shaderCacheName, shaderAuxHash }, dataBlob.data(), dataBlob.size());
+	using Latte::ShaderCacheEntryInputs;
+	thread_local std::vector<uint8> s_inputs;
+	s_inputs.resize(sizeof(ShaderCacheEntryInputs) + (size_t)size0 + size1);
+	ShaderCacheEntryInputs* in = (ShaderCacheEntryInputs*)s_inputs.data();
+	in->versionAndType = (uint8)(1 | (type << 4));
+	in->programCount = type == SHADER_CACHE_TYPE_PIXEL ? 1 : 2;
+	in->usesGeometryShader = usesGeometryShader;
+	in->vsRingParameterCount = vsRingParameterCount;
+	in->programSize[0] = size0;
+	in->programSize[1] = size1;
+	in->baseHash = shaderBaseHash;
+	in->auxHash = shaderAuxHash;
+	Latte::StoreGPURegisterState(*(LatteContextRegister*)contextRegisters, in->regs);
+	if (size0)
+		std::memcpy(s_inputs.data() + sizeof(ShaderCacheEntryInputs), program0, size0);
+	if (size1)
+		std::memcpy(s_inputs.data() + sizeof(ShaderCacheEntryInputs) + size0, program1, size1);
+	uint64 shaderCacheName = LatteShaderCache_getShaderNameInTransferableCache(shaderBaseHash, type);
+	s_shaderCacheGeneric->AddFileBuilt({shaderCacheName, shaderAuxHash}, s_inputs.data(), s_inputs.size(), &Latte::BuildShaderCacheEntry);
+}
+
+void LatteShaderCache_writeSeparableVertexShader(uint64 shaderBaseHash, uint64 shaderAuxHash, uint8* fetchShader, uint32 fetchShaderSize, uint8* vertexShader, uint32 vertexShaderSize, uint32* contextRegisters, bool usesGeometryShader)
+{
+	LatteShaderCache_queueSeparableShader(SHADER_CACHE_TYPE_VERTEX, shaderBaseHash, shaderAuxHash, usesGeometryShader ? 1 : 0, 0,
+		contextRegisters, fetchShader, fetchShaderSize, vertexShader, vertexShaderSize);
 }
 
 void LatteShaderCache_writeSeparableGeometryShader(uint64 shaderBaseHash, uint64 shaderAuxHash, uint8* geometryShader, uint32 geometryShaderSize, uint8* gsCopyShader, uint32 gsCopyShaderSize, uint32* contextRegisters, uint32* hleSpecialState, uint32 vsRingParameterCount)
 {
-	if (!s_shaderCacheGeneric)
-		return;
-	MemStreamWriter streamWriter(128 * 1024);
-	// header
-	streamWriter.writeBE<uint8>(1 | (SHADER_CACHE_TYPE_GEOMETRY << 4)); // version and type (shared field)
-	streamWriter.writeBE<uint64>(shaderBaseHash);
-	streamWriter.writeBE<uint64>(shaderAuxHash);
 	cemu_assert_debug(vsRingParameterCount < 0x10000);
-	streamWriter.writeBE<uint16>(vsRingParameterCount);
-	// register state
-	Latte::GPUCompactedRegisterState compactRegState;
-	Latte::StoreGPURegisterState(*(LatteContextRegister*)contextRegisters, compactRegState);
-	Latte::SerializeRegisterState(compactRegState, streamWriter);
-	// geometry copy shader
-	Latte::SerializeShaderProgram(gsCopyShader, gsCopyShaderSize, streamWriter);
-	// geometry shader
-	Latte::SerializeShaderProgram(geometryShader, geometryShaderSize, streamWriter);
-	// write to cache
-	uint64 shaderCacheName = LatteShaderCache_getShaderNameInTransferableCache(shaderBaseHash, SHADER_CACHE_TYPE_GEOMETRY);
-	std::span<uint8> dataBlob = streamWriter.getResult();
-	s_shaderCacheGeneric->AddFileAsync({shaderCacheName, shaderAuxHash }, dataBlob.data(), dataBlob.size());
+	LatteShaderCache_queueSeparableShader(SHADER_CACHE_TYPE_GEOMETRY, shaderBaseHash, shaderAuxHash, 0, (uint16)vsRingParameterCount,
+		contextRegisters, gsCopyShader, gsCopyShaderSize, geometryShader, geometryShaderSize);
 }
 
 void LatteShaderCache_writeSeparablePixelShader(uint64 shaderBaseHash, uint64 shaderAuxHash, uint8* pixelShader, uint32 pixelShaderSize, uint32* contextRegisters, bool usesGeometryShader)
 {
-	if (!s_shaderCacheGeneric)
-		return;
-	MemStreamWriter streamWriter(128 * 1024);
-	streamWriter.writeBE<uint8>(1 | (SHADER_CACHE_TYPE_PIXEL << 4)); // version and type (shared field)
-	streamWriter.writeBE<uint64>(shaderBaseHash);
-	streamWriter.writeBE<uint64>(shaderAuxHash);
-	streamWriter.writeBE<uint8>(usesGeometryShader ? 1 : 0);
-	// register state
-	Latte::GPUCompactedRegisterState compactRegState;
-	Latte::StoreGPURegisterState(*(LatteContextRegister*)contextRegisters, compactRegState);
-	Latte::SerializeRegisterState(compactRegState, streamWriter);
-	// pixel shader
-	Latte::SerializeShaderProgram(pixelShader, pixelShaderSize, streamWriter);
-	// write to cache
-	uint64 shaderCacheName = LatteShaderCache_getShaderNameInTransferableCache(shaderBaseHash, SHADER_CACHE_TYPE_PIXEL);
-	std::span<uint8> dataBlob = streamWriter.getResult();
-	s_shaderCacheGeneric->AddFileAsync({shaderCacheName, shaderAuxHash }, dataBlob.data(), dataBlob.size());
+	LatteShaderCache_queueSeparableShader(SHADER_CACHE_TYPE_PIXEL, shaderBaseHash, shaderAuxHash, usesGeometryShader ? 1 : 0, 0,
+		contextRegisters, pixelShader, pixelShaderSize, nullptr, 0);
 }
 
 void LatteShaderCache_loadOrCompileSeparableShader(LatteDecompilerShader* shader, uint64 shaderBaseHash, uint64 shaderAuxHash)

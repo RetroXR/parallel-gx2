@@ -54,6 +54,10 @@ src/Cafe/IOSU/fsa/iosu_fsa.cpp __FSAOpenFile
 src/Cafe/IOSU/fsa/iosu_fsa.cpp __FSA_GetFileStat
 src/Cafe/IOSU/kernel/iosu_kernel.cpp _IPCHandlerIn_IOS_Open
 src/Cafe/IOSU/kernel/iosu_kernel.cpp _IPCCreateResourceHandle
+src/Cafe/HW/Latte/Core/LatteShaderCache.cpp LatteShaderCache_queueSeparableShader
+src/Cafe/HW/Latte/Core/LatteShaderCache.cpp LatteShaderCache_writeSeparableVertexShader
+src/Cafe/HW/Latte/Core/LatteShaderCache.cpp LatteShaderCache_writeSeparableGeometryShader
+src/Cafe/HW/Latte/Core/LatteShaderCache.cpp LatteShaderCache_writeSeparablePixelShader
 '
 
 # the body of every definition of $2 in $1 (overloads too), its lines numbered

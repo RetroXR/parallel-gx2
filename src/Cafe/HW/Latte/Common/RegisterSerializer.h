@@ -1,6 +1,8 @@
 #pragma once
 #include "util/helpers/Serializer.h"
 
+struct LatteContextRegister;
+
 namespace Latte
 {
 	struct GPUCompactedRegisterState

@@ -30,6 +30,46 @@ namespace Latte
 		return s_scratch[slot];
 	}
 
+	void* BuildShaderCacheEntry(const void* inputs, size_t size, size_t* outSize)
+	{
+		try
+		{
+			ShaderCacheEntryInputs in;
+			if (size < sizeof(in))
+				return nullptr;
+			std::memcpy(&in, inputs, sizeof(in));
+			if (in.programCount > 2 || size != sizeof(in) + (size_t)in.programSize[0] + (in.programCount > 1 ? in.programSize[1] : 0))
+				return nullptr;
+			const uint8* programs = (const uint8*)inputs + sizeof(in);
+			MemStreamWriter streamWriter(16 * 1024);
+			streamWriter.writeBE<uint8>(in.versionAndType); // version and type (shared field)
+			streamWriter.writeBE<uint64>(in.baseHash);
+			streamWriter.writeBE<uint64>(in.auxHash);
+			if ((in.versionAndType >> 4) == 1) // geometry
+				streamWriter.writeBE<uint16>(in.vsRingParameterCount);
+			else
+				streamWriter.writeBE<uint8>(in.usesGeometryShader);
+			SerializeRegisterState(in.regs, streamWriter);
+			for (uint32 i = 0; i < in.programCount; i++)
+			{
+				SerializeShaderProgram((void*)programs, in.programSize[i], streamWriter);
+				programs += in.programSize[i];
+			}
+			std::span<uint8> blob = streamWriter.getResult();
+			void* out = malloc(blob.size());
+			if (out)
+			{
+				std::memcpy(out, blob.data(), blob.size());
+				*outSize = blob.size();
+			}
+			return out;
+		}
+		catch (...)
+		{
+			return nullptr;
+		}
+	}
+
 	void SerializeShaderProgram(void* shaderProg, uint32 size, MemStreamWriter& memWriter)
 	{
 		memWriter.writeBE<uint8>(1); // version
