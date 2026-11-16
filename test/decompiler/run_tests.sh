@@ -36,7 +36,7 @@ else
 fi
 if command -v spirv-val >/dev/null 2>&1; then
 	n=0
-	for f in "$OUT"/direct_*.spv; do
+	for f in "$OUT"/direct_*.spv "$OUT"/vdirect_*.spv; do
 		[ -f "$f" ] || continue
 		spirv-val --target-env vulkan1.0 "$f" || { echo "FAIL: $f is not valid SPIR-V"; exit 1; }
 		n=$((n + 1))

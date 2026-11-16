@@ -32,6 +32,12 @@ bool ActiveSettings::DumpShadersEnabled()
 {
 	return false;
 }
+// the vertex shaders' fetch shaders are the test's own, never registered
+#include "Cafe/HW/Latte/Core/FetchShader.h"
+LatteFetchShader::~LatteFetchShader()
+{
+}
+
 // the test turns it on and off: loops are written either way
 bool g_testPreventInfiniteLoops = false;
 bool ActiveSettings::ShaderPreventInfiniteLoopsEnabled()

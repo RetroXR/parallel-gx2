@@ -16,6 +16,8 @@
 // vec4 loaded and the channel extracted, a channel stored through its
 // access chain, the registers zeroed by stores at the start - as lavapipe's
 // optimizer folds otherwise in places.
+// A vertex shader's attributes are decoded as
+// LatteDecompiler_emitAttributeDecodeGLSL writes it, case for case.
 // What it does not cover yet it declines
 // (LatteDecompiler_emitSPIRVShader returns false) and the shader takes the
 // GLSL path as before; LatteDecompiler_SPIRVDeclineReason says why.
@@ -24,6 +26,7 @@
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
+#include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
 #include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.h"
 #include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerInternal.h"
@@ -136,7 +139,15 @@ namespace
 		uint32 ufMember[8]{};
 		uint32 inputVar[GPU7_PS_MAX_INPUTS]{};
 		uint32 colorOut[LATTE_NUM_COLOR_TARGET]{};
-		uint32 interfaceIds[64];
+		// a vertex shader's: the attributes, attrDecoder, the per-vertex
+		// block, the parameters by semantic, the vertex and instance index
+		bool isVertex{};
+		uint32 attrVar[LATTE_NUM_MAX_ATTRIBUTE_LOCATIONS]{};
+		uint32 decVar{};
+		uint32 perVertexVar{};
+		uint32 paramVar[LATTE_ANALYZER_IMPORT_INDEX_PARAM_MAX + 1]{};
+		uint32 vertexIndexVar{}, instanceIndexVar{};
+		uint32 interfaceIds[LATTE_NUM_MAX_ATTRIBUTE_LOCATIONS + 32 + 8];
 		uint32 interfaceCount{};
 		// the ALU clause being written
 		PVPSAlias pvps[5];
@@ -593,6 +604,11 @@ namespace
 		// if (cond) discard;
 		void KillIf(uint32 cond)
 		{
+			if (isVertex)
+			{
+				Decline("kill in a vertex shader"); // no discard there: no GLSL either
+				return;
+			}
 			uint32 killLabel = spv_id(w), mergeLabel = spv_id(w);
 			OpVoid(SpvOpSelectionMerge, { mergeLabel, SpvSelectionControlMaskNone });
 			OpVoid(SpvOpBranchConditional, { cond, killLabel, mergeLabel });
@@ -730,6 +746,200 @@ namespace
 		bool LoopStart(sint32 d);
 		bool LoopEnd(sint32 d);
 		bool EmitControlledALUClause(LatteDecompilerCFInstruction& cf);
+		bool DeclareVertexIO();
+		bool EmitVertexInputs();
+		bool EmitAttributeImport(LatteParsedFetchShaderAttribute& attrib);
+		bool EmitAttributeDecode(LatteParsedFetchShaderAttribute& attrib);
+		bool EmitVertexExport(LatteDecompilerCFInstruction& cf);
+		uint32 BuiltinInput(uint32 builtin);
+		uint32 VertexOutSemantic(uint32 index);
+		// attrDecoder's statements, as rslc makes them
+		uint32 tV2U{}, tV3U{}, tV2F{};
+		uint32 VecU(uint32 n) { return n == 1 ? tU : spv_type_vector(w, tU, n); }
+		uint32 VecF(uint32 n) { return n == 1 ? tF : spv_type_vector(w, tF, n); }
+		uint32 SplatU(uint32 v, uint32 n)
+		{
+			if (n == 1)
+				return ConstU(v);
+			uint32 parts[4] = { ConstU(v), ConstU(v), ConstU(v), ConstU(v) };
+			return spv_const_composite(w, VecU(n), parts, n);
+		}
+		uint32 SplatF(float f, uint32 n)
+		{
+			if (n == 1)
+				return ConstF(f);
+			uint32 parts[4] = { ConstF(f), ConstF(f), ConstF(f), ConstF(f) };
+			return spv_const_composite(w, VecF(n), parts, n);
+		}
+		// v.<sel> of a vector value: an extract for one, a shuffle for more
+		uint32 Swizzle(uint32 v, uint32 elemType, const uint8* sel, uint32 n)
+		{
+			if (n == 1)
+				return Op(SpvOpCompositeExtract, elemType, { v, sel[0] });
+			uint32 words[2 + 2 + 4];
+			size_t m = 0;
+			words[m++] = spv_type_vector(w, elemType, n);
+			words[m++] = spv_id(w);
+			words[m++] = v;
+			words[m++] = v;
+			for (uint32 i = 0; i < n; i++)
+				words[m++] = sel[i];
+			spv_inst(w, SPV_SEC_BODY, SpvOpVectorShuffle, words, m);
+			return words[1];
+		}
+		uint32 Construct(uint32 type, const uint32* parts, uint32 n)
+		{
+			uint32 words[2 + 4];
+			size_t m = 0;
+			words[m++] = type;
+			words[m++] = spv_id(w);
+			for (uint32 i = 0; i < n; i++)
+				words[m++] = parts[i];
+			EnsureBlock();
+			spv_inst(w, SPV_SEC_BODY, SpvOpCompositeConstruct, words, m);
+			return words[1];
+		}
+		// attrDecoder.<chans> read; written, one channel through its access
+		// chain, more as a swizzle (loaded, inserted, stored), all whole
+		uint32 DecRead(const char* chans)
+		{
+			uint8 sel[4];
+			uint32 n = 0;
+			for (; chans[n]; n++)
+				sel[n] = (uint8)(chans[n] == 'w' ? 3 : chans[n] - 'x');
+			uint32 v = Load(tV4U, decVar);
+			if (n == 4 && sel[0] == 0 && sel[1] == 1 && sel[2] == 2 && sel[3] == 3)
+				return v;
+			return Swizzle(v, tU, sel, n);
+		}
+		void DecWrite(const char* chans, uint32 value, bool whole = false)
+		{
+			uint8 sel[4];
+			uint32 n = 0;
+			for (; chans[n]; n++)
+				sel[n] = (uint8)(chans[n] == 'w' ? 3 : chans[n] - 'x');
+			if (whole)
+			{
+				Store(decVar, value);
+				return;
+			}
+			if (n == 1)
+			{
+				uint32 ptr = spv_type_pointer(w, SpvStorageClassFunction, tU);
+				Store(Op(SpvOpAccessChain, ptr, { decVar, ConstI(sel[0]) }), value);
+				return;
+			}
+			uint32 reg = Load(tV4U, decVar);
+			for (uint32 i = 0; i < n; i++)
+				reg = Op(SpvOpCompositeInsert, tV4U, { Op(SpvOpCompositeExtract, tU, { value, i }), reg, sel[i] });
+			Store(decVar, reg);
+		}
+		// attrDataSem<n>.<chans>
+		uint32 AttrRead(uint32 semantic, const char* chans)
+		{
+			uint8 sel[4];
+			uint32 n = 0;
+			for (; chans[n]; n++)
+				sel[n] = (uint8)(chans[n] == 'w' ? 3 : chans[n] - 'x');
+			uint32 v = Load(tV4U, attrVar[semantic]);
+			if (n == 4 && sel[0] == 0 && sel[1] == 1 && sel[2] == 2 && sel[3] == 3)
+				return v;
+			return Swizzle(v, tU, sel, n);
+		}
+		// uvec<n>(v, 0, ...): the components and zeros
+		uint32 PadU(uint32 v, uint32 have, uint32 n)
+		{
+			uint32 parts[4];
+			for (uint32 i = 0; i < have; i++)
+				parts[i] = have == 1 ? v : Op(SpvOpCompositeExtract, tU, { v, i });
+			for (uint32 i = have; i < n; i++)
+				parts[i] = ConstU(0);
+			return Construct(VecU(n), parts, n);
+		}
+		// vecN(uvecN) / vecN(ivecN): a constructor, each component converted
+		uint32 ToFloat(uint32 v, uint32 n, bool fromSigned)
+		{
+			if (n == 1)
+				return Op(fromSigned ? SpvOpConvertSToF : SpvOpConvertUToF, tF, { v });
+			uint32 parts[4];
+			for (uint32 i = 0; i < n; i++)
+				parts[i] = Op(fromSigned ? SpvOpConvertSToF : SpvOpConvertUToF, tF, { Op(SpvOpCompositeExtract, fromSigned ? tI : tU, { v, i }) });
+			return Construct(VecF(n), parts, n);
+		}
+		uint32 BitcastU(uint32 v, uint32 n) { return Op(SpvOpBitcast, VecU(n), { v }); }
+		// X = (X>>24)|((X>>8)&0xFF00)|((X<<8)&0xFF0000)|((X<<24)) on attrDecoder.<chans>
+		void DecSwap32(const char* chans, bool whole)
+		{
+			uint32 n = (uint32)std::strlen(chans);
+			uint32 t = VecU(n);
+			uint32 a = Op(SpvOpShiftRightLogical, t, { DecRead(chans), SplatU(24, n) });
+			uint32 b = Op(SpvOpBitwiseAnd, t, { Op(SpvOpShiftRightLogical, t, { DecRead(chans), SplatU(8, n) }), SplatU(0xFF00, n) });
+			uint32 ab = Op(SpvOpBitwiseOr, t, { a, b });
+			uint32 c = Op(SpvOpBitwiseAnd, t, { Op(SpvOpShiftLeftLogical, t, { DecRead(chans), SplatU(8, n) }), SplatU(0xFF0000, n) });
+			uint32 abc = Op(SpvOpBitwiseOr, t, { ab, c });
+			uint32 d = Op(SpvOpShiftLeftLogical, t, { DecRead(chans), SplatU(24, n) });
+			DecWrite(chans, Op(SpvOpBitwiseOr, t, { abc, d }), whole);
+		}
+		// X = ((X>>8)&0xFF)|((X<<8)&0xFF00)
+		void DecSwap16(const char* chans, bool whole)
+		{
+			uint32 n = (uint32)std::strlen(chans);
+			uint32 t = VecU(n);
+			uint32 a = Op(SpvOpBitwiseAnd, t, { Op(SpvOpShiftRightLogical, t, { DecRead(chans), SplatU(8, n) }), SplatU(0xFF, n) });
+			uint32 b = Op(SpvOpBitwiseAnd, t, { Op(SpvOpShiftLeftLogical, t, { DecRead(chans), SplatU(8, n) }), SplatU(0xFF00, n) });
+			DecWrite(chans, Op(SpvOpBitwiseOr, t, { a, b }), whole);
+		}
+		// if( (attrDecoder.c&bit) != 0 ) attrDecoder.c |= ext;
+		void DecSignExtend(const char* c, uint32 bit, uint32 ext)
+		{
+			uint32 masked = Op(SpvOpBitwiseAnd, tU, { DecRead(c), ConstU(bit) });
+			uint32 set = Op(SpvOpINotEqual, tBool, { masked, ConstU(0) });
+			If(set, [&] { DecWrite(c, Op(SpvOpBitwiseOr, tU, { DecRead(c), ConstU(ext) })); });
+		}
+		// attrDecoder.c = floatBitsToUint(max(float(int(attrDecoder.c))/d,-1.0));
+		void DecSNorm(const char* c, const char* d)
+		{
+			uint32 f = Op(SpvOpConvertSToF, tF, { Op(SpvOpBitcast, tI, { DecRead(c) }) });
+			uint32 q = Op(SpvOpFDiv, tF, { f, KFText(d).id });
+			uint32 m = Ext(GLSLstd450FMax, tF, { q, KF(-1.0).id });
+			DecWrite(c, Op(SpvOpBitcast, tU, { m }));
+		}
+		// attrDecoder.c = floatBitsToUint(float(int(attrDecoder.c))[/d]);
+		void DecIntToFloat(const char* c, const char* d)
+		{
+			uint32 f = Op(SpvOpConvertSToF, tF, { Op(SpvOpBitcast, tI, { DecRead(c) }) });
+			if (d)
+				f = Op(SpvOpFDiv, tF, { f, KFText(d).id });
+			DecWrite(c, Op(SpvOpBitcast, tU, { f }));
+		}
+		// the 2_10_10_10 split, then x, y, z normalized by d and w by 3
+		void Dec1010102(const char* d, bool isSigned)
+		{
+			static const uint32 shifts[4] = { 0, 10, 20, 30 };
+			uint32 parts[4];
+			for (uint32 i = 0; i < 4; i++)
+				parts[i] = Op(SpvOpBitwiseAnd, tU, { Op(SpvOpShiftRightLogical, tU, { DecRead("x"), ConstU(shifts[i]) }), ConstU(i == 3 ? 0x3 : 0x3FF) });
+			DecWrite("xyzw", Construct(tV4U, parts, 4), true);
+			if (isSigned)
+			{
+				DecSignExtend("x", 0x200, 0xFFFFFC00);
+				DecSignExtend("y", 0x200, 0xFFFFFC00);
+				DecSignExtend("z", 0x200, 0xFFFFFC00);
+			}
+			DecSNorm("x", d);
+			DecSNorm("y", d);
+			DecSNorm("z", d);
+			// floatBitsToUint(float(attrDecoder.w) * (1.0 / 3.0))
+			uint32 f = Op(SpvOpConvertUToF, tF, { DecRead("w") });
+			DecWrite("w", Op(SpvOpBitcast, tU, { Op(SpvOpFMul, tF, { f, KF(1.0 / 3.0).id }) }));
+		}
+		// unpackHalf2x16(attrDecoder.a|(attrDecoder.b<<16))
+		uint32 DecUnpackHalf(const char* a, const char* b)
+		{
+			uint32 lo = DecRead(a);
+			uint32 hi = Op(SpvOpShiftLeftLogical, tU, { DecRead(b), ConstU(16) });
+			return Ext(GLSLstd450UnpackHalf2x16, tV2F, { Op(SpvOpBitwiseOr, tU, { lo, hi }) });
+		}
 		bool DeclareTextures();
 		bool EmitTEXClause(LatteDecompilerCFInstruction& cf);
 		bool EmitSample(LatteDecompilerTEXInstruction& t);
@@ -769,6 +979,9 @@ namespace
 		tV4F = spv_type_vector(w, tF, 4);
 		tV4I = spv_type_vector(w, tI, 4);
 		tV4U = spv_type_vector(w, tU, 4);
+		tV2U = spv_type_vector(w, tU, 2);
+		tV3U = spv_type_vector(w, tU, 3);
+		tV2F = spv_type_vector(w, tF, 2);
 		uint32 cap = SpvCapabilityShader;
 		spv_inst(w, SPV_SEC_CAPABILITY, SpvOpCapability, &cap, 1);
 		glsl = spv_id(w);
@@ -814,8 +1027,16 @@ namespace
 		}
 		else if (shader->uniformMode != LATTE_DECOMPILER_UNIFORM_MODE_NONE)
 			return Decline("uniform buffers");
-		// special uniforms (a pixel shader's)
-		bool alphaTestEnable = dc->contextRegistersNew->SX_ALPHA_TEST_CONTROL.get_ALPHA_TEST_ENABLE();
+		// special uniforms
+		const bool hasAnyViewportScaleDisabled =
+			!dc->contextRegistersNew->PA_CL_VTE_CNTL.get_VPORT_X_SCALE_ENA() ||
+			!dc->contextRegistersNew->PA_CL_VTE_CNTL.get_VPORT_Y_SCALE_ENA() ||
+			!dc->contextRegistersNew->PA_CL_VTE_CNTL.get_VPORT_Z_SCALE_ENA();
+		if (isVertex && hasAnyViewportScaleDisabled)
+			return Decline("window space to clip space transform");
+		if (dc->analyzer.outputPointSize)
+			return Decline("point size");
+		bool alphaTestEnable = !isVertex && dc->contextRegistersNew->SX_ALPHA_TEST_CONTROL.get_ALPHA_TEST_ENABLE();
 		if (alphaTestEnable)
 		{
 			uniformCurrentOffset = (uniformCurrentOffset + 3) & ~3;
@@ -824,7 +1045,7 @@ namespace
 			uniformOffsets.offset_alphaTestRef = uniformCurrentOffset;
 			uniformCurrentOffset += 4;
 		}
-		if (dc->analyzer.hasFragCoordAccess)
+		if (!isVertex && dc->analyzer.hasFragCoordAccess)
 			return Decline("gl_FragCoord");
 		for (sint32 t = 0; t < LATTE_NUM_MAX_TEX_UNITS; t++)
 		{
@@ -1882,7 +2103,17 @@ namespace
 		uint32 operands[2];
 		uint32 nOperands = 0;
 		bool explicitLod = false;
-		if (op == GPU7_TEX_INST_SAMPLE_LB)
+		if (isVertex && (op == GPU7_TEX_INST_SAMPLE || op == GPU7_TEX_INST_SAMPLE_LB))
+		{
+			// texture() outside a fragment shader: level 0, the bias read
+			// as the call's argument and dropped, as rslc lowers it
+			if (op == GPU7_TEX_INST_SAMPLE_LB)
+				TexCoord(t, 3);
+			mask |= SpvImageOperandsLodMask;
+			operands[nOperands++] = ConstF(0.0f);
+			explicitLod = true;
+		}
+		else if (op == GPU7_TEX_INST_SAMPLE_LB)
 		{
 			mask |= SpvImageOperandsBiasMask;
 			operands[nOperands++] = TexCoord(t, 3).id;
@@ -1990,6 +2221,538 @@ namespace
 				return false;
 		}
 		return Ok();
+	}
+
+	uint32 SpvShader::BuiltinInput(uint32 builtin)
+	{
+		uint32& var = builtin == SpvBuiltInVertexIndex ? vertexIndexVar : instanceIndexVar;
+		if (!var)
+		{
+			var = spv_global_variable(w, spv_type_pointer(w, SpvStorageClassInput, tI), SpvStorageClassInput);
+			Decorate(var, SpvDecorationBuiltIn, { builtin });
+			interfaceIds[interfaceCount++] = var;
+		}
+		return var;
+	}
+
+	// _emitAttributes, gl_PerVertex and _emitVSExports
+	bool SpvShader::DeclareVertexIO()
+	{
+		uint32 ptrIn = spv_type_pointer(w, SpvStorageClassInput, tV4U);
+		for (uint32 i = 0; i < LATTE_NUM_MAX_ATTRIBUTE_LOCATIONS; i++)
+		{
+			if (!ctx->analyzer.inputAttributSemanticMask[i])
+				continue;
+			attrVar[i] = spv_global_variable(w, ptrIn, SpvStorageClassInput);
+			Decorate(attrVar[i], SpvDecorationLocation, { (uint32)ctx->output->resourceMappingVK.attributeMapping[i] });
+			interfaceIds[interfaceCount++] = attrVar[i];
+		}
+		// out gl_PerVertex { vec4 gl_Position; };
+		uint32 block = spv_type_struct(w, &tV4F, 1);
+		Decorate(block, SpvDecorationBlock);
+		uint32 member[4] = { block, 0, SpvDecorationBuiltIn, SpvBuiltInPosition };
+		spv_inst(w, SPV_SEC_DECORATION, SpvOpMemberDecorate, member, 4);
+		perVertexVar = spv_global_variable(w, spv_type_pointer(w, SpvStorageClassOutput, block), SpvStorageClassOutput);
+		interfaceIds[interfaceCount++] = perVertexVar;
+		LatteShaderPSInputTable* psInputTable = LatteSHRC_GetPSInputTable();
+		uint32 ptrOut = spv_type_pointer(w, SpvStorageClassOutput, tV4F);
+		for (uint32 i = 0; i < 32; i++)
+		{
+			if ((shader->outputParameterMask & (1u << i)) == 0)
+				continue;
+			uint32 semanticId = VertexOutSemantic(i);
+			if (semanticId > LATTE_ANALYZER_IMPORT_INDEX_PARAM_MAX)
+				continue;
+			sint32 psInputIndex = -1;
+			for (sint32 f = 0; f < psInputTable->count; f++)
+			{
+				if (psInputTable->import[f].semanticId == semanticId)
+				{
+					psInputIndex = f;
+					break;
+				}
+			}
+			if (psInputIndex < 0)
+				continue;
+			if (paramVar[semanticId])
+				return Decline("parameter declared twice");
+			uint32 v = spv_global_variable(w, ptrOut, SpvStorageClassOutput);
+			Decorate(v, SpvDecorationLocation, { (uint32)psInputIndex });
+			if (psInputTable->import[psInputIndex].isFlat)
+				Decorate(v, SpvDecorationFlat);
+			if (psInputTable->import[psInputIndex].isNoPerspective)
+				Decorate(v, SpvDecorationNoPerspective);
+			paramVar[semanticId] = v;
+			interfaceIds[interfaceCount++] = v;
+		}
+		return true;
+	}
+
+	// _getVertexShaderOutParamSemanticId
+	uint32 SpvShader::VertexOutSemantic(uint32 index)
+	{
+		uint32 semanticId = (ctx->contextRegisters[mmSPI_VS_OUT_ID_0 + (index / 4)] >> (8 * (index % 4))) & 0xFF;
+		LatteShaderPSInputTable* psInputTable = LatteSHRC_GetPSInputTable();
+		for (sint32 i = 0; i < psInputTable->count; i++)
+		{
+			if (psInputTable->import[i].semanticId == semanticId)
+				return semanticId;
+		}
+		return 0xFF;
+	}
+
+	// LatteDecompiler_emitAttributeDecodeGLSL: attrDecoder from the
+	// attribute, statement for statement
+	bool SpvShader::EmitAttributeDecode(LatteParsedFetchShaderAttribute& attrib)
+	{
+		using E = Latte::E_HWFMT;
+		if (attrib.attributeBufferIndex >= Latte::GPU_LIMITS::NUM_VERTEX_BUFFERS)
+			return Decline("attribute of no vertex buffer");
+		const uint32 a = attrib.semanticId;
+		if (a >= LATTE_NUM_MAX_ATTRIBUTE_LOCATIONS || !attrVar[a])
+			return Decline("attribute not declared");
+		const E fmt = attrib.format;
+		const uint8 nfa = attrib.nfa;
+		const bool sgn = attrib.isSigned != 0;
+		auto le32 = [&](uint32 n) {
+			// attrDecoder = attrDataSem; or uvec4(attrDataSem.xyz,0) and the like
+			if (n == 4)
+				DecWrite("xyzw", AttrRead(a, "xyzw"), true);
+			else
+				DecWrite("xyzw", PadU(AttrRead(a, n == 3 ? "xyz" : n == 2 ? "xy" : "x"), n, 4), true);
+		};
+		auto be32 = [&](uint32 n) {
+			if (n == 4)
+			{
+				DecWrite("xyzw", AttrRead(a, "xyzw"), true);
+				DecSwap32("xyzw", true);
+				return;
+			}
+			const char* c = n == 3 ? "xyz" : n == 2 ? "xy" : "x";
+			DecWrite(c, AttrRead(a, c));
+			DecSwap32(c, false);
+			for (uint32 i = n; i < 4; i++)
+				DecWrite(i == 1 ? "y" : i == 2 ? "z" : "w", ConstU(0));
+		};
+		auto be16x1 = [&] {
+			DecWrite("xy", AttrRead(a, "xy"));
+			DecSwap16("x", false);
+			DecWrite("y", ConstU(0));
+			DecWrite("z", ConstU(0));
+			DecWrite("w", ConstU(0));
+		};
+		auto be16x2 = [&] {
+			DecWrite("xy", AttrRead(a, "xy"));
+			DecSwap16("xy", false);
+			DecWrite("z", ConstU(0));
+			DecWrite("w", ConstU(0));
+		};
+		auto be16x4 = [&] {
+			DecWrite("xyzw", AttrRead(a, "xyzw"), true);
+			DecSwap16("xyzw", true);
+		};
+		auto signExtend = [&](const char* chans, uint32 bit, uint32 ext) {
+			for (const char* c = chans; *c; c++)
+			{
+				char one[2] = { *c, 0 };
+				DecSignExtend(one, bit, ext);
+			}
+		};
+		auto snorm = [&](const char* chans, const char* d) {
+			for (const char* c = chans; *c; c++)
+			{
+				char one[2] = { *c, 0 };
+				DecSNorm(one, d);
+			}
+		};
+		// attrDecoder.c = floatBitsToUint(vecN(<uvec>)/d) and kin
+		auto unormVec = [&](uint32 v, uint32 n, const char* d) {
+			uint32 f = ToFloat(v, n, false);
+			if (d)
+				f = Op(SpvOpFDiv, VecF(n), { f, n == 1 ? KFText(d).id : SplatF((float)std::strtod(d, nullptr), n) });
+			return BitcastU(f, n);
+		};
+		// floatBitsToInt(vec4(unpackHalf2x16(..),unpackHalf2x16(..))) into uvec4
+		auto half4 = [&] {
+			uint32 lo = DecUnpackHalf("x", "y");
+			uint32 hi = DecUnpackHalf("z", "w");
+			uint32 parts[4] = { Op(SpvOpCompositeExtract, tF, { lo, 0 }), Op(SpvOpCompositeExtract, tF, { lo, 1 }),
+				Op(SpvOpCompositeExtract, tF, { hi, 0 }), Op(SpvOpCompositeExtract, tF, { hi, 1 }) };
+			uint32 v = Construct(tV4F, parts, 4);
+			DecWrite("xyzw", Op(SpvOpBitcast, tV4U, { Op(SpvOpBitcast, tV4I, { v }) }), true);
+		};
+		auto half2 = [&] {
+			DecWrite("xy", Op(SpvOpBitcast, tV2U, { DecUnpackHalf("x", "y") }));
+			DecWrite("zw", SplatU(0, 2));
+		};
+		switch (attrib.endianSwap)
+		{
+		case LatteConst::VertexFetchEndianMode::SWAP_U32:
+			if (fmt == E::HWFMT_32_32_32_32_FLOAT && nfa == 2) be32(4);
+			else if (fmt == E::HWFMT_32_32_32_FLOAT && nfa == 2) be32(3);
+			else if (fmt == E::HWFMT_32_32_FLOAT && nfa == 2) be32(2);
+			else if (fmt == E::HWFMT_32_FLOAT && nfa == 2) be32(1);
+			else if (fmt == E::HWFMT_2_10_10_10 && nfa == 0)
+			{
+				be32(1);
+				Dec1010102(sgn ? "511.0" : "1023.0", sgn);
+			}
+			else if (fmt == E::HWFMT_32_32_32_32 && nfa == 1 && !sgn) be32(4);
+			else if (fmt == E::HWFMT_32_32_32 && nfa == 1 && !sgn) be32(3);
+			else if (fmt == E::HWFMT_32_32 && nfa == 1 && !sgn) be32(2);
+			else if (fmt == E::HWFMT_32 && nfa == 1) be32(1);
+			else if (fmt == E::HWFMT_8_8_8_8 && nfa == 0 && !sgn)
+				DecWrite("xyzw", unormVec(AttrRead(a, "wzyx"), 4, "255.0"), true);
+			else if (fmt == E::HWFMT_8_8_8_8 && nfa == 0 && sgn)
+			{
+				DecWrite("xyzw", AttrRead(a, "wzyx"), true);
+				signExtend("xyzw", 0x80, 0xFFFFFF00);
+				snorm("xyzw", "127.0");
+			}
+			else if (fmt == E::HWFMT_8_8_8_8 && nfa == 1 && !sgn)
+				DecWrite("xyzw", AttrRead(a, "wzyx"), true);
+			else if (fmt == E::HWFMT_8_8_8_8 && nfa == 2 && !sgn)
+				DecWrite("xyzw", unormVec(AttrRead(a, "wzyx"), 4, nullptr), true);
+			else
+				return Decline("attribute format");
+			break;
+		case LatteConst::VertexFetchEndianMode::SWAP_NONE:
+			if (fmt == E::HWFMT_32_32_32_32_FLOAT && nfa == 2) le32(4);
+			else if (fmt == E::HWFMT_32_32_32_FLOAT && nfa == 2) le32(3);
+			else if (fmt == E::HWFMT_32_32_FLOAT && nfa == 2) le32(2);
+			else if (fmt == E::HWFMT_32 && nfa == 1 && !sgn) le32(1);
+			else if (fmt == E::HWFMT_2_10_10_10 && nfa == 0 && !sgn)
+			{
+				le32(1);
+				Dec1010102("1023.0", false);
+			}
+			else if (fmt == E::HWFMT_16_16_16_16 && nfa == 0 && sgn)
+			{
+				le32(4);
+				signExtend("xyzw", 0x8000, 0xFFFF0000);
+				snorm("xyzw", "32767.0");
+			}
+			else if (fmt == E::HWFMT_16_16_16_16 && nfa == 2 && attrib.isSigned == 1)
+			{
+				le32(4);
+				signExtend("xyzw", 0x8000, 0xFFFF0000);
+				// floatBitsToUint(vec4(ivec4(attrDecoder)))
+				uint32 v = DecRead("xyzw");
+				uint32 parts[4];
+				for (uint32 i = 0; i < 4; i++)
+					parts[i] = Op(SpvOpBitcast, tI, { Op(SpvOpCompositeExtract, tU, { v, i }) });
+				uint32 iv = Construct(tV4I, parts, 4);
+				DecWrite("xyzw", BitcastU(ToFloat(iv, 4, true), 4), true);
+			}
+			else if (fmt == E::HWFMT_16_16_16_16_FLOAT && nfa == 2)
+			{
+				le32(4);
+				half4();
+			}
+			else if (fmt == E::HWFMT_16_16 && nfa == 0 && sgn)
+			{
+				le32(2);
+				signExtend("xy", 0x8000, 0xFFFF0000);
+				snorm("xy", "32767.0");
+			}
+			else if (fmt == E::HWFMT_16_16_FLOAT && nfa == 2)
+			{
+				le32(2);
+				half2();
+			}
+			else if (fmt == E::HWFMT_8_8_8_8 && nfa == 0 && !sgn)
+				DecWrite("xyzw", unormVec(AttrRead(a, "xyzw"), 4, "255.0"), true);
+			else if (fmt == E::HWFMT_8_8_8_8 && nfa == 0 && sgn)
+			{
+				DecWrite("xyzw", AttrRead(a, "xyzw"), true);
+				signExtend("xyzw", 0x80, 0xFFFFFF00);
+				snorm("xyzw", "127.0");
+			}
+			else if (fmt == E::HWFMT_8_8_8_8 && nfa == 1 && !sgn)
+				DecWrite("xyzw", AttrRead(a, "xyzw"), true);
+			else if (fmt == E::HWFMT_8_8_8_8 && nfa == 1 && sgn)
+			{
+				DecWrite("xyzw", AttrRead(a, "xyzw"), true);
+				signExtend("xyzw", 0x80, 0xFFFFFF00);
+			}
+			else if (fmt == E::HWFMT_8_8_8_8 && nfa == 2 && !sgn)
+			{
+				// floatBitsToInt(vec4(attrDataSem.xyzw)), into the uvec4
+				uint32 f = ToFloat(AttrRead(a, "xyzw"), 4, false);
+				DecWrite("xyzw", Op(SpvOpBitcast, tV4U, { Op(SpvOpBitcast, tV4I, { f }) }), true);
+			}
+			else if (fmt == E::HWFMT_8_8 && nfa == 0 && !sgn)
+			{
+				DecWrite("xy", unormVec(AttrRead(a, "xy"), 2, "255.0"));
+				DecWrite("zw", SplatU(0, 2));
+			}
+			else if (fmt == E::HWFMT_8_8 && nfa == 2 && !sgn)
+			{
+				DecWrite("xy", unormVec(AttrRead(a, "xy"), 2, nullptr));
+				DecWrite("zw", SplatU(0, 2));
+			}
+			else if (fmt == E::HWFMT_8_8 && nfa == 0 && sgn)
+			{
+				DecWrite("xy", AttrRead(a, "xy"));
+				signExtend("xy", 0x80, 0xFFFFFF00);
+				snorm("xy", "127.0");
+				DecWrite("zw", SplatU(0, 2));
+			}
+			else if (fmt == E::HWFMT_8_8 && nfa == 1 && !sgn)
+				DecWrite("xyzw", PadU(AttrRead(a, "xy"), 2, 4), true);
+			else if (fmt == E::HWFMT_8 && nfa == 0 && !sgn)
+			{
+				DecWrite("x", unormVec(AttrRead(a, "x"), 1, "255.0"));
+				DecWrite("yzw", SplatU(0, 3));
+			}
+			else if (fmt == E::HWFMT_8 && nfa == 1 && !sgn)
+				DecWrite("xyzw", PadU(AttrRead(a, "x"), 1, 4), true);
+			else
+				return Decline("attribute format");
+			break;
+		case LatteConst::VertexFetchEndianMode::SWAP_U16:
+			if (fmt == E::HWFMT_16_16_16_16_FLOAT && nfa == 2)
+			{
+				be16x4();
+				half4();
+			}
+			else if (fmt == E::HWFMT_16_16_16_16 && nfa == 0 && sgn)
+			{
+				be16x4();
+				signExtend("xyzw", 0x8000, 0xFFFF0000);
+				snorm("xyzw", "32767.0");
+			}
+			else if (fmt == E::HWFMT_16_16_16_16 && nfa == 0 && !sgn)
+			{
+				be16x4();
+				DecIntToFloat("x", "65535.0");
+				DecIntToFloat("y", "65535.0");
+				DecIntToFloat("z", "65535.0");
+				DecIntToFloat("w", "65535.0");
+			}
+			else if (fmt == E::HWFMT_16_16_16_16 && nfa == 2 && sgn)
+			{
+				be16x4();
+				signExtend("xyzw", 0x8000, 0xFFFF0000);
+				DecIntToFloat("x", nullptr);
+				DecIntToFloat("y", nullptr);
+				DecIntToFloat("z", nullptr);
+				DecIntToFloat("w", nullptr);
+			}
+			else if (fmt == E::HWFMT_16_16_16_16 && nfa == 1 && sgn)
+			{
+				be16x4();
+				signExtend("xyzw", 0x8000, 0xFFFF0000);
+			}
+			else if (fmt == E::HWFMT_16_16_16_16 && nfa == 1 && !sgn)
+				be16x4();
+			else if (fmt == E::HWFMT_16_16_FLOAT && nfa == 2)
+			{
+				be16x2();
+				half2();
+			}
+			else if (fmt == E::HWFMT_16_16 && nfa == 0 && !sgn)
+			{
+				// floatBitsToUint(vec2(float(attrDecoder.x), float(attrDecoder.y))/65535.0)
+				be16x2();
+				uint32 parts[2] = { Op(SpvOpConvertUToF, tF, { DecRead("x") }), Op(SpvOpConvertUToF, tF, { DecRead("y") }) };
+				uint32 v = Construct(tV2F, parts, 2);
+				DecWrite("xy", BitcastU(Op(SpvOpFDiv, tV2F, { v, SplatF(65535.0f, 2) }), 2));
+				DecWrite("zw", SplatU(0, 2));
+			}
+			else if (fmt == E::HWFMT_16_16 && nfa == 0 && sgn)
+			{
+				be16x2();
+				signExtend("xy", 0x8000, 0xFFFF0000);
+				snorm("xy", "32767.0");
+				DecWrite("zw", SplatU(0, 2));
+			}
+			else if (fmt == E::HWFMT_16_16 && nfa == 1 && !sgn)
+				be16x2();
+			else if (fmt == E::HWFMT_16_16 && nfa == 1 && sgn)
+			{
+				be16x2();
+				signExtend("xy", 0x8000, 0xFFFF0000);
+				DecWrite("zw", SplatU(0, 2));
+			}
+			else if (fmt == E::HWFMT_16_16 && nfa == 2 && !sgn)
+			{
+				be16x2();
+				uint32 parts[2] = { Op(SpvOpConvertUToF, tF, { DecRead("x") }), Op(SpvOpConvertUToF, tF, { DecRead("y") }) };
+				DecWrite("xy", BitcastU(Construct(tV2F, parts, 2), 2));
+				DecWrite("zw", SplatU(0, 2));
+			}
+			else if (fmt == E::HWFMT_16_16 && nfa == 2 && sgn)
+			{
+				be16x2();
+				signExtend("xy", 0x8000, 0xFFFF0000);
+				uint32 parts[2] = { Op(SpvOpConvertSToF, tF, { Op(SpvOpBitcast, tI, { DecRead("x") }) }),
+					Op(SpvOpConvertSToF, tF, { Op(SpvOpBitcast, tI, { DecRead("y") }) }) };
+				DecWrite("xy", BitcastU(Construct(tV2F, parts, 2), 2));
+				DecWrite("zw", SplatU(0, 2));
+			}
+			else if (fmt == E::HWFMT_16 && nfa == 1 && !sgn)
+				be16x1();
+			else if (fmt == E::HWFMT_16 && nfa == 0 && !sgn)
+			{
+				be16x1();
+				DecIntToFloat("x", "65535.0");
+			}
+			else
+				return Decline("attribute format");
+			break;
+		default:
+			return Decline("attribute endian swap");
+		}
+		return Ok();
+	}
+
+	// LatteDecompiler_emitAttributeImport: decoded into its register
+	bool SpvShader::EmitAttributeImport(LatteParsedFetchShaderAttribute& attrib)
+	{
+		uint32 attributeShaderLoc = 0xFFFFFFFF;
+		for (uint32 f = 0; f < 32; f++)
+		{
+			if (ctx->contextRegisters[mmSQ_VTX_SEMANTIC_0 + f] == attrib.semanticId)
+			{
+				attributeShaderLoc = f;
+				break;
+			}
+		}
+		if (attributeShaderLoc == 0xFFFFFFFF)
+			return true;
+		uint32 registerIndex = attributeShaderLoc + 1;
+		if ((ctx->analyzer.gprUseMask[registerIndex / 8] & (1 << (registerIndex % 8))) == 0)
+			return true;
+		if (!EmitAttributeDecode(attrib))
+			return false;
+		// ivec4(int(attrDecoder.x), ..., 0, 0x3f800000), each through
+		// intBitsToFloat into float registers
+		uint32 parts[4];
+		for (uint32 f = 0; f < 4; f++)
+		{
+			uint8 ds = attrib.ds[f];
+			if (ds >= 6)
+				ds = 4;
+			uint32 v;
+			if (ds < 4)
+			{
+				static const char* chan[4] = { "x", "y", "z", "w" };
+				v = Op(SpvOpBitcast, tI, { DecRead(chan[ds]) });
+			}
+			else if (ds == 4)
+				v = ConstI(0);
+			else
+				v = ConstI(attrib.nfa != 1 ? 0x3f800000 : 1);
+			if (dt == DT_F)
+				v = Op(SpvOpBitcast, tF, { v });
+			parts[f] = v;
+		}
+		Store(GPR(registerIndex), Construct(Vec4Of(dt), parts, 4));
+		return Ok();
+	}
+
+	// the vertex shader's inputs: R0 from the vertex and instance index,
+	// then each attribute
+	bool SpvShader::EmitVertexInputs()
+	{
+		if ((ctx->analyzer.gprUseMask[0] & 1) != 0)
+		{
+			uint32 parts[4] = { Load(tI, BuiltinInput(SpvBuiltInVertexIndex)), ConstI(0), ConstI(0), Load(tI, BuiltinInput(SpvBuiltInInstanceIndex)) };
+			uint32 v = Construct(tV4I, parts, 4);
+			if (dt == DT_F)
+			{
+				// R0f = floatBitsToInt(ivec4(...)): the ivec4 converted to
+				// floats for the call, its result converted again for R0f,
+				// as rslc takes the GLSL emitter's line
+				v = Op(SpvOpConvertSToF, tV4F, { Op(SpvOpBitcast, tV4I, { Op(SpvOpConvertSToF, tV4F, { v }) }) });
+			}
+			Store(GPR(0), v);
+		}
+		LatteFetchShader* fs = ctx->fetchShader;
+		if (!fs)
+			return Decline("no fetch shader");
+		for (auto& group : fs->bufferGroups)
+		{
+			for (sint32 i = 0; i < group.attribCount; i++)
+			{
+				if (!EmitAttributeImport(group.attrib[i]))
+					return false;
+			}
+		}
+		for (auto& group : fs->bufferGroupsInvalid)
+		{
+			for (sint32 i = 0; i < group.attribCount; i++)
+			{
+				if (!EmitAttributeImport(group.attrib[i]))
+					return false;
+			}
+		}
+		return Ok();
+	}
+
+	// _emitExportCode for a vertex shader: the position, as SET_POSITION
+	// writes it, and the parameters
+	bool SpvShader::EmitVertexExport(LatteDecompilerCFInstruction& cf)
+	{
+		if (cf.exportType == 1 && cf.exportArrayBase == GPU7_DECOMPILER_CF_EXPORT_BASE_POSITION)
+		{
+			uint32 c[4];
+			for (uint32 k = 0; k < 4; k++)
+				c[k] = ExportComponent(cf, 0, k).id;
+			uint32 posPtr = Op(SpvOpAccessChain, spv_type_pointer(w, SpvStorageClassOutput, tV4F), { perVertexVar, ConstI(0) });
+			Store(posPtr, Construct(tV4F, c, 4));
+			if (!ctx->contextRegistersNew->PA_CL_CLIP_CNTL.get_DX_CLIP_SPACE_DEF())
+			{
+				// gl_Position.z = (gl_Position.z + gl_Position.w) / 2.0
+				uint32 ptrF = spv_type_pointer(w, SpvStorageClassOutput, tF);
+				uint32 z = Load(tF, Op(SpvOpAccessChain, ptrF, { perVertexVar, ConstI(0), ConstI(2) }));
+				uint32 wv = Load(tF, Op(SpvOpAccessChain, ptrF, { perVertexVar, ConstI(0), ConstI(3) }));
+				uint32 r = Op(SpvOpFDiv, tF, { Op(SpvOpFAdd, tF, { z, wv }), ConstF(2.0f) });
+				Store(Op(SpvOpAccessChain, ptrF, { perVertexVar, ConstI(0), ConstI(2) }), r);
+			}
+			return Ok();
+		}
+		if (cf.exportType == 2 && cf.exportArrayBase < 32)
+		{
+			for (uint32 burst = 0; burst < cf.exportBurstCount + 1; burst++)
+			{
+				uint32 paramIndex = cf.exportArrayBase + burst;
+				if (paramIndex >= 32)
+					return Decline("parameter index");
+				uint32 semanticId = VertexOutSemantic(paramIndex);
+				if (semanticId == 0xFF)
+					continue;
+				uint8 sel[4];
+				uint32 count = 0;
+				for (uint32 k = 0; k < 4; k++)
+				{
+					if (cf.exportComponentSel[k] != 7)
+						sel[count++] = (uint8)k;
+				}
+				if (count == 0)
+					continue;
+				if (semanticId > LATTE_ANALYZER_IMPORT_INDEX_PARAM_MAX || !paramVar[semanticId])
+					return Decline("parameter not declared");
+				uint32 c[4];
+				for (uint32 k = 0; k < 4; k++)
+					c[k] = ExportComponent(cf, burst, k).id;
+				uint32 v = Construct(tV4F, c, 4);
+				if (count == 4)
+					Store(paramVar[semanticId], v);
+				else
+				{
+					// passParameterSemN.<mask> = vec4(...).<mask>
+					uint32 part = Swizzle(v, tF, sel, count);
+					uint32 reg = Load(tV4F, paramVar[semanticId]);
+					for (uint32 i = 0; i < count; i++)
+						reg = Op(SpvOpCompositeInsert, tV4F, { count == 1 ? part : Op(SpvOpCompositeExtract, tF, { part, i }), reg, sel[i] });
+					Store(paramVar[semanticId], reg);
+				}
+			}
+			return Ok();
+		}
+		return Decline("vertex export");
 	}
 
 	// LatteDecompiler_emitClauseCode's ALU clause: in an if on the active
@@ -2108,7 +2871,7 @@ namespace
 			return EmitControlledALUClause(cf);
 		case GPU7_CF_INST_EXPORT:
 		case GPU7_CF_INST_EXPORT_DONE:
-			return EmitExport(cf);
+			return isVertex ? EmitVertexExport(cf) : EmitExport(cf);
 		case GPU7_CF_INST_TEX:
 			if (hasActiveMask)
 			{
@@ -2166,10 +2929,18 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 		return false;
 	};
 	// what this emitter covers so far
-	if (shader->shaderType != LatteConst::ShaderType::Pixel)
-		return decline("not a pixel shader");
+	if (shader->shaderType != LatteConst::ShaderType::Pixel && shader->shaderType != LatteConst::ShaderType::Vertex)
+		return decline("geometry shader");
 	if (shaderContext->options->usesGeometryShader)
 		return decline("geometry shader");
+	s.isVertex = shader->shaderType == LatteConst::ShaderType::Vertex;
+#ifdef __ANDROID__
+	// the unused output locations the GLSL emitter writes there
+	if (s.isVertex)
+		return decline("vertex shader on Android");
+#endif
+	if (shaderContext->analyzer.hasStreamoutEnable || shaderContext->analyzer.hasStreamoutWrite)
+		return decline("streamout");
 	if (shaderContext->typeTracker.useArrayGPRs)
 		return decline("GPR array");
 	if (!shaderContext->list_subroutines.empty())
@@ -2186,7 +2957,7 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 	LatteDecompilerOutputUniformOffsets offsetsVK, offsetsGL;
 	if (!s.DeclareUniforms(offsetsVK, RendererAPI::Vulkan, true) || !s.DeclareUniforms(offsetsGL, RendererAPI::OpenGL, false))
 		return decline(s.decline);
-	if (!s.DeclareIO() || !s.DeclareTextures())
+	if (!(s.isVertex ? s.DeclareVertexIO() : s.DeclareIO()) || !s.DeclareTextures())
 		return decline(s.decline);
 	// main
 	uint32 fnType = spv_type_function(w, s.tVoid, nullptr, 0);
@@ -2204,6 +2975,8 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 		if (shaderContext->analyzer.usesRelativeGPRRead || (shaderContext->analyzer.gprUseMask[i / 8] & (1 << (i & 7))) != 0)
 			s.gprVar[i] = s.Local(s.Vec4Of(s.dt), spv_const_null(w, s.Vec4Of(s.dt)));
 	}
+	if (s.isVertex)
+		s.decVar = s.Local(s.tV4U, 0); // uvec4 attrDecoder;
 	for (int b = 0; b < 5; b++)
 		s.backupVar[b] = s.Local(scalar, 0);
 	for (int p = 0; p < 2; p++)
@@ -2234,7 +3007,7 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 		s.MaskStore(true, 0, spv_const_bool(w, 1));
 		s.MaskStore(true, 1, spv_const_bool(w, 1));
 	}
-	if (!s.EmitInputs())
+	if (!(s.isVertex ? s.EmitVertexInputs() : s.EmitInputs()))
 		return decline(s.decline);
 	for (auto& cf : shaderContext->cfInstructions)
 	{
@@ -2247,10 +3020,13 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 		s.OpVoid(SpvOpReturn, {});
 	s.OpVoid(SpvOpFunctionEnd, {});
 	// entry point and modes
-	uint32 epWords[2] = { SpvExecutionModelFragment, mainId };
+	uint32 epWords[2] = { s.isVertex ? (uint32)SpvExecutionModelVertex : (uint32)SpvExecutionModelFragment, mainId };
 	spv_inst_str(w, SPV_SEC_ENTRY_POINT, SpvOpEntryPoint, epWords, 2, "main", s.interfaceIds, s.interfaceCount);
-	uint32 mode[2] = { mainId, SpvExecutionModeOriginUpperLeft };
-	spv_inst(w, SPV_SEC_EXEC_MODE, SpvOpExecutionMode, mode, 2);
+	if (!s.isVertex)
+	{
+		uint32 mode[2] = { mainId, SpvExecutionModeOriginUpperLeft };
+		spv_inst(w, SPV_SEC_EXEC_MODE, SpvOpExecutionMode, mode, 2);
+	}
 	if (shaderContext->options->spirvInstrinsics.hasRoundingModeRTEFloat32)
 	{
 		uint32 cap = SpvCapabilityRoundingModeRTE;

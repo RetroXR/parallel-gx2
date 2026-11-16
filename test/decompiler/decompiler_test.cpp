@@ -21,6 +21,7 @@
 #include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerInstructions.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/RslcGlsl.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
+#include "Cafe/HW/Latte/Core/FetchShader.h"
 
 #include <gfx/shaders/rslc.h>
 
@@ -88,6 +89,16 @@ struct Program
 	uint8 texKind[4]; // units 0 to 3
 	uint32 exportGpr;
 	uint8 exportSel[4];
+	// a vertex shader's exports, in order, in place of the pixel export:
+	// type 1 (60 the position) or 2 (a parameter), the last one done
+	struct VsExport
+	{
+		uint8 type, gpr, burst;
+		uint16 base;
+		uint8 sel[4];
+	};
+	bool vertex = false;
+	std::vector<VsExport> vsExports;
 };
 
 static void EncodeTex(const TexOp& t, uint32 w[4])
@@ -106,6 +117,7 @@ static void EncodeTex(const TexOp& t, uint32 w[4])
 static void SetTextureRegisters(uint32* regs, const Program& p)
 {
 	LatteContextRegister& lcr = *(LatteContextRegister*)regs;
+	auto* units = p.vertex ? lcr.SQ_TEX_START_VS : lcr.SQ_TEX_START_PS;
 	for (int u = 0; u < 4; u++)
 	{
 		Latte::E_DIM dim = Latte::E_DIM::DIM_2D;
@@ -116,8 +128,8 @@ static void SetTextureRegisters(uint32* regs, const Program& p)
 		case TEX_CUBE: dim = Latte::E_DIM::DIM_CUBEMAP; break;
 		default: break;
 		}
-		lcr.SQ_TEX_START_PS[u].word0.set_DIM(dim);
-		lcr.SQ_TEX_START_PS[u].word4.set_NUM_FORM_ALL(p.texKind[u] == TEX_2D_UINT ?
+		units[u].word0.set_DIM(dim);
+		units[u].word4.set_NUM_FORM_ALL(p.texKind[u] == TEX_2D_UINT ?
 			Latte::LATTE_SQ_TEX_RESOURCE_WORD4_N::E_NUM_FORMAT_ALL::NUM_FORMAT_INT :
 			Latte::LATTE_SQ_TEX_RESOURCE_WORD4_N::E_NUM_FORMAT_ALL::NUM_FORMAT_NORM);
 	}
@@ -150,7 +162,7 @@ static std::vector<uint32> Assemble(const Program& p)
 		for (size_t i = 0; i < p.clauses.size(); i++)
 			list.push_back({ GPU7_CF_INST_ALU, (int)i, 0 });
 	}
-	const uint32 cfCount = (uint32)list.size() + 1;
+	const uint32 cfCount = (uint32)list.size() + (p.vertex ? (uint32)p.vsExports.size() : 1);
 	uint32 aluBase = (cfCount + 1) & ~1u; // in 64 bit words, after the CF list
 	uint32 at = aluBase;
 	std::vector<uint32> clauseStart, clauseWords;
@@ -236,10 +248,25 @@ static std::vector<uint32> Assemble(const Program& p)
 			cf.push_back((uint32)e.popCount | (e.type << 23) | (1u << 31));
 		}
 	}
-	// EXPORT_DONE, pixel, color 0, end of program
-	cf.push_back(0 | (0 << 13) | (p.exportGpr << 15));
-	cf.push_back((uint32)p.exportSel[0] | ((uint32)p.exportSel[1] << 3) | ((uint32)p.exportSel[2] << 6) | ((uint32)p.exportSel[3] << 9) |
-		(1u << 21) | ((uint32)GPU7_CF_INST_EXPORT_DONE << 23) | (1u << 31));
+	if (p.vertex)
+	{
+		for (size_t i = 0; i < p.vsExports.size(); i++)
+		{
+			const Program::VsExport& e = p.vsExports[i];
+			const bool last = i + 1 == p.vsExports.size();
+			cf.push_back((uint32)e.base | ((uint32)e.type << 13) | ((uint32)e.gpr << 15));
+			cf.push_back((uint32)e.sel[0] | ((uint32)e.sel[1] << 3) | ((uint32)e.sel[2] << 6) | ((uint32)e.sel[3] << 9) |
+				((uint32)e.burst << 17) | (last ? (1u << 21) : 0) |
+				((uint32)(last ? GPU7_CF_INST_EXPORT_DONE : GPU7_CF_INST_EXPORT) << 23) | (1u << 31));
+		}
+	}
+	else
+	{
+		// EXPORT_DONE, pixel, color 0, end of program
+		cf.push_back(0 | (0 << 13) | (p.exportGpr << 15));
+		cf.push_back((uint32)p.exportSel[0] | ((uint32)p.exportSel[1] << 3) | ((uint32)p.exportSel[2] << 6) | ((uint32)p.exportSel[3] << 9) |
+			(1u << 21) | ((uint32)GPU7_CF_INST_EXPORT_DONE << 23) | (1u << 31));
+	}
 	std::vector<uint32> out(aluBase * 2, 0);
 	std::memcpy(out.data(), cf.data(), cf.size() * 4);
 	out.insert(out.end(), alu.begin(), alu.end());
@@ -332,6 +359,10 @@ struct Gen
 	// the loop, where it never reaches the counted break, and crashes -
 	// the module rslc makes of the GLSL as well as the direct one
 	bool noKills = false;
+	// a vertex shader: no kill, and one loop deep at most - lavapipe
+	// (Mesa 25.2) crashes on some vertex shaders with a loop in a loop,
+	// the module rslc makes as well as the direct one
+	bool vertexMode = false;
 	// the register exported, written more often where control flow decides
 	// which clauses run, so that it shows
 	int favorDest = -1;
@@ -591,7 +622,7 @@ struct Gen
 	// loopBase: the depth of the innermost loop's body
 	void Statements(Program& p, int depth, int loops, int loopBase, int& budget, bool allowDeclined)
 	{
-		noKills = loops > 0;
+		noKills = vertexMode || loops > 0;
 		uint32 n = 1 + R(3);
 		for (uint32 i = 0; i < n && budget > 0; i++)
 		{
@@ -612,7 +643,7 @@ struct Gen
 				else
 					p.cf.push_back({ GPU7_CF_INST_ALU, Clause(p, 4, allowDeclined), 0 });
 			}
-			else if (k < 82 || loops >= 2)
+			else if (k < 82 || loops >= (vertexMode ? 1 : 2))
 			{
 				p.cf.push_back({ GPU7_CF_INST_ALU_PUSH_BEFORE, Clause(p, 3, allowDeclined, true), 0 });
 				Statements(p, depth + 1, loops, loopBase, budget, allowDeclined);
@@ -678,7 +709,7 @@ struct Gen
 				groups.push_back(test);
 				p.cf.push_back({ GPU7_CF_INST_ALU_BREAK, c, 0 });
 				Statements(p, depth, loops + 1, depth, budget, allowDeclined);
-				noKills = loops > 0;
+				noKills = vertexMode || loops > 0;
 				p.cf.push_back({ GPU7_CF_INST_LOOP_END, -1, 0 });
 			}
 		}
@@ -688,7 +719,7 @@ struct Gen
 	{
 		Program p{};
 		destGPRs = kGPRs;
-		noKills = false;
+		noKills = vertexMode; // a vertex shader has no discard
 		favorDest = -1;
 		p.exportGpr = R(kGPRs - 1);
 		// the units' textures: mostly 2D floats, a cube map (declined) now
@@ -744,6 +775,7 @@ struct Decompiled
 	bool ok = false;
 	const char* declined = nullptr;
 	sint32 texBinding[LATTE_NUM_MAX_TEX_UNITS]; // -1: the unit is not used
+	sint8 attrLoc[LATTE_NUM_MAX_ATTRIBUTE_LOCATIONS]; // a vertex shader's
 	std::string glsl;
 };
 
@@ -829,6 +861,12 @@ struct Context
 		VkImageView view = VK_NULL_HANDLE;
 		VkSampler sampler = VK_NULL_HANDLE;
 	} tex[TEX_KINDS];
+	// a vertex shader drawn: a fragment shader passing on the flat
+	// parameter at each location, one the depth; the vertex data
+	VkShaderModule fsParam[8]{}, fsDepth = VK_NULL_HANDLE;
+	VkBuffer vbuf = VK_NULL_HANDLE;
+	VkDeviceMemory vbufMem = VK_NULL_HANDLE;
+	uint8* vbufData = nullptr;
 };
 
 static const char* kVS = R"(#version 450
@@ -1137,6 +1175,29 @@ static bool CreateContext(Context& c)
 	rslc_result_free(&res, &opts);
 	for (int k = TEX_2D; k <= TEX_2D_UINT; k++)
 		CreateTexture(c, (TexKind)k);
+	// the vertex tests' fragment shaders and vertex buffer
+	auto fragment = [&](const std::string& src) {
+		rslc_result r{};
+		if (!rslc_compile(src.data(), src.size(), RSLC_STAGE_FRAGMENT, &opts, &r))
+		{
+			std::printf("FAIL: rslc: %s\n", err);
+			std::exit(1);
+		}
+		VkShaderModule m = Module(c, std::vector<uint32>(r.spirv, r.spirv + r.spirv_len));
+		rslc_result_free(&r, &opts);
+		return m;
+	};
+	for (int l = 0; l < 8; l++)
+		c.fsParam[l] = fragment(fmt::format("#version 450\nlayout(location = {}) flat in vec4 p;\nlayout(location = 0) out vec4 o;\nvoid main() {{ o = p; }}\n", l));
+	c.fsDepth = fragment("#version 450\nlayout(location = 0) out vec4 o;\nvoid main() { o = vec4(gl_FragCoord.z, gl_FragCoord.w, gl_FragCoord.x, gl_FragCoord.y); }\n");
+	bi.size = 1 << 16;
+	bi.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+	VKCHECK(vkCreateBuffer(c.device, &bi, nullptr, &c.vbuf));
+	vkGetBufferMemoryRequirements(c.device, c.vbuf, &breq);
+	c.vbufMem = Bind(c, breq, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	VKCHECK(vkBindBufferMemory(c.device, c.vbuf, c.vbufMem, 0));
+	VKCHECK(vkMapMemory(c.device, c.vbufMem, 0, 1 << 16, 0, &map));
+	c.vbufData = (uint8*)map;
 	return true;
 }
 
@@ -1146,6 +1207,12 @@ static void DestroyContext(Context& c)
 		return;
 	vkDeviceWaitIdle(c.device);
 	vkDestroyShaderModule(c.device, c.vs, nullptr);
+	for (auto m : c.fsParam)
+		vkDestroyShaderModule(c.device, m, nullptr);
+	vkDestroyShaderModule(c.device, c.fsDepth, nullptr);
+	vkUnmapMemory(c.device, c.vbufMem);
+	vkDestroyBuffer(c.device, c.vbuf, nullptr);
+	vkFreeMemory(c.device, c.vbufMem, nullptr);
 	for (auto& t : c.tex)
 	{
 		if (!t.image)
@@ -1697,6 +1764,493 @@ static std::vector<Program> DirectedPrograms()
 	return out;
 }
 
+// --- vertex shaders ------------------------------------------------------------
+
+// A random vertex shader: the program body of a pixel shader's (no kill),
+// its position from an attribute into R8 (which nothing else writes), a
+// grid of small triangles each covering one pixel, its parameters
+// exported flat from random registers, and attributes of the formats the
+// fetch shader decodes, of random data. Drawn with a fragment shader per
+// parameter (and one for the depth), every pixel must match.
+static const int kVerts = (int)(4 * 4 * 3);
+static const int kPosGpr = 8;
+
+struct VSCase
+{
+	Program p;
+	std::vector<LatteParsedFetchShaderAttribute> attribs; // the position's first
+	uint32 vtxSemantic[32];
+	uint32 outId[8];
+	uint8 psSemantic[8];
+	int psCount;
+	bool dxClip, viewportScale, strictMul, rte, preventLoops;
+	uint32 cfile[256 * 4];
+	std::vector<uint8> vertexData; // 16 bytes a vertex, each attribute in turn
+};
+
+// the formats the fetch shader decodes (and a few it does not)
+struct AttrFormat
+{
+	LatteConst::VertexFetchEndianMode endian;
+	Latte::E_HWFMT fmt;
+	uint8 nfa, isSigned;
+};
+static const AttrFormat kAttrFormats[] = {
+#define F(e, f, n, s) { LatteConst::VertexFetchEndianMode::e, Latte::E_HWFMT::f, n, s }
+	F(SWAP_U32, HWFMT_32_32_32_32_FLOAT, 2, 0), F(SWAP_U32, HWFMT_32_32_32_FLOAT, 2, 0), F(SWAP_U32, HWFMT_32_32_FLOAT, 2, 0),
+	F(SWAP_U32, HWFMT_32_FLOAT, 2, 0), F(SWAP_U32, HWFMT_2_10_10_10, 0, 0), F(SWAP_U32, HWFMT_2_10_10_10, 0, 1),
+	F(SWAP_U32, HWFMT_32_32_32_32, 1, 0), F(SWAP_U32, HWFMT_32_32_32, 1, 0), F(SWAP_U32, HWFMT_32_32, 1, 0),
+	F(SWAP_U32, HWFMT_32, 1, 0), F(SWAP_U32, HWFMT_32, 1, 1), F(SWAP_U32, HWFMT_8_8_8_8, 0, 0), F(SWAP_U32, HWFMT_8_8_8_8, 0, 1),
+	F(SWAP_U32, HWFMT_8_8_8_8, 1, 0), F(SWAP_U32, HWFMT_8_8_8_8, 2, 0),
+	F(SWAP_NONE, HWFMT_32_32_32_32_FLOAT, 2, 0), F(SWAP_NONE, HWFMT_32_32_32_FLOAT, 2, 0), F(SWAP_NONE, HWFMT_32_32_FLOAT, 2, 0),
+	F(SWAP_NONE, HWFMT_32, 1, 0), F(SWAP_NONE, HWFMT_2_10_10_10, 0, 0), F(SWAP_NONE, HWFMT_16_16_16_16, 0, 1),
+	F(SWAP_NONE, HWFMT_16_16_16_16, 2, 1), F(SWAP_NONE, HWFMT_16_16_16_16_FLOAT, 2, 0), F(SWAP_NONE, HWFMT_16_16, 0, 1),
+	F(SWAP_NONE, HWFMT_16_16_FLOAT, 2, 0), F(SWAP_NONE, HWFMT_8_8_8_8, 0, 0), F(SWAP_NONE, HWFMT_8_8_8_8, 0, 1),
+	F(SWAP_NONE, HWFMT_8_8_8_8, 1, 0), F(SWAP_NONE, HWFMT_8_8_8_8, 1, 1), F(SWAP_NONE, HWFMT_8_8_8_8, 2, 0),
+	F(SWAP_NONE, HWFMT_8_8, 0, 0), F(SWAP_NONE, HWFMT_8_8, 2, 0), F(SWAP_NONE, HWFMT_8_8, 0, 1), F(SWAP_NONE, HWFMT_8_8, 1, 0),
+	F(SWAP_NONE, HWFMT_8, 0, 0), F(SWAP_NONE, HWFMT_8, 1, 0),
+	F(SWAP_U16, HWFMT_16_16_16_16_FLOAT, 2, 0), F(SWAP_U16, HWFMT_16_16_16_16, 0, 1), F(SWAP_U16, HWFMT_16_16_16_16, 0, 0),
+	F(SWAP_U16, HWFMT_16_16_16_16, 2, 1), F(SWAP_U16, HWFMT_16_16_16_16, 1, 1), F(SWAP_U16, HWFMT_16_16_16_16, 1, 0),
+	F(SWAP_U16, HWFMT_16_16_FLOAT, 2, 0), F(SWAP_U16, HWFMT_16_16, 0, 0), F(SWAP_U16, HWFMT_16_16, 0, 1),
+	F(SWAP_U16, HWFMT_16_16, 1, 0), F(SWAP_U16, HWFMT_16_16, 1, 1), F(SWAP_U16, HWFMT_16_16, 2, 0), F(SWAP_U16, HWFMT_16_16, 2, 1),
+	F(SWAP_U16, HWFMT_16, 1, 0), F(SWAP_U16, HWFMT_16, 0, 0),
+};
+static const AttrFormat kAttrFormatsDeclined[] = {
+	F(SWAP_NONE, HWFMT_16_16_16_16, 1, 0), F(SWAP_U32, HWFMT_16_16, 1, 0),
+#undef F
+};
+
+// VulkanPipelineKey_VertexFormat: the integers of the format's sizes
+static VkFormat VertexFormat(Latte::E_HWFMT f)
+{
+	using E = Latte::E_HWFMT;
+	switch (f)
+	{
+	case E::HWFMT_32_32_32_32_FLOAT: case E::HWFMT_32_32_32_32: return VK_FORMAT_R32G32B32A32_UINT;
+	case E::HWFMT_32_32_32_FLOAT: case E::HWFMT_32_32_32: return VK_FORMAT_R32G32B32_UINT;
+	case E::HWFMT_32_32_FLOAT: case E::HWFMT_32_32: return VK_FORMAT_R32G32_UINT;
+	case E::HWFMT_32_FLOAT: case E::HWFMT_32: case E::HWFMT_2_10_10_10: return VK_FORMAT_R32_UINT;
+	case E::HWFMT_8_8_8_8: return VK_FORMAT_R8G8B8A8_UINT;
+	case E::HWFMT_8_8: return VK_FORMAT_R8G8_UINT;
+	case E::HWFMT_8: return VK_FORMAT_R8_UINT;
+	case E::HWFMT_16_16_16_16: case E::HWFMT_16_16_16_16_FLOAT: return VK_FORMAT_R16G16B16A16_UINT;
+	case E::HWFMT_16_16: case E::HWFMT_16_16_FLOAT: return VK_FORMAT_R16G16_UINT;
+	case E::HWFMT_16: return VK_FORMAT_R16_UINT;
+	default: return VK_FORMAT_UNDEFINED;
+	}
+}
+
+static LatteFetchShader s_fetchShader;
+
+// the registers, the pixel shader's inputs and the fetch shader of a case
+static void SetVertexState(const VSCase& k)
+{
+	for (int i = 0; i < 32; i++)
+		s_regs[mmSQ_VTX_SEMANTIC_0 + i] = k.vtxSemantic[i];
+	for (int i = 0; i < 8; i++)
+		s_regs[mmSPI_VS_OUT_ID_0 + i] = k.outId[i];
+	LatteContextRegister& lcr = *(LatteContextRegister*)s_regs;
+	lcr.PA_CL_CLIP_CNTL.set_DX_CLIP_SPACE_DEF(k.dxClip);
+	lcr.PA_CL_VTE_CNTL.set_VPORT_X_SCALE_ENA(k.viewportScale);
+	lcr.PA_CL_VTE_CNTL.set_VPORT_Y_SCALE_ENA(true);
+	lcr.PA_CL_VTE_CNTL.set_VPORT_Z_SCALE_ENA(true);
+	g_testPSInputTable.count = k.psCount;
+	for (int i = 0; i < k.psCount; i++)
+	{
+		g_testPSInputTable.import[i].semanticId = k.psSemantic[i];
+		g_testPSInputTable.import[i].isFlat = true;
+		g_testPSInputTable.import[i].isNoPerspective = false;
+	}
+	SetTextureRegisters(s_regs, k.p);
+	g_testPreventInfiniteLoops = k.preventLoops;
+	s_fetchShader.bufferGroups.clear();
+	for (size_t i = 0; i < k.attribs.size(); i++)
+	{
+		LatteParsedFetchShaderBufferGroup g{};
+		g.attributeBufferIndex = (uint8)i;
+		g.attribCount = 1;
+		g.attrib = const_cast<LatteParsedFetchShaderAttribute*>(&k.attribs[i]);
+		s_fetchShader.bufferGroups.push_back(g);
+	}
+}
+
+static Decompiled DecompileVertex(const std::vector<uint32>& program, bool direct, const VSCase& k)
+{
+	Decompiled d;
+	LatteDecompilerOptions options;
+	options.strictMul = k.strictMul;
+	options.directSPIRV = direct;
+	options.spirvInstrinsics.hasRoundingModeRTEFloat32 = k.rte;
+	LatteDecompilerOutput_t out{};
+	SetVertexState(k);
+	LatteDecompiler_DecompileVertexShader(0x5678, s_regs, (uint8*)program.data(), (uint32)program.size() * 4, &s_fetchShader, options, &out);
+	LatteDecompilerShader* shader = out.shader;
+	d.offsets = out.uniformOffsetsVK;
+	d.remapped = shader->list_remappedUniformEntries;
+	d.uniformMode = shader->uniformMode;
+	d.setIndex = out.resourceMappingVK.setIndex;
+	d.binding = out.resourceMappingVK.uniformVarsBufferBindingPoint;
+	for (int i = 0; i < LATTE_NUM_MAX_TEX_UNITS; i++)
+		d.texBinding[i] = out.textureUnitMask[i] ? out.resourceMappingVK.textureUnitToBindingPoint[i] : -1;
+	std::memcpy(d.attrLoc, out.resourceMappingVK.attributeMapping, sizeof(d.attrLoc));
+	d.declined = LatteDecompiler_SPIRVDeclineReason();
+	if (shader->hasError)
+	{
+		delete shader;
+		return d;
+	}
+	if (!shader->spirv.empty())
+	{
+		d.spirv = shader->spirv;
+		d.ok = true;
+	}
+	else
+	{
+		d.glsl = shader->shaderSource;
+		const std::string glsl = RslcGlsl(shader->shaderSource, k.rte);
+		char err[512] = {};
+		rslc_opts opts{};
+		opts.dst = RSLC_DST_SPIRV;
+		opts.err = err;
+		opts.err_cap = sizeof(err);
+		rslc_result res{};
+		if (rslc_compile(glsl.data(), glsl.size(), RSLC_STAGE_VERTEX, &opts, &res))
+		{
+			d.spirv.assign(res.spirv, res.spirv + res.spirv_len);
+			rslc_result_free(&res, &opts);
+			d.ok = true;
+		}
+	}
+	delete shader;
+	return d;
+}
+
+// the vertex shader over the grid, the fragment shader given passing on
+// what it shows
+static std::vector<uint32> DrawVertex(const Context& c, const Decompiled& d, const VSCase& k, VkShaderModule fs, const uint32* uniforms)
+{
+	VkDescriptorSetLayoutBinding b[1 + LATTE_NUM_MAX_TEX_UNITS]{};
+	VkWriteDescriptorSet texWrites[LATTE_NUM_MAX_TEX_UNITS]{};
+	VkDescriptorImageInfo texInfos[LATTE_NUM_MAX_TEX_UNITS]{};
+	uint32 nb = 0, nTex = 0;
+	if (d.binding >= 0)
+	{
+		b[nb].binding = (uint32)d.binding;
+		b[nb].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		b[nb].descriptorCount = 1;
+		b[nb].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+		nb++;
+	}
+	for (int i = 0; i < LATTE_NUM_MAX_TEX_UNITS; i++)
+	{
+		if (d.texBinding[i] < 0)
+			continue;
+		if (i >= 4 || k.p.texKind[i] == TEX_NONE || k.p.texKind[i] >= TEX_CUBE)
+		{
+			std::printf("FAIL: texture unit %d drawn with no texture\n", i);
+			s_failures++;
+			continue;
+		}
+		const Context::Texture& t = c.tex[k.p.texKind[i]];
+		b[nb].binding = (uint32)d.texBinding[i];
+		b[nb].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		b[nb].descriptorCount = 1;
+		b[nb].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+		nb++;
+		texInfos[nTex] = {t.sampler, t.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+		texWrites[nTex].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		texWrites[nTex].dstBinding = (uint32)d.texBinding[i];
+		texWrites[nTex].descriptorCount = 1;
+		texWrites[nTex].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		texWrites[nTex].pImageInfo = &texInfos[nTex];
+		nTex++;
+	}
+	if (d.setIndex != 0)
+	{
+		std::printf("FAIL: a vertex shader's resources in set %d\n", d.setIndex);
+		s_failures++;
+	}
+	VkDescriptorSetLayoutCreateInfo dli{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+	dli.bindingCount = nb;
+	dli.pBindings = b;
+	VkDescriptorSetLayout set;
+	VKCHECK(vkCreateDescriptorSetLayout(c.device, &dli, nullptr, &set));
+	VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+	pli.setLayoutCount = 1;
+	pli.pSetLayouts = &set;
+	VkPipelineLayout layout;
+	VKCHECK(vkCreatePipelineLayout(c.device, &pli, nullptr, &layout));
+	VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, LATTE_NUM_MAX_TEX_UNITS}};
+	VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+	dpi.maxSets = 1;
+	dpi.poolSizeCount = 2;
+	dpi.pPoolSizes = ps;
+	VkDescriptorPool dpool;
+	VKCHECK(vkCreateDescriptorPool(c.device, &dpi, nullptr, &dpool));
+	VkDescriptorSetAllocateInfo dai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+	dai.descriptorPool = dpool;
+	dai.descriptorSetCount = 1;
+	dai.pSetLayouts = &set;
+	VkDescriptorSet ds;
+	VKCHECK(vkAllocateDescriptorSets(c.device, &dai, &ds));
+	std::memset(c.uboData, 0, 4096);
+	std::memcpy(c.uboData, uniforms, 4096);
+	if (d.binding >= 0)
+	{
+		VkDescriptorBufferInfo dbi{c.ubo, 0, 4096};
+		VkWriteDescriptorSet wds{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+		wds.dstSet = ds;
+		wds.dstBinding = (uint32)d.binding;
+		wds.descriptorCount = 1;
+		wds.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		wds.pBufferInfo = &dbi;
+		vkUpdateDescriptorSets(c.device, 1, &wds, 0, nullptr);
+	}
+	for (uint32 i = 0; i < nTex; i++)
+		texWrites[i].dstSet = ds;
+	if (nTex)
+		vkUpdateDescriptorSets(c.device, nTex, texWrites, 0, nullptr);
+	// each attribute a binding of its own, 16 bytes a vertex
+	VkVertexInputBindingDescription vb[16]{};
+	VkVertexInputAttributeDescription va[16]{};
+	uint32 nAttr = 0;
+	for (size_t i = 0; i < k.attribs.size(); i++)
+	{
+		sint8 loc = d.attrLoc[k.attribs[i].semanticId];
+		if (loc < 0)
+			continue;
+		vb[nAttr] = {(uint32)i, 16, VK_VERTEX_INPUT_RATE_VERTEX};
+		va[nAttr] = {(uint32)loc, (uint32)i, VertexFormat(k.attribs[i].format), 0};
+		nAttr++;
+	}
+	std::memcpy(c.vbufData, k.vertexData.data(), k.vertexData.size());
+	VkShaderModule vs = Module(c, d.spirv);
+	VkPipelineShaderStageCreateInfo stages[2]{};
+	stages[0].sType = stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+	stages[0].module = vs;
+	stages[0].pName = "main";
+	stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+	stages[1].module = fs;
+	stages[1].pName = "main";
+	VkPipelineVertexInputStateCreateInfo vin{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+	vin.vertexBindingDescriptionCount = nAttr;
+	vin.pVertexBindingDescriptions = vb;
+	vin.vertexAttributeDescriptionCount = nAttr;
+	vin.pVertexAttributeDescriptions = va;
+	VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+	ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	VkViewport vp{0, 0, (float)W, (float)H, 0, 1};
+	VkRect2D sc{{0, 0}, {W, H}};
+	VkPipelineViewportStateCreateInfo vps{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+	vps.viewportCount = 1;
+	vps.pViewports = &vp;
+	vps.scissorCount = 1;
+	vps.pScissors = &sc;
+	VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+	rs.cullMode = VK_CULL_MODE_NONE;
+	rs.lineWidth = 1.0f;
+	VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+	ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+	VkPipelineColorBlendAttachmentState cba{};
+	cba.colorWriteMask = 0xF;
+	VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+	cb.attachmentCount = 1;
+	cb.pAttachments = &cba;
+	VkGraphicsPipelineCreateInfo gpi{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+	gpi.stageCount = 2;
+	gpi.pStages = stages;
+	gpi.pVertexInputState = &vin;
+	gpi.pInputAssemblyState = &ia;
+	gpi.pViewportState = &vps;
+	gpi.pRasterizationState = &rs;
+	gpi.pMultisampleState = &ms;
+	gpi.pColorBlendState = &cb;
+	gpi.layout = layout;
+	gpi.renderPass = c.renderPass;
+	VkPipeline pipeline;
+	VKCHECK(vkCreateGraphicsPipelines(c.device, VK_NULL_HANDLE, 1, &gpi, nullptr, &pipeline));
+	VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+	cai.commandPool = c.pool;
+	cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	cai.commandBufferCount = 1;
+	VkCommandBuffer cmd;
+	VKCHECK(vkAllocateCommandBuffers(c.device, &cai, &cmd));
+	VkCommandBufferBeginInfo cbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+	cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+	VKCHECK(vkBeginCommandBuffer(cmd, &cbi));
+	VkClearValue clear;
+	clear.color = {{-7.0f, 13.0f, -21.0f, 42.0f}};
+	VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+	rbi.renderPass = c.renderPass;
+	rbi.framebuffer = c.framebuffer;
+	rbi.renderArea = {{0, 0}, {W, H}};
+	rbi.clearValueCount = 1;
+	rbi.pClearValues = &clear;
+	vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+	if (nb)
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &ds, 0, nullptr);
+	for (uint32 i = 0; i < nAttr; i++)
+	{
+		VkDeviceSize offset = (VkDeviceSize)vb[i].binding * kVerts * 16;
+		vkCmdBindVertexBuffers(cmd, vb[i].binding, 1, &c.vbuf, &offset);
+	}
+	vkCmdDraw(cmd, kVerts, 1, 0, 0);
+	vkCmdEndRenderPass(cmd);
+	VkBufferImageCopy region{};
+	region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+	region.imageExtent = {W, H, 1};
+	vkCmdCopyImageToBuffer(cmd, c.color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, c.readback, 1, &region);
+	VKCHECK(vkEndCommandBuffer(cmd));
+	VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+	si.commandBufferCount = 1;
+	si.pCommandBuffers = &cmd;
+	VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+	VkFence fence;
+	VKCHECK(vkCreateFence(c.device, &fi, nullptr, &fence));
+	VKCHECK(vkQueueSubmit(c.queue, 1, &si, fence));
+	if (vkWaitForFences(c.device, 1, &fence, VK_TRUE, 30ull * 1000 * 1000 * 1000) != VK_SUCCESS)
+	{
+		std::printf("FAIL: a draw did not finish within 30 s (a loop that never ends?)\n");
+		std::fflush(stdout);
+		std::_Exit(1);
+	}
+	vkDestroyFence(c.device, fence, nullptr);
+	std::vector<uint32> pixels(W * H * 4);
+	void* map;
+	VKCHECK(vkMapMemory(c.device, c.readMem, 0, pixels.size() * 4, 0, &map));
+	std::memcpy(pixels.data(), map, pixels.size() * 4);
+	vkUnmapMemory(c.device, c.readMem);
+	vkFreeCommandBuffers(c.device, c.pool, 1, &cmd);
+	vkDestroyPipeline(c.device, pipeline, nullptr);
+	vkDestroyShaderModule(c.device, vs, nullptr);
+	vkDestroyDescriptorPool(c.device, dpool, nullptr);
+	vkDestroyPipelineLayout(c.device, layout, nullptr);
+	vkDestroyDescriptorSetLayout(c.device, set, nullptr);
+	return pixels;
+}
+
+static VSCase MakeVertexCase(Gen& gen, bool allowDeclined)
+{
+	VSCase k{};
+	gen.vertexMode = true;
+	k.p = gen.Make(allowDeclined);
+	gen.vertexMode = false;
+	Program& p = k.p;
+	p.vertex = true;
+	// distinct semantics for the attributes and the parameters
+	bool used[0x80] = {};
+	auto semantic = [&]() {
+		uint8 v;
+		do
+			v = (uint8)gen.R(0x7F);
+		while (used[v]);
+		used[v] = true;
+		return v;
+	};
+	for (auto& v : k.vtxSemantic)
+		v = 0xFF;
+	// the position: four floats into R8
+	LatteParsedFetchShaderAttribute pos{};
+	pos.semanticId = semantic();
+	pos.format = Latte::E_HWFMT::HWFMT_32_32_32_32_FLOAT;
+	pos.nfa = 2;
+	pos.endianSwap = LatteConst::VertexFetchEndianMode::SWAP_NONE;
+	for (int i = 0; i < 4; i++)
+		pos.ds[i] = (uint8)i;
+	k.attribs.push_back(pos);
+	k.vtxSemantic[kPosGpr - 1] = pos.semanticId;
+	// up to four more, into R1 to R7, now and then into none
+	uint32 attribs = gen.R(5);
+	bool locUsed[7] = {};
+	for (uint32 i = 0; i < attribs; i++)
+	{
+		const AttrFormat& f = (allowDeclined && gen.Chance(10)) ? kAttrFormatsDeclined[gen.R(2)] :
+			kAttrFormats[gen.R(sizeof(kAttrFormats) / sizeof(kAttrFormats[0]))];
+		LatteParsedFetchShaderAttribute a{};
+		a.attributeBufferIndex = (uint8)(i + 1);
+		a.semanticId = semantic();
+		a.format = f.fmt;
+		a.nfa = f.nfa;
+		a.isSigned = f.isSigned;
+		a.endianSwap = f.endian;
+		for (int c = 0; c < 4; c++)
+			a.ds[c] = (uint8)(gen.Chance(80) ? gen.R(4) : 4 + gen.R(2));
+		k.attribs.push_back(a);
+		if (gen.Chance(90))
+		{
+			uint32 loc;
+			do
+				loc = gen.R(7);
+			while (locUsed[loc]);
+			locUsed[loc] = true;
+			k.vtxSemantic[loc] = a.semanticId;
+		}
+	}
+	// the parameters: index i to a semantic the pixel shader mostly takes
+	uint32 params = 1 + gen.R(3);
+	uint8 paramSemantic[4];
+	for (auto& o : k.outId)
+		o = 0xFFFFFFFF;
+	k.psCount = 0;
+	for (uint32 i = 0; i < params; i++)
+	{
+		paramSemantic[i] = semantic();
+		k.outId[i / 4] = (k.outId[i / 4] & ~(0xFFu << (8 * (i % 4)))) | ((uint32)paramSemantic[i] << (8 * (i % 4)));
+		if (gen.Chance(90))
+			k.psSemantic[k.psCount++] = paramSemantic[i];
+	}
+	// the exports: the position, then the parameters, two at once now and then
+	Program::VsExport e{};
+	e.type = 1;
+	e.base = GPU7_DECOMPILER_CF_EXPORT_BASE_POSITION;
+	e.gpr = kPosGpr;
+	for (int i = 0; i < 4; i++)
+		e.sel[i] = (uint8)i;
+	p.vsExports.push_back(e);
+	for (uint32 i = 0; i < params; i++)
+	{
+		Program::VsExport x{};
+		x.type = 2;
+		x.base = (uint16)i;
+		x.gpr = (uint8)(gen.Chance(50) ? p.exportGpr : gen.R(kGPRs - 1));
+		if (i + 1 < params && x.gpr < kGPRs - 2 && gen.Chance(25))
+		{
+			x.burst = 1;
+			i++;
+		}
+		for (int c = 0; c < 4; c++)
+		{
+			uint32 r = gen.R(10);
+			x.sel[c] = (uint8)(r < 7 ? gen.R(4) : (r == 7 ? 4 : (r == 8 ? 5 : 7)));
+		}
+		p.vsExports.push_back(x);
+	}
+	k.dxClip = gen.Chance(50);
+	k.viewportScale = !(allowDeclined && gen.Chance(10));
+	// the vertex data: the position's a triangle over each pixel's centre,
+	// at a depth inside the volume either way; the rest random
+	k.vertexData.assign(k.attribs.size() * kVerts * 16, 0);
+	for (int v = 0; v < kVerts; v++)
+	{
+		int pixel = v / 3, corner = v % 3;
+		float d = 1.0f / W; // half a pixel
+		float cx = ((pixel % W) + 0.5f) * 2.0f / W - 1.0f;
+		float cy = ((pixel / W) + 0.5f) * 2.0f / H - 1.0f;
+		float xyzw[4] = { cx - d + (corner == 1 ? 3 * d : 0.0f), cy - d + (corner == 2 ? 3 * d : 0.0f),
+			0.05f + 0.9f * (float)gen.R(1000) / 1000.0f, 1.0f };
+		std::memcpy(k.vertexData.data() + v * 16, xyzw, 16);
+	}
+	for (size_t a = 1; a < k.attribs.size(); a++)
+	{
+		uint32* words = (uint32*)(k.vertexData.data() + a * kVerts * 16);
+		for (int i = 0; i < kVerts * 4; i++)
+			words[i] = gen.Literal();
+	}
+	return k;
+}
+
 int main(int argc, char** argv)
 {
 	const char* outDir = argc > 1 ? argv[1] : nullptr;
@@ -1865,6 +2419,156 @@ int main(int argc, char** argv)
 	}
 	// most of what is generated is covered
 	CHECK(direct * 2 > count);
+	// vertex shaders, half as many
+	{
+		const int vsCount = count / 2;
+		int vDirect = 0, vDeclined = 0, vDrawn = 0, vDiffering = 0, vShape = 0;
+		std::map<std::string, int> vReasons;
+		for (int i = 0; i < vsCount; i++)
+		{
+			const bool allowDeclined = (i % 5) == 0;
+			VSCase k = MakeVertexCase(gen, allowDeclined);
+			k.strictMul = gen.Chance(50);
+			k.rte = c.rte && gen.Chance(50);
+			k.preventLoops = gen.Chance(50);
+			std::vector<uint32> words = Assemble(k.p);
+			Decompiled viaGlsl = DecompileVertex(words, false, k);
+			Decompiled viaSpirv = DecompileVertex(words, true, k);
+			if (viaSpirv.declined)
+			{
+				vDeclined++;
+				vReasons[viaSpirv.declined]++;
+				if (viaSpirv.spirv != viaGlsl.spirv)
+				{
+					std::printf("FAIL: vertex program %d declined (%s) but not compiled as before\n", i, viaSpirv.declined);
+					s_failures++;
+				}
+				continue;
+			}
+			if (!viaGlsl.ok)
+			{
+				std::printf("FAIL: vertex program %d: written directly where the GLSL does not compile\n", i);
+				s_failures++;
+				continue;
+			}
+			vDirect++;
+			CHECK(viaSpirv.ok);
+			const std::string diff = ShapeDiff(Shape(viaGlsl.spirv), Shape(viaSpirv.spirv));
+			if (!diff.empty())
+			{
+				vShape++;
+				if (vShape <= 3)
+				{
+					std::printf("FAIL: vertex program %d is not shaped as rslc's:%s\n", i, diff.c_str());
+					if (outDir)
+					{
+						char path[512];
+						std::snprintf(path, sizeof(path), "%s/vshape_glsl_%d.spv", outDir, i);
+						FILE* f = std::fopen(path, "wb");
+						std::fwrite(viaGlsl.spirv.data(), 4, viaGlsl.spirv.size(), f);
+						std::fclose(f);
+						std::snprintf(path, sizeof(path), "%s/vshape_direct_%d.spv", outDir, i);
+						f = std::fopen(path, "wb");
+						std::fwrite(viaSpirv.spirv.data(), 4, viaSpirv.spirv.size(), f);
+						std::fclose(f);
+						std::snprintf(path, sizeof(path), "%s/vshape_%d.glsl", outDir, i);
+						f = std::fopen(path, "wb");
+						std::fwrite(viaGlsl.glsl.data(), 1, viaGlsl.glsl.size(), f);
+						std::fclose(f);
+					}
+				}
+			}
+			if (!SameOffsets(viaGlsl.offsets, viaSpirv.offsets) || viaGlsl.binding != viaSpirv.binding || viaGlsl.setIndex != viaSpirv.setIndex ||
+				std::memcmp(viaGlsl.attrLoc, viaSpirv.attrLoc, sizeof(viaGlsl.attrLoc)) != 0)
+			{
+				std::printf("FAIL: vertex program %d: resource layout differs\n", i);
+				s_failures++;
+				continue;
+			}
+			if (outDir)
+			{
+				char path[512];
+				std::snprintf(path, sizeof(path), "%s/vdirect_%04d.spv", outDir, i);
+				FILE* f = std::fopen(path, "wb");
+				if (f)
+				{
+					std::fwrite(viaSpirv.spirv.data(), 4, viaSpirv.spirv.size(), f);
+					std::fclose(f);
+				}
+			}
+			if (!device)
+				continue;
+			for (auto& u : k.cfile)
+				u = gen.Literal();
+			uint32 uniforms[1024] = {};
+			if (viaGlsl.uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_REMAPPED)
+			{
+				for (auto& e : viaGlsl.remapped)
+					std::memcpy(uniforms + viaGlsl.offsets.offset_remapped / 4 + e.mappedIndex * 4, k.cfile + e.index * 4, 16);
+			}
+			else if (viaGlsl.uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_FULL_CFILE)
+				std::memcpy(uniforms + viaGlsl.offsets.offset_uniformRegister / 4, k.cfile, viaGlsl.offsets.count_uniformRegister * 16);
+			vDrawn++;
+			bool same = true;
+			for (int l = -1; l < k.psCount; l++)
+			{
+				VkShaderModule fs = l < 0 ? c.fsDepth : c.fsParam[l];
+				std::vector<uint32> a = DrawVertex(c, viaGlsl, k, fs, uniforms);
+				std::vector<uint32> b = DrawVertex(c, viaSpirv, k, fs, uniforms);
+				if (l < 0)
+				{
+					// every pixel's triangle drawn: the depth there, not the clear
+					int covered = 0;
+					const float clearX = -7.0f;
+					uint32 clearBits;
+					std::memcpy(&clearBits, &clearX, 4);
+					for (uint32 q = 0; q < W * H; q++)
+						covered += a[q * 4] != clearBits;
+					if (covered != (int)(W * H))
+					{
+						std::printf("FAIL: vertex program %d covers %d of %u pixels\n", i, covered, W * H);
+						s_failures++;
+					}
+				}
+				if (!SamePixels(a, b))
+				{
+					if (same && vDiffering < 3)
+					{
+						for (size_t q = 0; q < a.size(); q++)
+							if (a[q] != b[q] && !(IsNaN(a[q]) && IsNaN(b[q])))
+								std::printf("  %s pixel %zu channel %zu: %08x via GLSL, %08x directly\n", l < 0 ? "depth" : "parameter", q / 4, q % 4, a[q], b[q]);
+						if (outDir)
+						{
+							char path[512];
+							std::snprintf(path, sizeof(path), "%s/vdiff_%d.glsl", outDir, i);
+							FILE* f = std::fopen(path, "wb");
+							std::string g = DecompileVertex(words, false, k).glsl;
+							std::fwrite(g.data(), 1, g.size(), f);
+							std::fclose(f);
+						}
+					}
+					same = false;
+				}
+			}
+			if (!same)
+			{
+				vDiffering++;
+				std::printf("FAIL: vertex program %d draws differently\n", i);
+			}
+		}
+		std::printf("decompiler: %d random vertex shaders, %d written as SPIR-V directly (%d drawn both ways, %d differing), %d declined\n",
+			vsCount, vDirect, vDrawn, vDiffering, vDeclined);
+		for (auto& it : vReasons)
+			std::printf("  declined: %s (%d)\n", it.first.c_str(), it.second);
+		if (vDiffering)
+			s_failures++;
+		if (vShape)
+		{
+			std::printf("FAIL: %d direct vertex modules not shaped as rslc's\n", vShape);
+			s_failures++;
+		}
+		CHECK(vsCount == 0 || vDirect * 2 > vsCount);
+	}
 	(void)glslFailed;
 	(void)offsetsDiffer;
 	DestroyContext(c);

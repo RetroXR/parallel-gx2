@@ -286,6 +286,7 @@ enum
    GLSLstd450SClamp = 45,
    GLSLstd450FMix = 46,
    GLSLstd450Fma = 50,
+   GLSLstd450UnpackHalf2x16 = 62,
    GLSLstd450Length = 66,
    GLSLstd450Normalize = 69,
    GLSLstd450NMin = 79,
