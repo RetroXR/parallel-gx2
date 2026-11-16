@@ -7,7 +7,11 @@
 // lavapipe and compares). rslc folds an expression of constants as glslang
 // does, in double, and rounds once at the end; the same expressions fold
 // here, by the same rules, where the GLSL emitter writes them inline (a
-// value stored in a variable is no constant to rslc, nor here).
+// value stored in a variable is no constant to rslc, nor here). Control
+// flow is the GLSL emitter's too: the active mask stacks as arrays of
+// bool, each clause in an if on them, loops as rslc lowers a while (a
+// header, a check, the body, a continue block), its short-circuited &&
+// where the right side is no bare variable or constant.
 // What it does not cover yet it declines
 // (LatteDecompiler_emitSPIRVShader returns false) and the shader takes the
 // GLSL path as before; LatteDecompiler_SPIRVDeclineReason says why.
@@ -20,6 +24,7 @@
 #include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.h"
 #include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerInternal.h"
 #include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerInstructions.h"
+#include "config/ActiveSettings.h"
 #include "util/spirv/spirv_writer.h"
 #include "util/spirv/spirv_ops.h"
 
@@ -107,6 +112,19 @@ namespace
 		uint32 gprVar[LATTE_NUM_GPR]{};
 		uint32 pvVar[2][4]{}, psVar[2]{}, backupVar[5]{}, tempVar{}, tempResultF{}, tempResultI{}, ariVar{}, predVar{};
 		uint32 ufBlockVar{};
+		// the active mask stacks (activeMaskStack, activeMaskStackC) and
+		// their lengths, when the shader has control flow
+		bool hasActiveMask{};
+		uint32 maskVar{}, maskCVar{};
+		sint32 maskLen{}, maskCLen{};
+		uint32 aluBreakVar{}; // the ALU_BREAK clause's aluBreak
+		// the loops open: rslc's blocks for each, its loopActive and counter
+		struct Loop
+		{
+			uint32 header, check, body, cont, merge, active, counter;
+		};
+		Loop loops[16];
+		uint32 loopDepth{};
 		uint32 fnMulNonIEEE{}, fnClampFI32{};
 		uint32 tempResultFVar{};
 		uint32 ufMember[8]{};
@@ -145,6 +163,7 @@ namespace
 		// an instruction in the body with a result
 		uint32 Op(uint32 opcode, uint32 resultType, std::initializer_list<uint32> args)
 		{
+			EnsureBlock();
 			uint32 words[16];
 			uint32 id = spv_id(w);
 			size_t n = 0;
@@ -157,6 +176,8 @@ namespace
 		}
 		void OpVoid(uint32 opcode, std::initializer_list<uint32> args)
 		{
+			if (opcode != SpvOpLabel)
+				EnsureBlock();
 			uint32 words[16];
 			size_t n = 0;
 			for (uint32 a : args)
@@ -165,6 +186,7 @@ namespace
 		}
 		uint32 Ext(uint32 inst, uint32 resultType, std::initializer_list<uint32> args)
 		{
+			EnsureBlock();
 			uint32 words[16];
 			uint32 id = spv_id(w);
 			size_t n = 0;
@@ -522,12 +544,29 @@ namespace
 			return { ConstI(0), to };
 		}
 
-		// the block the body is in, for an OpPhi's parents
+		// the block the body is in, for an OpPhi's parents; none after a
+		// branch or a kill, until something follows - in a block of its
+		// own then, unreached, as rslc opens one
 		uint32 curBlock{};
 		void Label(uint32 id)
 		{
 			OpVoid(SpvOpLabel, { id });
 			curBlock = id;
+		}
+		void EnsureBlock()
+		{
+			if (!curBlock)
+				Label(spv_id(w));
+		}
+		void Branch(uint32 target)
+		{
+			OpVoid(SpvOpBranch, { target });
+			curBlock = 0;
+		}
+		void Kill()
+		{
+			OpVoid(SpvOpKill, {});
+			curBlock = 0;
 		}
 
 		// if (cond) discard;
@@ -537,7 +576,7 @@ namespace
 			OpVoid(SpvOpSelectionMerge, { mergeLabel, SpvSelectionControlMaskNone });
 			OpVoid(SpvOpBranchConditional, { cond, killLabel, mergeLabel });
 			Label(killLabel);
-			OpVoid(SpvOpKill, {});
+			Kill();
 			Label(mergeLabel);
 		}
 
@@ -551,12 +590,14 @@ namespace
 			OpVoid(SpvOpBranchConditional, { cond, thenLabel, elseLabel });
 			Label(thenLabel);
 			then();
-			OpVoid(SpvOpBranch, { mergeLabel });
+			if (curBlock)
+				Branch(mergeLabel);
 			if (hasElse)
 			{
 				Label(elseLabel);
 				otherwise();
-				OpVoid(SpvOpBranch, { mergeLabel });
+				if (curBlock)
+					Branch(mergeLabel);
 			}
 			Label(mergeLabel);
 		}
@@ -620,6 +661,54 @@ namespace
 			return Run(Op(SpvOpPhi, TypeOf(type), { a.id, aLabel, b.id, bLabel }), type);
 		}
 		size_t BodyAt() const { return w->sec[SPV_SEC_BODY].n; }
+
+		// activeMaskStack[i] (c false) or activeMaskStackC[i] (c true); an
+		// index past either the GLSL emitter writes is no shader to rslc
+		uint32 MaskPtr(bool c, sint32 i)
+		{
+			if (i < 0 || i >= (c ? maskCLen : maskLen))
+			{
+				Decline("active mask index out of range");
+				i = 0;
+			}
+			uint32 ptr = spv_type_pointer(w, SpvStorageClassFunction, tBool);
+			return Op(SpvOpAccessChain, ptr, { c ? maskCVar : maskVar, ConstI(i) });
+		}
+		uint32 IsTrue(uint32 v) { return Op(SpvOpLogicalEqual, tBool, { v, spv_const_bool(w, 1) }); }
+		uint32 MaskIsTrue(bool c, sint32 i) { return IsTrue(Load(tBool, MaskPtr(c, i))); }
+		void MaskStore(bool c, sint32 i, uint32 v) { Store(MaskPtr(c, i), v); }
+		// a == true && activeMaskStackC[i] == true
+		uint32 AndMaskC(uint32 aIsTrue, sint32 i)
+		{
+			return AndShortCircuit(aIsTrue, [&] { return MaskIsTrue(true, i); });
+		}
+		// activeMaskStackC[d+1-n] = activeMaskStack[d-n] == true && activeMaskStackC[d-n] == true;
+		void Pop(sint32 d, sint32 n)
+		{
+			uint32 v = AndMaskC(MaskIsTrue(false, d - n), d - n);
+			MaskStore(true, d + 1 - n, v);
+		}
+		// activeMaskStack[d] = activeMaskStack[d] == false; and the C below
+		void Else(sint32 d)
+		{
+			uint32 m = Load(tBool, MaskPtr(false, d));
+			MaskStore(false, d, Op(SpvOpLogicalEqual, tBool, { m, spv_const_bool(w, 0) }));
+			uint32 v = AndMaskC(MaskIsTrue(false, d), d);
+			MaskStore(true, d + 1, v);
+		}
+		// break; out of the innermost loop
+		void Break()
+		{
+			if (loopDepth == 0)
+			{
+				Decline("break outside a loop");
+				return;
+			}
+			Branch(loops[loopDepth - 1].merge);
+		}
+		bool LoopStart(sint32 d);
+		bool LoopEnd(sint32 d);
+		bool EmitControlledALUClause(LatteDecompilerCFInstruction& cf);
 
 		bool Setup();
 		bool DeclareUniforms(LatteDecompilerOutputUniformOffsets& offsets, RendererAPI api, bool declare);
@@ -1345,6 +1434,33 @@ namespace
 			// int(0xFFFFFFFF) : int(0x0)
 			Assign(inst, Select(c, KI(-1), KI(0), DT_I));
 		}
+		else if ((op >= ALU_OP2_INST_PRED_SETE && op <= ALU_OP2_INST_PRED_SETNE) || (op >= ALU_OP2_INST_PRED_SETE_INT && op <= ALU_OP2_INST_PRED_SETNE_INT))
+		{
+			// predResult = (a op b); then into the stack for a push, or the
+			// break for a break clause
+			const bool isInt = op >= ALU_OP2_INST_PRED_SETE_INT;
+			Val a = Operand(inst, 0, isInt ? DT_I : DT_F);
+			Val b = Operand(inst, 1, isInt ? DT_I : DT_F);
+			const uint32 kind = isInt ? op - ALU_OP2_INST_PRED_SETE_INT : op - ALU_OP2_INST_PRED_SETE;
+			static const uint32 fCmp[4] = { SpvOpFOrdEqual, SpvOpFOrdGreaterThan, SpvOpFOrdGreaterThanEqual, SpvOpFOrdNotEqual };
+			static const uint32 iCmp[4] = { SpvOpIEqual, SpvOpSGreaterThan, SpvOpSGreaterThanEqual, SpvOpINotEqual };
+			Val c = isInt ? ICmp(iCmp[kind], a, b) : FCmp(fCmp[kind], a, b);
+			Store(predVar, c.id);
+			const sint32 d = cf.activeStackDepth;
+			if (cf.type == GPU7_CF_INST_ALU_PUSH_BEFORE)
+			{
+				MaskStore(false, d, Load(tBool, predVar));
+				uint32 v = AndMaskC(IsTrue(Load(tBool, predVar)), d);
+				MaskStore(true, d + 1, v);
+			}
+			else if (cf.type == GPU7_CF_INST_ALU_BREAK && inst.updateExecuteMask)
+			{
+				// aluBreak = aluBreak || (predResult == false);
+				uint32 brk = Load(tBool, aluBreakVar);
+				uint32 notPred = Op(SpvOpLogicalEqual, tBool, { Load(tBool, predVar), spv_const_bool(w, 0) });
+				Store(aluBreakVar, Op(SpvOpLogicalOr, tBool, { brk, notPred }));
+			}
+		}
 		else if (op == ALU_OP2_INST_KILLE_INT || op == ALU_OP2_INST_KILLNE_INT || op == ALU_OP2_INST_KILLGT_INT)
 		{
 			Val a = Operand(inst, 0, DT_I);
@@ -1513,10 +1629,6 @@ namespace
 					continue;
 				if (inst.opcode == ALU_OP2_INST_MOVA_FLOOR || inst.opcode == ALU_OP2_INST_MOVA_INT)
 					return Decline("MOVA");
-				if (inst.opcode >= ALU_OP2_INST_PRED_SETE && inst.opcode <= ALU_OP2_INST_PRED_SETNE)
-					return Decline("predicate");
-				if (inst.opcode >= ALU_OP2_INST_PRED_SETE_INT && inst.opcode <= ALU_OP2_INST_PRED_SETNE_INT)
-					return Decline("predicate");
 				if (!EmitOP2(cf, inst))
 					return false;
 			}
@@ -1596,8 +1708,7 @@ namespace
 			if (colorIndex == 0 && alphaTestEnable && alphaTestFunc == Latte::E_COMPAREFUNC::NEVER)
 			{
 				// discard; what follows it in a block of its own, unreached
-				OpVoid(SpvOpKill, {});
-				Label(spv_id(w));
+				Kill();
 			}
 			else if (colorIndex == 0 && alphaTestEnable && alphaTestFunc != Latte::E_COMPAREFUNC::ALWAYS)
 			{
@@ -1630,13 +1741,140 @@ namespace
 		return Ok();
 	}
 
+	// LatteDecompiler_emitClauseCode's ALU clause: in an if on the active
+	// mask, with the push before it and the pop or else after it
+	bool SpvShader::EmitControlledALUClause(LatteDecompilerCFInstruction& cf)
+	{
+		const sint32 d = cf.activeStackDepth;
+		const bool push = cf.type == GPU7_CF_INST_ALU_PUSH_BEFORE;
+		const bool isBreak = cf.type == GPU7_CF_INST_ALU_BREAK;
+		auto clause = [&] {
+			if (push)
+			{
+				MaskStore(false, d, Load(tBool, MaskPtr(false, d - 1)));
+				MaskStore(true, d + 1, Load(tBool, MaskPtr(true, d)));
+			}
+			if (isBreak)
+			{
+				aluBreakVar = Local(tBool, 0);
+				Store(aluBreakVar, spv_const_bool(w, 0));
+			}
+			if (!EmitALUClause(cf))
+				return;
+			if (isBreak)
+				If(Load(tBool, aluBreakVar), [&] { Break(); });
+		};
+		uint32 cond = MaskIsTrue(true, push ? d : d + 1);
+		if (push)
+		{
+			IfElse(cond, clause, [&] {
+				MaskStore(false, d, spv_const_bool(w, 0));
+				MaskStore(true, d + 1, spv_const_bool(w, 0));
+			}, true);
+		}
+		else
+			If(cond, clause);
+		if (cf.type == GPU7_CF_INST_ALU_POP_AFTER)
+			Pop(d, 1);
+		else if (cf.type == GPU7_CF_INST_ALU_POP2_AFTER)
+			Pop(d, 2);
+		else if (cf.type == GPU7_CF_INST_ALU_ELSE_AFTER)
+			Else(d);
+		return Ok();
+	}
+
+	// { bool loopActive = C; [int loopCounter = 0;] while (C == true [&& loopCounter < 500]) { [loopCounter++;]
+	bool SpvShader::LoopStart(sint32 d)
+	{
+		if (loopDepth == sizeof(loops) / sizeof(loops[0]))
+			return Decline("loops nested too deep");
+		Loop& l = loops[loopDepth];
+		const bool limited = ActiveSettings::ShaderPreventInfiniteLoopsEnabled();
+		l.active = Local(tBool, 0);
+		Store(l.active, Load(tBool, MaskPtr(true, d + 1)));
+		l.counter = 0;
+		if (limited)
+		{
+			l.counter = Local(tI, 0);
+			Store(l.counter, ConstI(0));
+		}
+		l.header = spv_id(w);
+		l.check = spv_id(w);
+		l.body = spv_id(w);
+		l.cont = spv_id(w);
+		l.merge = spv_id(w);
+		Branch(l.header);
+		Label(l.header);
+		OpVoid(SpvOpLoopMerge, { l.merge, l.cont, SpvLoopControlMaskNone });
+		Branch(l.check);
+		Label(l.check);
+		uint32 cond = MaskIsTrue(true, d + 1);
+		if (limited)
+		{
+			uint32 below = Op(SpvOpSLessThan, tBool, { Load(tI, l.counter), ConstI(500) });
+			cond = Op(SpvOpLogicalAnd, tBool, { cond, below });
+		}
+		OpVoid(SpvOpBranchConditional, { cond, l.body, l.merge });
+		curBlock = 0;
+		Label(l.body);
+		if (limited)
+			Store(l.counter, Op(SpvOpIAdd, tI, { Load(tI, l.counter), ConstI(1) }));
+		loopDepth++;
+		return Ok();
+	}
+
+	// } C = loopActive; }
+	bool SpvShader::LoopEnd(sint32 d)
+	{
+		if (loopDepth == 0)
+			return Decline("loop end outside a loop");
+		Loop& l = loops[--loopDepth];
+		if (curBlock)
+			Branch(l.cont);
+		Label(l.cont);
+		Branch(l.header);
+		Label(l.merge);
+		MaskStore(true, d + 1, Load(tBool, l.active));
+		return Ok();
+	}
+
 	bool SpvShader::EmitClause(LatteDecompilerCFInstruction& cf)
 	{
-		if (cf.type == GPU7_CF_INST_ALU)
-			return EmitALUClause(cf);
-		if (cf.type == GPU7_CF_INST_EXPORT || cf.type == GPU7_CF_INST_EXPORT_DONE)
+		const sint32 d = cf.activeStackDepth;
+		switch (cf.type)
+		{
+		case GPU7_CF_INST_ALU:
+			if (!hasActiveMask)
+				return EmitALUClause(cf);
+			[[fallthrough]];
+		case GPU7_CF_INST_ALU_PUSH_BEFORE:
+		case GPU7_CF_INST_ALU_POP_AFTER:
+		case GPU7_CF_INST_ALU_POP2_AFTER:
+		case GPU7_CF_INST_ALU_BREAK:
+		case GPU7_CF_INST_ALU_ELSE_AFTER:
+			if (!hasActiveMask)
+				return Decline("control flow without an active mask");
+			return EmitControlledALUClause(cf);
+		case GPU7_CF_INST_EXPORT:
+		case GPU7_CF_INST_EXPORT_DONE:
 			return EmitExport(cf);
-		return Decline("control flow instruction");
+		case GPU7_CF_INST_ELSE:
+			Else(d);
+			return Ok();
+		case GPU7_CF_INST_POP:
+			Pop(d, (sint32)cf.popCount);
+			return Ok();
+		case GPU7_CF_INST_LOOP_START_DX10:
+		case GPU7_CF_INST_LOOP_START_NO_AL:
+			return LoopStart(d);
+		case GPU7_CF_INST_LOOP_END:
+			return LoopEnd(d);
+		case GPU7_CF_INST_LOOP_BREAK:
+			If(MaskIsTrue(true, d + 1), [&] { Break(); });
+			return Ok();
+		default:
+			return Decline("control flow instruction");
+		}
 	}
 
 	// the writer each decompiling thread keeps
@@ -1676,8 +1914,6 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 		return decline("geometry shader");
 	if (shaderContext->typeTracker.useArrayGPRs)
 		return decline("GPR array");
-	if (shaderContext->analyzer.modifiesPixelActiveState)
-		return decline("active mask");
 	if (!shaderContext->list_subroutines.empty())
 		return decline("subroutines");
 	if (shaderContext->output->textureUnitMask.any())
@@ -1717,6 +1953,25 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 		s.backupVar[b] = s.Local(scalar, 0);
 	s.tempVar = s.Local(s.Vec4Of(s.dt), spv_const_null(w, s.Vec4Of(s.dt)));
 	s.tempResultFVar = s.Local(s.tF, 0);
+	// bool predResult = true; and the active mask stacks
+	s.predVar = s.Local(s.tBool, 0);
+	s.Store(s.predVar, spv_const_bool(w, 1));
+	if (shaderContext->analyzer.modifiesPixelActiveState)
+	{
+		const sint32 depth = shaderContext->analyzer.activeStackMaxDepth;
+		s.hasActiveMask = true;
+		s.maskLen = depth + 1;
+		s.maskCLen = depth + 2;
+		s.maskVar = s.Local(spv_type_array(w, s.tBool, s.ConstI(s.maskLen)), 0);
+		s.maskCVar = s.Local(spv_type_array(w, s.tBool, s.ConstI(s.maskCLen)), 0);
+		for (sint32 i = 0; i < depth; i++)
+			s.MaskStore(false, i, spv_const_bool(w, 0));
+		for (sint32 i = 0; i < depth + 1; i++)
+			s.MaskStore(true, i, spv_const_bool(w, 0));
+		s.MaskStore(false, 0, spv_const_bool(w, 1));
+		s.MaskStore(true, 0, spv_const_bool(w, 1));
+		s.MaskStore(true, 1, spv_const_bool(w, 1));
+	}
 	if (!s.EmitInputs())
 		return decline(s.decline);
 	for (auto& cf : shaderContext->cfInstructions)
@@ -1724,7 +1979,10 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 		if (!s.EmitClause(cf))
 			return decline(s.decline ? s.decline : "out of memory");
 	}
-	s.OpVoid(SpvOpReturn, {});
+	if (s.loopDepth != 0)
+		return decline("loop without an end");
+	if (s.curBlock)
+		s.OpVoid(SpvOpReturn, {});
 	s.OpVoid(SpvOpFunctionEnd, {});
 	// entry point and modes
 	uint32 epWords[2] = { SpvExecutionModelFragment, mainId };

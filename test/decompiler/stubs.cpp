@@ -32,9 +32,11 @@ bool ActiveSettings::DumpShadersEnabled()
 {
 	return false;
 }
+// the test turns it on and off: loops are written either way
+bool g_testPreventInfiniteLoops = false;
 bool ActiveSettings::ShaderPreventInfiniteLoopsEnabled()
 {
-	return false;
+	return g_testPreventInfiniteLoops;
 }
 bool ActiveSettings::ForceSamplerRoundToPrecision()
 {

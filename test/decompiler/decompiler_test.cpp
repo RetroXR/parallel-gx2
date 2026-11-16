@@ -34,6 +34,7 @@
 #include <vector>
 
 extern LatteShaderPSInputTable g_testPSInputTable;
+extern bool g_testPreventInfiniteLoops;
 
 static int s_failures = 0;
 #define CHECK(cond) do { if (!(cond)) { std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); s_failures++; } } while (0)
@@ -50,6 +51,7 @@ struct AluOp
 	uint8 neg[3];
 	uint8 abs[2];
 	uint8 destGpr, destElem, writeMask, clamp, omod;
+	uint8 exec; // update execute mask (a predicate's, in a break clause)
 };
 
 struct AluGroup
@@ -58,9 +60,18 @@ struct AluGroup
 	uint32 literals[4];
 };
 
+// a CF instruction: an ALU clause of a kind, or one without a clause
+struct CFEntry
+{
+	uint32 type;
+	int clause; // into Program::clauses, for the ALU kinds
+	uint8 popCount;
+};
+
 struct Program
 {
-	std::vector<std::vector<AluGroup>> clauses; // ALU clauses, in order
+	std::vector<std::vector<AluGroup>> clauses; // ALU clauses
+	std::vector<CFEntry> cf; // the CF list; none: each clause a plain ALU, in order
 	uint32 exportGpr;
 	uint8 exportSel[4];
 };
@@ -76,7 +87,7 @@ static void EncodeAlu(const AluOp& op, bool last, uint32& w0, uint32& w1)
 	}
 	else
 	{
-		w1 = (uint32)op.abs[0] | ((uint32)op.abs[1] << 1) | ((uint32)op.writeMask << 4) | ((uint32)op.omod << 5) |
+		w1 = (uint32)op.abs[0] | ((uint32)op.abs[1] << 1) | ((uint32)op.exec << 2) | ((uint32)op.writeMask << 4) | ((uint32)op.omod << 5) |
 			(op.opcode << 7) | ((uint32)op.destGpr << 21) | ((uint32)op.destElem << 29) | ((uint32)op.clamp << 31);
 	}
 }
@@ -86,9 +97,16 @@ static std::vector<uint32> Assemble(const Program& p)
 {
 	std::vector<uint32> alu;
 	std::vector<uint32> cf;
-	const uint32 cfCount = (uint32)p.clauses.size() + 1;
+	std::vector<CFEntry> list = p.cf;
+	if (list.empty())
+	{
+		for (size_t i = 0; i < p.clauses.size(); i++)
+			list.push_back({ GPU7_CF_INST_ALU, (int)i, 0 });
+	}
+	const uint32 cfCount = (uint32)list.size() + 1;
 	uint32 aluBase = (cfCount + 1) & ~1u; // in 64 bit words, after the CF list
 	uint32 at = aluBase;
+	std::vector<uint32> clauseStart, clauseWords;
 	for (auto& clause : p.clauses)
 	{
 		uint32 start = at;
@@ -127,9 +145,22 @@ static std::vector<uint32> Assemble(const Program& p)
 			}
 		}
 		at += words;
-		// CF_ALU: addr, count-1
-		cf.push_back(start);
-		cf.push_back(((words - 1) << 18) | (8u << 26) | (1u << 31));
+		clauseStart.push_back(start);
+		clauseWords.push_back(words);
+	}
+	for (auto& e : list)
+	{
+		if (e.type & GPU7_CF_INST_ALU_MASK)
+		{
+			// CF_ALU_*: addr, count-1, the kind
+			cf.push_back(clauseStart[e.clause]);
+			cf.push_back(((clauseWords[e.clause] - 1) << 18) | ((e.type & 0xF) << 26) | (1u << 31));
+		}
+		else
+		{
+			cf.push_back(0);
+			cf.push_back((uint32)e.popCount | (e.type << 23) | (1u << 31));
+		}
 	}
 	// EXPORT_DONE, pixel, color 0, end of program
 	cf.push_back(0 | (0 << 13) | (p.exportGpr << 15));
@@ -169,9 +200,20 @@ static const uint32 kOp3s[] = {
 	ALU_OP3_INST_CMOVGE_INT,
 };
 // what the emitter declines, now and then
-static const uint32 kDeclined[] = { ALU_OP2_INST_MOVA_INT, ALU_OP2_INST_MOVA_FLOOR, ALU_OP2_INST_PRED_SETE };
+static const uint32 kDeclined[] = { ALU_OP2_INST_MOVA_INT, ALU_OP2_INST_MOVA_FLOOR };
+static const uint32 kPredOps[] = {
+	ALU_OP2_INST_PRED_SETE, ALU_OP2_INST_PRED_SETGT, ALU_OP2_INST_PRED_SETGE, ALU_OP2_INST_PRED_SETNE,
+	ALU_OP2_INST_PRED_SETE_INT, ALU_OP2_INST_PRED_SETGT_INT, ALU_OP2_INST_PRED_SETGE_INT, ALU_OP2_INST_PRED_SETNE_INT,
+};
+
+static bool IsKill(uint32 opcode)
+{
+	return opcode == ALU_OP2_INST_KILLE || opcode == ALU_OP2_INST_KILLGT || opcode == ALU_OP2_INST_KILLGE ||
+		opcode == ALU_OP2_INST_KILLE_INT || opcode == ALU_OP2_INST_KILLGT_INT || opcode == ALU_OP2_INST_KILLNE_INT;
+}
 
 static const int kGPRs = 8;
+static const int kCounterGPR = kGPRs - 1; // a loop's counter, written by nothing else
 static const int kUniforms = 12;
 
 // the type an operation reads an operand as (what a constant may be)
@@ -197,6 +239,7 @@ static int OperandType(const AluOp& op, int s)
 	case ALU_OP2_INST_SETE_INT: case ALU_OP2_INST_SETGT_INT: case ALU_OP2_INST_SETGE_INT: case ALU_OP2_INST_SETNE_INT:
 	case ALU_OP2_INST_ASHR_INT: case ALU_OP2_INST_LSHL_INT: case ALU_OP2_INST_MULLO_INT: case ALU_OP2_INST_INT_TO_FLOAT:
 	case ALU_OP2_INST_KILLE_INT: case ALU_OP2_INST_KILLGT_INT: case ALU_OP2_INST_KILLNE_INT: case ALU_OP2_INST_MOVA_INT:
+	case ALU_OP2_INST_PRED_SETE_INT: case ALU_OP2_INST_PRED_SETGT_INT: case ALU_OP2_INST_PRED_SETGE_INT: case ALU_OP2_INST_PRED_SETNE_INT:
 		return T_I;
 	case ALU_OP2_INST_MAX_UINT: case ALU_OP2_INST_MIN_UINT: case ALU_OP2_INST_SETGT_UINT: case ALU_OP2_INST_SETGE_UINT:
 	case ALU_OP2_INST_LSHR_INT: case ALU_OP2_INST_MULLO_UINT: case ALU_OP2_INST_UINT_TO_FLOAT:
@@ -209,6 +252,15 @@ static int OperandType(const AluOp& op, int s)
 struct Gen
 {
 	std::mt19937 rng;
+	int destGPRs = kGPRs; // without the counter's, in a program with loops
+	// no kill in a loop: lavapipe (Mesa 25.2) keeps a discarded pixel in
+	// the loop, where it never reaches the counted break, and crashes -
+	// the module rslc makes of the GLSL as well as the direct one
+	bool noKills = false;
+	// the register exported, written more often where control flow decides
+	// which clauses run, so that it shows
+	int favorDest = -1;
+	uint8 Dest() { return (uint8)((favorDest >= 0 && Chance(35)) ? favorDest : (int)R(destGPRs)); }
 	uint32 R(uint32 n) { return rng() % n; }
 	bool Chance(uint32 percent) { return R(100) < percent; }
 
@@ -286,7 +338,7 @@ struct Gen
 		if (Chance(8))
 		{
 			uint32 opc = Chance(50) ? ALU_OP2_INST_DOT4 : ALU_OP2_INST_DOT4_IEEE;
-			uint8 dst = (uint8)R(kGPRs);
+			uint8 dst = Dest();
 			for (uint8 e = 0; e < 4; e++)
 			{
 				AluOp op{};
@@ -323,7 +375,9 @@ struct Gen
 			AluOp op{};
 			uint32 kind = R(100);
 			if (allowDeclined && kind < 2)
-				op.opcode = kDeclined[R(3)];
+				op.opcode = kDeclined[R(2)];
+		else if (kind < 6)
+			op.opcode = kPredOps[R(8)];
 			else if (kind < 25)
 			{
 				op.op3 = true;
@@ -331,6 +385,8 @@ struct Gen
 			}
 			else
 				op.opcode = kVectorOps[R(sizeof(kVectorOps) / 4)];
+			if (noKills && !op.op3 && IsKill(op.opcode))
+				op.opcode = ALU_OP2_INST_MOV;
 			for (int s = 0; s < (op.op3 ? 3 : 2); s++)
 				op.neg[s] = Chance(12);
 			if (!op.op3)
@@ -340,9 +396,15 @@ struct Gen
 			}
 			for (int s = 0; s < (op.op3 ? 3 : 2); s++)
 				Source(op, s, pvWritten, firstGroup);
-			op.destGpr = (uint8)R(kGPRs);
+			op.destGpr = Dest();
 			op.destElem = e;
 			op.writeMask = op.op3 ? 1 : (Chance(75) ? 1 : 0);
+			if (!op.op3 && ((op.opcode >= ALU_OP2_INST_PRED_SETE && op.opcode <= ALU_OP2_INST_PRED_SETNE) ||
+				(op.opcode >= ALU_OP2_INST_PRED_SETE_INT && op.opcode <= ALU_OP2_INST_PRED_SETNE_INT)))
+			{
+				op.writeMask = 0;
+				op.exec = Chance(50);
+			}
 			op.clamp = Chance(10);
 			op.omod = (!op.op3 && Chance(10)) ? (uint8)(1 + R(3)) : 0;
 			g.ops.push_back(op);
@@ -357,7 +419,7 @@ struct Gen
 			op.abs[0] = Chance(10);
 			Source(op, 0, pvWritten, firstGroup);
 			Source(op, 1, pvWritten, firstGroup);
-			op.destGpr = (uint8)R(kGPRs);
+			op.destGpr = Dest();
 			op.destElem = (uint8)R(4);
 			op.writeMask = Chance(75) ? 1 : 0;
 			op.clamp = Chance(10);
@@ -369,20 +431,161 @@ struct Gen
 		return g;
 	}
 
+	// an ALU clause of up to 'maxGroups' groups, and a predicate at its end
+	// for a push
+	int Clause(Program& p, uint32 maxGroups, bool allowDeclined, bool predicate = false)
+	{
+		bool pv[5] = {};
+		std::vector<AluGroup> groups;
+		uint32 n = 1 + R(maxGroups);
+		for (uint32 i = 0; i < n; i++)
+			groups.push_back(Group(i == 0, pv, allowDeclined));
+		if (predicate)
+		{
+			AluGroup g{};
+			for (auto& l : g.literals)
+				l = Literal();
+			AluOp op{};
+			op.opcode = kPredOps[R(8)];
+			op.neg[0] = Chance(10);
+			op.neg[1] = Chance(10);
+			op.abs[0] = Chance(10);
+			Source(op, 0, pv, false);
+			Source(op, 1, pv, false);
+			if (Chance(60))
+			{
+				// an input that varies over the target: pixels split
+				static const uint32 varying[] = { 0, 1, 3 };
+				op.src[0] = varying[R(3)];
+				op.chan[0] = (uint8)R(2);
+			}
+			op.destElem = (uint8)R(4);
+			op.exec = 1;
+			g.ops.push_back(op);
+			groups.push_back(g);
+		}
+		p.clauses.push_back(std::move(groups));
+		return (int)p.clauses.size() - 1;
+	}
+	static bool IsPlainALU(const Program& p)
+	{
+		return !p.cf.empty() && p.cf.back().type == GPU7_CF_INST_ALU;
+	}
+
+	// statements at a stack depth: clauses, ifs with an else now and then,
+	// loops, breaks out of them - ended by each kind of pop
+	// loopBase: the depth of the innermost loop's body
+	void Statements(Program& p, int depth, int loops, int loopBase, int& budget, bool allowDeclined)
+	{
+		noKills = loops > 0;
+		uint32 n = 1 + R(3);
+		for (uint32 i = 0; i < n && budget > 0; i++)
+		{
+			uint32 k = R(100);
+			budget--;
+			if (loops > 0 && (k < 4 || (depth > loopBase && k < 20)))
+				p.cf.push_back({ GPU7_CF_INST_LOOP_BREAK, -1, 0 });
+			else if (loops > 0 && depth == loopBase && depth > 0 && k < 30)
+			{
+				// the if around the loop turned over inside it: the loop's
+				// own mask goes off, and back to what it was at its end
+				p.cf.push_back({ GPU7_CF_INST_ELSE, -1, 0 });
+			}
+			else if (k < 50 || depth >= 3)
+				p.cf.push_back({ GPU7_CF_INST_ALU, Clause(p, 4, allowDeclined), 0 });
+			else if (k < 82 || loops >= 2)
+			{
+				p.cf.push_back({ GPU7_CF_INST_ALU_PUSH_BEFORE, Clause(p, 3, allowDeclined, true), 0 });
+				Statements(p, depth + 1, loops, loopBase, budget, allowDeclined);
+				if (Chance(45))
+				{
+					if (IsPlainALU(p) && Chance(50))
+						p.cf.back().type = GPU7_CF_INST_ALU_ELSE_AFTER;
+					else
+						p.cf.push_back({ GPU7_CF_INST_ELSE, -1, 0 });
+					Statements(p, depth + 1, loops, loopBase, budget, allowDeclined);
+				}
+				// the pop: after the last clause, or its own - or the inner
+				// if's, taking this one's along
+				if (IsPlainALU(p) && Chance(50))
+					p.cf.back().type = GPU7_CF_INST_ALU_POP_AFTER;
+				else if (!p.cf.empty() && p.cf.back().type == GPU7_CF_INST_ALU_POP_AFTER && Chance(40))
+					p.cf.back().type = GPU7_CF_INST_ALU_POP2_AFTER;
+				else if (!p.cf.empty() && p.cf.back().type == GPU7_CF_INST_POP && p.cf.back().popCount == 1 && Chance(40))
+					p.cf.back().popCount = 2;
+				else
+					p.cf.push_back({ GPU7_CF_INST_POP, -1, 1 });
+			}
+			else
+			{
+				// counter = 0; loop { counter += 1.0; break unless N > counter; ... }
+				const uint8 chan = (uint8)loops;
+				AluGroup init{};
+				AluOp mov{};
+				mov.opcode = ALU_OP2_INST_MOV;
+				mov.src[0] = 253;
+				mov.destGpr = kCounterGPR;
+				mov.destElem = chan;
+				mov.writeMask = 1;
+				init.ops.push_back(mov);
+				p.clauses.push_back({ init });
+				p.cf.push_back({ GPU7_CF_INST_ALU, (int)p.clauses.size() - 1, 0 });
+				p.cf.push_back({ Chance(50) ? (uint32)GPU7_CF_INST_LOOP_START_DX10 : (uint32)GPU7_CF_INST_LOOP_START_NO_AL, -1, 0 });
+				AluGroup inc{};
+				AluOp add{};
+				add.opcode = ALU_OP2_INST_ADD;
+				add.src[0] = kCounterGPR;
+				add.chan[0] = chan;
+				add.src[1] = 253;
+				add.destGpr = kCounterGPR;
+				add.destElem = chan;
+				add.writeMask = 1;
+				inc.ops.push_back(add);
+				inc.literals[0] = 0x3F800000u;
+				AluGroup test{};
+				AluOp pred{};
+				pred.opcode = ALU_OP2_INST_PRED_SETGT;
+				pred.src[0] = 253;
+				pred.src[1] = kCounterGPR;
+				pred.chan[1] = chan;
+				pred.exec = 1;
+				test.ops.push_back(pred);
+				float limit = (float)(1 + R(4));
+				std::memcpy(&test.literals[0], &limit, 4);
+				noKills = true;
+				int c = Clause(p, 2, allowDeclined);
+				auto& groups = p.clauses[c];
+				groups.insert(groups.begin(), inc);
+				groups.push_back(test);
+				p.cf.push_back({ GPU7_CF_INST_ALU_BREAK, c, 0 });
+				Statements(p, depth, loops + 1, depth, budget, allowDeclined);
+				noKills = loops > 0;
+				p.cf.push_back({ GPU7_CF_INST_LOOP_END, -1, 0 });
+			}
+		}
+	}
+
 	Program Make(bool allowDeclined)
 	{
 		Program p{};
-		uint32 clauses = 1 + R(3);
-		for (uint32 c = 0; c < clauses; c++)
-		{
-			bool pv[5] = {};
-			std::vector<AluGroup> groups;
-			uint32 n = 1 + R(8);
-			for (uint32 i = 0; i < n; i++)
-				groups.push_back(Group(i == 0, pv, allowDeclined));
-			p.clauses.push_back(std::move(groups));
-		}
+		destGPRs = kGPRs;
+		noKills = false;
+		favorDest = -1;
 		p.exportGpr = R(kGPRs - 1);
+		if (Chance(55))
+		{
+			// control flow; the counters' register written by them only
+			destGPRs = kCounterGPR;
+			favorDest = (int)p.exportGpr;
+			int budget = 2 + (int)R(9);
+			Statements(p, 0, 0, 0, budget, allowDeclined);
+		}
+		else
+		{
+			uint32 clauses = 1 + R(3);
+			for (uint32 c = 0; c < clauses; c++)
+				Clause(p, 8, allowDeclined);
+		}
 		for (int i = 0; i < 4; i++)
 		{
 			uint32 k = R(10);
@@ -831,7 +1034,14 @@ static std::vector<uint32> Draw(const Context& c, const Decompiled& d, const flo
 	VkFence fence;
 	VKCHECK(vkCreateFence(c.device, &fi, nullptr, &fence));
 	VKCHECK(vkQueueSubmit(c.queue, 1, &si, fence));
-	VKCHECK(vkWaitForFences(c.device, 1, &fence, VK_TRUE, UINT64_MAX));
+	// a shader that never ends (a loop that does not break) fails here,
+	// rather than hanging the test
+	if (vkWaitForFences(c.device, 1, &fence, VK_TRUE, 30ull * 1000 * 1000 * 1000) != VK_SUCCESS)
+	{
+		std::printf("FAIL: a draw did not finish within 30 s (a loop that never ends?)\n");
+		std::fflush(stdout);
+		std::_Exit(1);
+	}
 	vkDestroyFence(c.device, fence, nullptr);
 	std::vector<uint32> pixels(W * H * 4);
 	void* map;
@@ -865,7 +1075,7 @@ struct Case
 {
 	Program p;
 	uint32 alphaRaw;
-	bool strictMul, rte;
+	bool strictMul, rte, preventLoops;
 	float inputs[16];
 	uint32 cfile[256 * 4];
 	float alphaRef;
@@ -943,6 +1153,7 @@ static int Differs(const Context& c, const Case& k, std::vector<uint32>* outA = 
 {
 	std::vector<uint32> words = Assemble(k.p);
 	s_regs[Latte::REGADDR::SX_ALPHA_TEST_CONTROL] = k.alphaRaw;
+	g_testPreventInfiniteLoops = k.preventLoops;
 	Decompiled viaGlsl = Decompile(words, false, k.strictMul, k.rte);
 	Decompiled viaSpirv = Decompile(words, true, k.strictMul, k.rte);
 	if (viaSpirv.declined || !viaGlsl.ok || !viaSpirv.ok)
@@ -987,7 +1198,11 @@ static void Minimize(const Context& c, Case k, const char* outDir)
 				Case t = k;
 				t.p.clauses[cl].erase(t.p.clauses[cl].begin() + g);
 				if (t.p.clauses[cl].empty())
+				{
+					if (!t.p.cf.empty())
+						continue; // the CF list refers to it
 					t.p.clauses.erase(t.p.clauses.begin() + cl);
+				}
 				if (t.p.clauses.empty())
 					continue;
 				if (Differs(c, t) == 1)
@@ -1023,6 +1238,7 @@ static void Minimize(const Context& c, Case k, const char* outDir)
 	std::vector<uint32> a, b;
 	Differs(c, k, &a, &b);
 	std::vector<uint32> words = Assemble(k.p);
+	g_testPreventInfiniteLoops = k.preventLoops;
 	std::string glsl = Decompile(words, false, k.strictMul, k.rte).glsl;
 	std::printf("minimal program (strictMul %d, rte %d, alpha %08x):\n%s\n", k.strictMul, k.rte, k.alphaRaw, glsl.c_str());
 	if (outDir)
@@ -1114,6 +1330,66 @@ static std::vector<Program> DirectedPrograms()
 	recip.opcode = ALU_OP2_INST_RECIP_IEEE;
 	recip.destElem = 2;
 	out.push_back(one(recip, 0x40400000u /* 3.0 */, 0));
+	// a loop in an if that turns the if over inside it: its mask is off
+	// at its end and must be put back for the clause after it, which only
+	// the pixels in the if run
+	{
+		Program p{};
+		auto clause = [&](std::vector<AluOp> ops, uint32 literal) {
+			AluGroup g{};
+			g.ops = std::move(ops);
+			g.literals[0] = literal;
+			p.clauses.push_back({ g });
+			return (int)p.clauses.size() - 1;
+		};
+		AluOp pred{};
+		pred.opcode = ALU_OP2_INST_PRED_SETGT;
+		pred.src[0] = 3;   // R3.x, of either sign over the target
+		pred.src[1] = 248; // 0.0
+		pred.exec = 1;
+		AluOp zero{};
+		zero.opcode = ALU_OP2_INST_MOV;
+		zero.src[0] = 253;
+		zero.destGpr = kCounterGPR;
+		zero.writeMask = 1;
+		AluOp inc{};
+		inc.opcode = ALU_OP2_INST_ADD;
+		inc.src[0] = kCounterGPR;
+		inc.src[1] = 249; // 1.0
+		inc.destGpr = kCounterGPR;
+		inc.writeMask = 1;
+		AluOp limit{};
+		limit.opcode = ALU_OP2_INST_PRED_SETGT;
+		limit.src[0] = 253;
+		limit.src[1] = kCounterGPR;
+		limit.exec = 1;
+		AluOp mark{};
+		mark.opcode = ALU_OP2_INST_MOV;
+		mark.src[0] = 253;
+		mark.destGpr = 1;
+		mark.writeMask = 1;
+		const int cPush = clause({ pred }, 0);
+		const int cZero = clause({ zero }, 0);
+		const int cBreak = clause({ inc }, 0);
+		p.clauses[cBreak].push_back(AluGroup{});
+		p.clauses[cBreak].back().ops.push_back(limit);
+		p.clauses[cBreak].back().literals[0] = 0x40000000u; // 2.0
+		const int cMark = clause({ mark }, 0x40A00000u); // 5.0
+		p.cf = {
+			{ GPU7_CF_INST_ALU_PUSH_BEFORE, cPush, 0 },
+			{ GPU7_CF_INST_ALU, cZero, 0 },
+			{ GPU7_CF_INST_LOOP_START_DX10, -1, 0 },
+			{ GPU7_CF_INST_ALU_BREAK, cBreak, 0 },
+			{ GPU7_CF_INST_ELSE, -1, 0 },
+			{ GPU7_CF_INST_LOOP_END, -1, 0 },
+			{ GPU7_CF_INST_ALU, cMark, 0 },
+			{ GPU7_CF_INST_POP, -1, 1 },
+		};
+		p.exportGpr = 1;
+		for (int i = 0; i < 4; i++)
+			p.exportSel[i] = (uint8)i;
+		out.push_back(p);
+	}
 	return out;
 }
 
@@ -1146,7 +1422,7 @@ int main(int argc, char** argv)
 	int direct = 0, declined = 0, drawn = 0, differing = 0, glslFailed = 0, offsetsDiffer = 0, shapeDiffers = 0;
 	std::map<std::string, int> reasons;
 	const std::vector<Program> directed = DirectedPrograms();
-	CHECK(directed.size() == 3);
+	CHECK(directed.size() == 4);
 	for (int i = 0; i < count + (int)directed.size(); i++)
 	{
 		const bool allowDeclined = (i % 5) == 0;
@@ -1165,6 +1441,7 @@ int main(int argc, char** argv)
 		s_regs[Latte::REGADDR::SX_ALPHA_TEST_CONTROL] = k.alphaRaw;
 		const bool strictMul = k.strictMul = gen.Chance(50);
 		const bool rte = k.rte = c.rte && gen.Chance(50);
+		g_testPreventInfiniteLoops = k.preventLoops = gen.Chance(50);
 		Decompiled viaGlsl = Decompile(words, false, strictMul, rte);
 		Decompiled viaSpirv = Decompile(words, true, strictMul, rte);
 		if (viaSpirv.declined)
