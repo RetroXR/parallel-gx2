@@ -172,7 +172,7 @@ static RendererShaderMtl* rectsEmulationGS_generate(MetalRenderer* metalRenderer
 
 	gsSrc.append("}\r\n");
 
-	auto mtlShader = new RendererShaderMtl(metalRenderer, RendererShader::ShaderType::kGeometry, 0, 0, false, false, gsSrc);
+	auto mtlShader = new RendererShaderMtl(metalRenderer, RendererShader::ShaderType::kGeometry, 0, 0, false, false, std::move(gsSrc));
 	mtlShader->PreponeCompilation(true);
 
 	return mtlShader;

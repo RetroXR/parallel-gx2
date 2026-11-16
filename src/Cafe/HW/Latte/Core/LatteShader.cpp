@@ -354,16 +354,9 @@ void LatteShader_CreateRendererShader(LatteDecompilerShader* shader, bool compil
 	}
 
 	// check if a custom shader is present
-	std::string shaderSrc;
-
 	const std::string* customShaderSrc = GraphicPack2::FindCustomShaderSource(shader->baseHash, shader->auxHash, gpShaderType, g_renderer->GetType() == RendererAPI::Vulkan, g_renderer->GetType() == RendererAPI::Metal);
 	if (customShaderSrc)
-	{
-		shaderSrc.assign(*customShaderSrc);
 		shader->isCustomShader = true;
-	}
-	else
-		shaderSrc.assign(shader->strBuf_shaderSource->c_str());
 
 	if (shaderType == RendererShader::ShaderType::kVertex &&
 		(shader->baseHash == 0x15bc7edf9de2ed30 || shader->baseHash == 0x83a697d61a3b9202 ||
@@ -376,7 +369,10 @@ void LatteShader_CreateRendererShader(LatteDecompilerShader* shader, bool compil
 	}
 
 	// create shader
-	shader->shader = g_renderer->shader_create(shaderType, shader->baseHash, shader->auxHash, shaderSrc, true, shader->isCustomShader);
+	// the decompiler's source handed down to where the renderer keeps it,
+	// moved all the way; a graphic pack's, which the pack keeps, copied once
+	shader->shader = g_renderer->shader_create(shaderType, shader->baseHash, shader->auxHash,
+		customShaderSrc ? std::string(*customShaderSrc) : std::move(shader->shaderSource), true, shader->isCustomShader);
 	if (shader->shader == nullptr)
 		shader->hasError = true;
 	// after renderer shader creation we can throw away any intermediate info
@@ -459,11 +455,7 @@ LatteFetchShader* LatteSHRC_GetOrCreateFetchShader()
 
 void LatteShader_CleanupAfterCompile(LatteDecompilerShader* shader)
 {
-	if (shader->strBuf_shaderSource)
-	{
-		delete shader->strBuf_shaderSource;
-		shader->strBuf_shaderSource = nullptr;
-	}
+	std::string().swap(shader->shaderSource);
 }
 
 void LatteShader_DumpShader(uint64 baseHash, uint64 auxHash, LatteDecompilerShader* shader)
@@ -482,8 +474,8 @@ void LatteShader_DumpShader(uint64 baseHash, uint64 auxHash, LatteDecompilerShad
 	FileStream* fs = FileStream::createFile2(ActiveSettings::GetUserDataPath("dump/shaders/{:016x}_{:016x}_{}.txt", baseHash, auxHash, suffix));
 	if (fs)
 	{
-		if (shader->strBuf_shaderSource)
-			fs->writeData(shader->strBuf_shaderSource->c_str(), shader->strBuf_shaderSource->getLen());
+		if (!shader->shaderSource.empty())
+			fs->writeData(shader->shaderSource.data(), shader->shaderSource.size());
 		delete fs;
 	}
 }

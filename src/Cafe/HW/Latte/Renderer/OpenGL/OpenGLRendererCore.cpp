@@ -890,7 +890,7 @@ RendererShaderGL* rectsEmulationGS_generateShaderGL(LatteDecompilerShader* verte
 
 	gsSrc.append("}\r\n");
 
-	auto glShader = new RendererShaderGL(RendererShader::ShaderType::kGeometry, 0, 0, false, false, gsSrc);
+	auto glShader = new RendererShaderGL(RendererShader::ShaderType::kGeometry, 0, 0, false, false, std::move(gsSrc));
 	glShader->PreponeCompilation(true);
 
 	return glShader;

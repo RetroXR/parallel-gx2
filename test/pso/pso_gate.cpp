@@ -16,6 +16,9 @@
 //  - the register file a cached shader or pipeline is rebuilt with at boot:
 //    the heap allocations and bytes allocated to rebuild 1000; and the
 //    programs a cached shader is inflated into: those to inflate 1000; and
+//    a new shader's source as the decompiler writes it and hands it to the
+//    renderer: those to write 1000 (the thread's buffer, kept, and the
+//    source the renderer keeps, moved there, one each);
 //    a new shader's cache entry, built by the cache's writer thread from what
 //    the GPU thread took (BuildShaderCacheEntry), is to the byte the entry
 //    the GPU thread serialized itself before, for each type;
@@ -61,10 +64,12 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineRecord.h"
 #include "util/helpers/MappedFile.h"
+#include "util/helpers/StringBuf.h"
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
 
 #include <random>
 #include <set>
+#include <thread>
 
 
 // --- counting the heap -------------------------------------------------------
@@ -82,11 +87,13 @@ static void Count(size_t n)
 	}
 }
 
-// operator new, and malloc through the linker's --wrap (Makefile)
+// operator new, and malloc through the linker's --wrap (Makefile); a new
+// counted once, not again as the malloc under it
+extern "C" void* __real_malloc(size_t n);
 void* operator new(size_t n)
 {
 	Count(n);
-	if (void* p = std::malloc(n ? n : 1))
+	if (void* p = __real_malloc(n ? n : 1))
 		return p;
 	throw std::bad_alloc();
 }
@@ -263,6 +270,85 @@ static void MeasureProgramInflate()
 	}
 	s_metrics["cache entry programs: allocations per 1000 inflated"] = s_allocs.load();
 	s_metrics["cache entry programs: bytes allocated per 1000 inflated"] = s_allocBytes.load();
+}
+
+// what the renderer does with a shader's source (shader_create, by value,
+// into the RendererShader that keeps it)
+struct KeptSource
+{
+	explicit KeptSource(std::string source) : m_source(std::move(source)) {}
+	std::string m_source;
+};
+static KeptSource* ShaderCreateModel(std::string source)
+{
+	return new KeptSource(std::move(source));
+}
+
+// one shader's source as LatteDecompiler_emit*Shader writes it, into the
+// thread's own buffer, then copied out its size (LatteDecompilerShader::
+// shaderSource), and as LatteShader_CreateRendererShader hands it down
+static KeptSource* WriteSourceModel(int n, uint32 bufferSize)
+{
+	StringBuf* src = &StringBuf_ThreadScratch(0, bufferSize);
+	src->add("#version 430\r\n");
+	for (int i = 0; i < 40 + n % 50; i++)
+		src->addFmt("R{}f.x = intBitsToFloat({}) * uf_remapped[{}].y;\r\n", i, n * 31 + i, i % 7);
+	src->add("}\r\n");
+	std::string shaderSource;
+	shaderSource.assign(src->c_str(), src->getLen());
+	return ShaderCreateModel(std::move(shaderSource));
+}
+
+static bool SourceIs(const KeptSource* k, int n)
+{
+	std::string want = "#version 430\r\n";
+	for (int i = 0; i < 40 + n % 50; i++)
+		want += fmt::format("R{}f.x = intBitsToFloat({}) * uf_remapped[{}].y;\r\n", i, n * 31 + i, i % 7);
+	want += "}\r\n";
+	return k->m_source == want;
+}
+
+static void MeasureSourceHandoff()
+{
+	std::vector<KeptSource*> kept;
+	kept.reserve(2000);
+	delete WriteSourceModel(0, 12 * 1024 * 1024); // the thread's buffer, made once
+	s_allocs = 0;
+	s_allocBytes = 0;
+	s_counting = true;
+	for (int i = 0; i < 1000; i++)
+		kept.push_back(WriteSourceModel(i, 12 * 1024 * 1024));
+	s_counting = false;
+	const uint64_t allocs = s_allocs.load();
+	bool ok = true;
+	for (int i = 0; i < 1000; i++)
+		ok &= SourceIs(kept[i], i);
+	// another thread has a buffer of its own: what it writes leaves this
+	// thread's alone, and a buffer smaller than the text grows to take it
+	StringBuf* mine = &StringBuf_ThreadScratch(0, 16);
+	mine->add(std::string_view("this thread's"));
+	StringBuf* theirs = nullptr;
+	std::thread t([&] {
+		StringBuf* b = &StringBuf_ThreadScratch(0, 64);
+		theirs = b;
+		std::string longer(5000, 'x');
+		b->add(std::string_view(longer));
+		ok &= b->getLen() == 5000 && std::string_view(b->c_str(), b->getLen()) == longer;
+	});
+	t.join();
+	ok &= theirs != mine && std::string_view(mine->c_str(), mine->getLen()) == "this thread's";
+	// emptied for the next
+	ok &= StringBuf_ThreadScratch(0, 16).getLen() == 0 && &StringBuf_ThreadScratch(0, 16) == mine;
+	for (KeptSource* k : kept)
+		delete k;
+	std::printf("shader sources written and handed to the renderer: %llu allocations per 1000%s\n", (unsigned long long)allocs,
+		ok ? "" : ", NOT AS WRITTEN");
+	s_metrics["shader sources: allocations per 1000 written"] = allocs;
+	if (!ok)
+	{
+		std::printf("FAIL: a shader source handed down is not the one written\n");
+		s_failures++;
+	}
 }
 
 // the entry as LatteShaderCache_writeSeparable*Shader serialized it on the
@@ -697,6 +783,7 @@ int main(int argc, char** argv)
 	MeasureRegisterRebuild();
 	MeasureProgramInflate();
 	CheckBuiltCacheEntries();
+	MeasureSourceHandoff();
 	MeasureReplay();
 	if (s_failures)
 	{

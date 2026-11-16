@@ -1,5 +1,7 @@
 #pragma once
 
+class StringBuf;
+
 struct LatteDecompilerALUInstruction
 {
 	struct LatteDecompilerCFInstruction* cfInstruction{};
@@ -194,7 +196,7 @@ struct LatteDecompilerShaderContext
 	uint32* contextRegisters; // deprecated
 	struct LatteContextRegister* contextRegistersNew;
 	uint64 shaderBaseHash;
-	StringBuf* shaderSource;
+	StringBuf* shaderSource; // the thread's scratch (LatteDecompiler_SourceScratch)
 	std::vector<LatteDecompilerCFInstruction> cfInstructions;
 	// fetch shader (required for vertex shader)
 	LatteFetchShader* fetchShader{};

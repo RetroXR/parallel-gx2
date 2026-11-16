@@ -181,7 +181,9 @@ struct LatteDecompilerShader
 	std::bitset<LATTE_NUM_STREAMOUT_BUFFER> streamoutBufferWriteMask;
 	bool hasStreamoutBufferWrite{ false };
 	// output code
-	class StringBuf* strBuf_shaderSource{ nullptr };
+	// the source the decompiler wrote, until it is handed to the renderer
+	// (moved, not copied) or the shader is cleaned up after its compile
+	std::string shaderSource;
 	// separable shaders
 	RendererShader* shader{ nullptr };
 	bool isCustomShader{ false };

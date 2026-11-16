@@ -89,8 +89,8 @@ private:
 	std::atomic<bool> m_threadsActive;
 }ShaderVkThreadPool;
 
-RendererShaderVk::RendererShaderVk(ShaderType type, uint64 baseHash, uint64 auxHash, bool isGameShader, bool isGfxPackShader, const std::string& glslCode)
-	: RendererShader(type, baseHash, auxHash, isGameShader, isGfxPackShader), m_glslCode(glslCode)
+RendererShaderVk::RendererShaderVk(ShaderType type, uint64 baseHash, uint64 auxHash, bool isGameShader, bool isGfxPackShader, std::string glslCode)
+	: RendererShader(type, baseHash, auxHash, isGameShader, isGfxPackShader), m_glslCode(std::move(glslCode))
 {
 	// start async compilation
 	m_compilationState.store(COMPILATION_STATE::QUEUED, std::memory_order_relaxed);

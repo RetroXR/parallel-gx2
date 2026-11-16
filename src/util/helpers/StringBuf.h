@@ -1,5 +1,7 @@
 #pragma once
 
+#include <memory>
+
 class StringBuf
 {
 public:
@@ -91,3 +93,20 @@ private:
 	uint32	limit; /* in bytes */
 	bool	allocated;
 };
+
+// The calling thread's own StringBuf in slot (0 to 3), emptied: bufferSize
+// set aside the first time the thread asks for that slot, then kept and
+// reused, grown by add(string_view) past it - so a thread writing one text
+// after another (the decompiler, a shader's source each) allocates for none
+// but the first. Valid until the thread's next call for the same slot;
+// freed as the thread ends (a shader cache loader's do).
+inline StringBuf& StringBuf_ThreadScratch(uint32 slot, uint32 bufferSize)
+{
+	thread_local std::unique_ptr<StringBuf> s_bufs[4];
+	cemu_assert_debug(slot < 4);
+	std::unique_ptr<StringBuf>& buf = s_bufs[slot & 3];
+	if (!buf)
+		buf = std::make_unique<StringBuf>(bufferSize);
+	buf->reset();
+	return *buf;
+}

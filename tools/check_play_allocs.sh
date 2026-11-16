@@ -12,6 +12,10 @@
 cd "$(dirname "$0")/.." || exit 2
 
 list='
+src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerEmitGLSL.cpp LatteDecompiler_emitGLSLShader
+src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerEmitMSL.cpp LatteDecompiler_emitMSLShader
+src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_CreateRendererShader
+src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_CleanupAfterCompile
 src/Cafe/HW/Latte/Core/LatteTexture.cpp LatteTexture_Invalidate
 src/Cafe/HW/Latte/Core/LatteTexture.cpp LatteTC_ForEachTextureAtPhysAddr
 src/Cafe/HW/Latte/Core/LatteTexture.cpp LatteTexture_InitSliceAndMipInfo

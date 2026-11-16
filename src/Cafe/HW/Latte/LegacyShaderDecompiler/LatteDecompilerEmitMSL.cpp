@@ -3848,7 +3848,9 @@ void LatteDecompiler_emitMSLShader(LatteDecompilerShaderContext* shaderContext, 
     bool usesGeometryShader = UseGeometryShader(*shaderContext->contextRegistersNew, shaderContext->options->usesGeometryShader);
     bool fetchVertexManually = (usesGeometryShader || (shaderContext->fetchShader && shaderContext->fetchShader->mtlFetchVertexManually));
 
-	StringBuf* src = new StringBuf(1024*1024*12); // reserve 12MB for generated source (we resize-to-fit at the end)
+	// the thread's own, 12 MB set aside once; the shader's source is copied
+	// out of it at the end, its size
+	StringBuf* src = &StringBuf_ThreadScratch(0, 1024 * 1024 * 12);
 	shaderContext->shaderSource = src;
 
 	// debug info
@@ -3875,28 +3877,32 @@ void LatteDecompiler_emitMSLShader(LatteDecompilerShaderContext* shaderContext, 
 			// fetchVertex will modify vid in case of an object shader and an indexed draw
 
 			// Vertex buffers
-            std::string vertexBufferDefinitions = "#define VERTEX_BUFFER_DEFINITIONS ";
-            std::string vertexBuffers = "#define VERTEX_BUFFERS ";
-            std::string inputFetchDefinition = "VertexIn fetchVertex(";
+			// the thread's own, kept
+            StringBuf& vertexBufferDefinitions = StringBuf_ThreadScratch(1, 64 * 1024);
+            StringBuf& vertexBuffers = StringBuf_ThreadScratch(2, 64 * 1024);
+            StringBuf& inputFetchDefinition = StringBuf_ThreadScratch(3, 256 * 1024);
+            vertexBufferDefinitions.add("#define VERTEX_BUFFER_DEFINITIONS ");
+            vertexBuffers.add("#define VERTEX_BUFFERS ");
+            inputFetchDefinition.add("VertexIn fetchVertex(");
             if (usesGeometryShader)
-                inputFetchDefinition += "thread uint&";
+                inputFetchDefinition.add("thread uint&");
             else
-                inputFetchDefinition += "uint";
-            inputFetchDefinition += " vid, uint iid";
+                inputFetchDefinition.add("uint");
+            inputFetchDefinition.add(" vid, uint iid");
             if (usesGeometryShader)
-                inputFetchDefinition += ", device uint* indexBuffer, uchar indexType";
-            inputFetchDefinition += " VERTEX_BUFFER_DEFINITIONS) {\n";
+                inputFetchDefinition.add(", device uint* indexBuffer, uchar indexType");
+            inputFetchDefinition.add(" VERTEX_BUFFER_DEFINITIONS) {\n");
 
 			// Index buffer
 			if (usesGeometryShader)
 			{
-                inputFetchDefinition += "if (indexType == 1) // UShort\n";
-                inputFetchDefinition += "vid = ((device ushort*)indexBuffer)[vid];\n";
-                inputFetchDefinition += "else if (indexType == 2) // UInt\n";
-                inputFetchDefinition += "vid = ((device uint*)indexBuffer)[vid];\n";
+                inputFetchDefinition.add("if (indexType == 1) // UShort\n");
+                inputFetchDefinition.add("vid = ((device ushort*)indexBuffer)[vid];\n");
+                inputFetchDefinition.add("else if (indexType == 2) // UInt\n");
+                inputFetchDefinition.add("vid = ((device uint*)indexBuffer)[vid];\n");
 			}
 
-            inputFetchDefinition += "VertexIn in;\n";
+            inputFetchDefinition.add("VertexIn in;\n");
             for (auto& bufferGroup : shaderContext->fetchShader->bufferGroups)
 			{
                 std::optional<LatteConst::VertexFetchType2> fetchType;
@@ -3913,7 +3919,7 @@ void LatteDecompiler_emitMSLShader(LatteDecompilerShaderContext* shaderContext, 
               		if (semanticId == (uint32)-1)
              			continue; // attribute not used?
 
-                    std::string formatName;
+                    const char* formatName = "";
                     uint8 componentCount = 0;
                     switch (GetMtlVertexFormat(attr.format))
                     {
@@ -3968,7 +3974,7 @@ void LatteDecompiler_emitMSLShader(LatteDecompilerShaderContext* shaderContext, 
                     }
 
                     // Get the fetch type
-                    std::string fetchTypeStr;
+                    const char* fetchTypeStr = "";
                     if (attr.fetchType == LatteConst::VertexFetchType2::VERTEX_DATA)
                         fetchTypeStr = "vid";
                     else if (attr.fetchType == LatteConst::VertexFetchType2::INSTANCE_DATA)
@@ -3977,15 +3983,15 @@ void LatteDecompiler_emitMSLShader(LatteDecompilerShaderContext* shaderContext, 
                         fetchTypeStr = "0"; // TODO: correct?
 
                     // Fetch the attribute
-                    inputFetchDefinition += fmt::format("in.ATTRIBUTE_NAME{} = uint4(uint", semanticId);
+                    inputFetchDefinition.addFmt("in.ATTRIBUTE_NAME{} = uint4(uint", semanticId);
                     if (componentCount != 1)
-                        inputFetchDefinition += fmt::format("{}", componentCount);
-                    inputFetchDefinition += fmt::format("(*(device {}*)", formatName);
-                    inputFetchDefinition += fmt::format("(vertexBuffer{}", attr.attributeBufferIndex);
-                    inputFetchDefinition += fmt::format(" + {} * {} + {}))", fetchTypeStr, bufferStride, attr.offset);
+                        inputFetchDefinition.addFmt("{}", componentCount);
+                    inputFetchDefinition.addFmt("(*(device {}*)", formatName);
+                    inputFetchDefinition.addFmt("(vertexBuffer{}", attr.attributeBufferIndex);
+                    inputFetchDefinition.addFmt(" + {} * {} + {}))", fetchTypeStr, bufferStride, attr.offset);
                     for (uint8 i = 0; i < (4 - componentCount); i++)
-                        inputFetchDefinition += ", 0";
-                    inputFetchDefinition += ");\n";
+                        inputFetchDefinition.add(", 0");
+                    inputFetchDefinition.add(");\n");
 
               		if (fetchType.has_value())
              			cemu_assert_debug(fetchType == attr.fetchType);
@@ -4000,18 +4006,18 @@ void LatteDecompiler_emitMSLShader(LatteDecompilerShaderContext* shaderContext, 
 
                 // TODO: fetch type
 
-				vertexBufferDefinitions += fmt::format(", device uchar* vertexBuffer{} [[buffer({})]]", bufferIndex, GET_MTL_VERTEX_BUFFER_INDEX(bufferIndex));
-				vertexBuffers += fmt::format(", vertexBuffer{}", bufferIndex);
+				vertexBufferDefinitions.addFmt(", device uchar* vertexBuffer{} [[buffer({})]]", bufferIndex, GET_MTL_VERTEX_BUFFER_INDEX(bufferIndex));
+				vertexBuffers.addFmt(", vertexBuffer{}", bufferIndex);
 			}
 
-			inputFetchDefinition += "return in;\n";
-			inputFetchDefinition += "}\n";
+			inputFetchDefinition.add("return in;\n");
+			inputFetchDefinition.add("}\n");
 
-			src->add(vertexBufferDefinitions.c_str());
+			src->add(std::string_view(vertexBufferDefinitions.c_str(), vertexBufferDefinitions.getLen()));
 			src->add("\n");
-			src->add(vertexBuffers.c_str());
+			src->add(std::string_view(vertexBuffers.c_str(), vertexBuffers.getLen()));
 			src->add("\n");
-			src->add(inputFetchDefinition.c_str());
+			src->add(std::string_view(inputFetchDefinition.c_str(), inputFetchDefinition.getLen()));
 		}
 
 		if (usesGeometryShader)
@@ -4349,6 +4355,5 @@ void LatteDecompiler_emitMSLShader(LatteDecompilerShaderContext* shaderContext, 
 
 	// end of shader main
 	src->add("}" _CRLF);
-	src->shrink_to_fit();
-	shader->strBuf_shaderSource = src;
+	shader->shaderSource.assign(src->c_str(), src->getLen());
 }
