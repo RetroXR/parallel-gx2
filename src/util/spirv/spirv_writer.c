@@ -251,6 +251,28 @@ uint32_t spv_type_vector(spv_writer_t *w, uint32_t component, uint32_t count)
    return spv_global(w, SpvOpTypeVector, o, 3, 0);
 }
 
+uint32_t spv_type_image(spv_writer_t *w, uint32_t sampled_type, uint32_t dim, int arrayed)
+{
+   uint32_t o[8];
+   o[0] = 0;
+   o[1] = sampled_type;
+   o[2] = dim;
+   o[3] = 0;                 /* no depth */
+   o[4] = arrayed ? 1u : 0u;
+   o[5] = 0;                 /* single sampled */
+   o[6] = 1;                 /* sampled */
+   o[7] = 0;                 /* Unknown format */
+   return spv_global(w, SpvOpTypeImage, o, 8, 0);
+}
+
+uint32_t spv_type_sampled_image(spv_writer_t *w, uint32_t image)
+{
+   uint32_t o[2];
+   o[0] = 0;
+   o[1] = image;
+   return spv_global(w, SpvOpTypeSampledImage, o, 2, 0);
+}
+
 uint32_t spv_type_array(spv_writer_t *w, uint32_t element, uint32_t length_const)
 {
    uint32_t o[3];

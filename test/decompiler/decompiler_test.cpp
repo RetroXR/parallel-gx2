@@ -60,21 +60,68 @@ struct AluGroup
 	uint32 literals[4];
 };
 
-// a CF instruction: an ALU clause of a kind, or one without a clause
+// a texture instruction: a sample of a unit, from a register, into one
+struct TexOp
+{
+	uint8 opcode, unit, srcGpr, dstGpr;
+	uint8 srcSel[4], dstSel[4];
+	sint8 offset[3];
+	bool unnormalized; // texel coordinates
+};
+
+// a CF instruction: an ALU or TEX clause of a kind, or one without a clause
 struct CFEntry
 {
 	uint32 type;
-	int clause; // into Program::clauses, for the ALU kinds
+	int clause; // into Program::clauses (ALU kinds) or Program::texClauses (TEX)
 	uint8 popCount;
 };
+
+// the texture units' kinds, as the test makes their textures
+enum TexKind : uint8 { TEX_NONE, TEX_2D, TEX_2D_ARRAY, TEX_3D, TEX_2D_UINT, TEX_CUBE, TEX_KINDS };
 
 struct Program
 {
 	std::vector<std::vector<AluGroup>> clauses; // ALU clauses
+	std::vector<std::vector<TexOp>> texClauses;
 	std::vector<CFEntry> cf; // the CF list; none: each clause a plain ALU, in order
+	uint8 texKind[4]; // units 0 to 3
 	uint32 exportGpr;
 	uint8 exportSel[4];
 };
+
+static void EncodeTex(const TexOp& t, uint32 w[4])
+{
+	w[0] = (uint32)t.opcode | ((uint32)t.unit << 8) | ((uint32)t.srcGpr << 16);
+	w[1] = (uint32)t.dstGpr | ((uint32)t.dstSel[0] << 9) | ((uint32)t.dstSel[1] << 12) | ((uint32)t.dstSel[2] << 15) |
+		((uint32)t.dstSel[3] << 18) | (t.unnormalized ? 0u : 0xF0000000u);
+	w[2] = ((uint32)t.offset[0] & 0x1F) | (((uint32)t.offset[1] & 0x1F) << 5) | (((uint32)t.offset[2] & 0x1F) << 10) |
+		((uint32)t.unit << 15) | ((uint32)t.srcSel[0] << 20) | ((uint32)t.srcSel[1] << 23) | ((uint32)t.srcSel[2] << 26) |
+		((uint32)t.srcSel[3] << 29);
+	w[3] = 0;
+}
+
+// the units' dimension and number format into the pixel shader's texture
+// registers, as the decompiler reads them
+static void SetTextureRegisters(uint32* regs, const Program& p)
+{
+	LatteContextRegister& lcr = *(LatteContextRegister*)regs;
+	for (int u = 0; u < 4; u++)
+	{
+		Latte::E_DIM dim = Latte::E_DIM::DIM_2D;
+		switch (p.texKind[u])
+		{
+		case TEX_2D_ARRAY: dim = Latte::E_DIM::DIM_2D_ARRAY; break;
+		case TEX_3D: dim = Latte::E_DIM::DIM_3D; break;
+		case TEX_CUBE: dim = Latte::E_DIM::DIM_CUBEMAP; break;
+		default: break;
+		}
+		lcr.SQ_TEX_START_PS[u].word0.set_DIM(dim);
+		lcr.SQ_TEX_START_PS[u].word4.set_NUM_FORM_ALL(p.texKind[u] == TEX_2D_UINT ?
+			Latte::LATTE_SQ_TEX_RESOURCE_WORD4_N::E_NUM_FORMAT_ALL::NUM_FORMAT_INT :
+			Latte::LATTE_SQ_TEX_RESOURCE_WORD4_N::E_NUM_FORMAT_ALL::NUM_FORMAT_NORM);
+	}
+}
 
 static void EncodeAlu(const AluOp& op, bool last, uint32& w0, uint32& w1)
 {
@@ -148,9 +195,36 @@ static std::vector<uint32> Assemble(const Program& p)
 		clauseStart.push_back(start);
 		clauseWords.push_back(words);
 	}
+	// the TEX clauses, 128 bit instructions, after the ALU clauses
+	std::vector<uint32> tex;
+	std::vector<uint32> texStart;
+	at = (at + 1) & ~1u;
+	if (alu.size() & 2)
+	{
+		alu.push_back(0);
+		alu.push_back(0);
+	}
+	for (auto& clause : p.texClauses)
+	{
+		texStart.push_back(at);
+		for (auto& t : clause)
+		{
+			uint32 w[4];
+			EncodeTex(t, w);
+			tex.insert(tex.end(), w, w + 4);
+			at += 2;
+		}
+	}
 	for (auto& e : list)
 	{
-		if (e.type & GPU7_CF_INST_ALU_MASK)
+		if (e.type == GPU7_CF_INST_TEX)
+		{
+			// CF_TEX: addr, count-1 (bits 10-12 and 19)
+			const uint32 count = (uint32)p.texClauses[e.clause].size() - 1;
+			cf.push_back(texStart[e.clause]);
+			cf.push_back(((count & 7) << 10) | (((count >> 3) & 1) << 19) | ((uint32)GPU7_CF_INST_TEX << 23) | (1u << 31));
+		}
+		else if (e.type & GPU7_CF_INST_ALU_MASK)
 		{
 			// CF_ALU_*: addr, count-1, the kind
 			cf.push_back(clauseStart[e.clause]);
@@ -169,6 +243,7 @@ static std::vector<uint32> Assemble(const Program& p)
 	std::vector<uint32> out(aluBase * 2, 0);
 	std::memcpy(out.data(), cf.data(), cf.size() * 4);
 	out.insert(out.end(), alu.begin(), alu.end());
+	out.insert(out.end(), tex.begin(), tex.end());
 	out.push_back(0);
 	out.push_back(0);
 	return out;
@@ -467,6 +542,45 @@ struct Gen
 		p.clauses.push_back(std::move(groups));
 		return (int)p.clauses.size() - 1;
 	}
+	// a TEX clause of samples: of every unit, register, select, written
+	// channel, offset, level and bias; kinds the emitter declines now and then
+	int TexClause(Program& p, bool allowDeclined)
+	{
+		std::vector<TexOp> clause;
+		uint32 n = 1 + R(3);
+		for (uint32 i = 0; i < n; i++)
+		{
+			TexOp t{};
+			static const uint8 samples[] = { GPU7_TEX_INST_SAMPLE, GPU7_TEX_INST_SAMPLE, GPU7_TEX_INST_SAMPLE, GPU7_TEX_INST_SAMPLE_L,
+				GPU7_TEX_INST_SAMPLE_LZ, GPU7_TEX_INST_SAMPLE_LB };
+			static const uint8 declined[] = { GPU7_TEX_INST_SAMPLE_C, GPU7_TEX_INST_LD, GPU7_TEX_INST_GET_TEXTURE_RESINFO };
+			t.opcode = (allowDeclined && Chance(15)) ? declined[R(3)] : samples[R(6)];
+			t.unit = (uint8)R(4);
+			static const uint8 varying[] = { 0, 1, 3 };
+			t.srcGpr = Chance(60) ? varying[R(3)] : (uint8)R(kGPRs);
+			for (int c = 0; c < 4; c++)
+				t.srcSel[c] = Chance(85) ? (uint8)R(4) : (uint8)(4 + R(2));
+			bool any = false;
+			for (int c = 0; c < 4; c++)
+			{
+				t.dstSel[c] = Chance(70) ? (uint8)R(4) : 7;
+				any |= t.dstSel[c] < 4;
+			}
+			if (!any)
+				t.dstSel[R(4)] = (uint8)R(4);
+			t.dstGpr = Dest();
+			if (Chance(30))
+			{
+				for (auto& o : t.offset)
+					o = (sint8)((int)R(32) - 16);
+			}
+			t.unnormalized = allowDeclined && Chance(5);
+			clause.push_back(t);
+		}
+		p.texClauses.push_back(std::move(clause));
+		return (int)p.texClauses.size() - 1;
+	}
+
 	static bool IsPlainALU(const Program& p)
 	{
 		return !p.cf.empty() && p.cf.back().type == GPU7_CF_INST_ALU;
@@ -492,7 +606,12 @@ struct Gen
 				p.cf.push_back({ GPU7_CF_INST_ELSE, -1, 0 });
 			}
 			else if (k < 50 || depth >= 3)
-				p.cf.push_back({ GPU7_CF_INST_ALU, Clause(p, 4, allowDeclined), 0 });
+			{
+				if (Chance(30))
+					p.cf.push_back({ GPU7_CF_INST_TEX, TexClause(p, allowDeclined), 0 });
+				else
+					p.cf.push_back({ GPU7_CF_INST_ALU, Clause(p, 4, allowDeclined), 0 });
+			}
 			else if (k < 82 || loops >= 2)
 			{
 				p.cf.push_back({ GPU7_CF_INST_ALU_PUSH_BEFORE, Clause(p, 3, allowDeclined, true), 0 });
@@ -572,6 +691,13 @@ struct Gen
 		noKills = false;
 		favorDest = -1;
 		p.exportGpr = R(kGPRs - 1);
+		// the units' textures: mostly 2D floats, a cube map (declined) now
+		// and then
+		for (auto& kind : p.texKind)
+		{
+			uint32 k = R(100);
+			kind = k < 40 ? TEX_2D : k < 58 ? TEX_2D_ARRAY : k < 76 ? TEX_3D : k < 95 ? TEX_2D_UINT : TEX_CUBE;
+		}
 		if (Chance(55))
 		{
 			// control flow; the counters' register written by them only
@@ -582,9 +708,18 @@ struct Gen
 		}
 		else
 		{
+			// ALU clauses, with TEX clauses among them now and then
+			const bool withTex = Chance(45);
+			favorDest = withTex ? (int)p.exportGpr : -1;
 			uint32 clauses = 1 + R(3);
 			for (uint32 c = 0; c < clauses; c++)
-				Clause(p, 8, allowDeclined);
+			{
+				if (withTex && Chance(50))
+					p.cf.push_back({ GPU7_CF_INST_TEX, TexClause(p, allowDeclined), 0 });
+				int a = Clause(p, 8, allowDeclined);
+				if (withTex)
+					p.cf.push_back({ GPU7_CF_INST_ALU, a, 0 });
+			}
 		}
 		for (int i = 0; i < 4; i++)
 		{
@@ -608,6 +743,7 @@ struct Decompiled
 	sint32 setIndex = 0, binding = -1;
 	bool ok = false;
 	const char* declined = nullptr;
+	sint32 texBinding[LATTE_NUM_MAX_TEX_UNITS]; // -1: the unit is not used
 	std::string glsl;
 };
 
@@ -642,6 +778,8 @@ static Decompiled Decompile(const std::vector<uint32>& program, bool direct, boo
 	d.uniformMode = shader->uniformMode;
 	d.setIndex = out.resourceMappingVK.setIndex;
 	d.binding = out.resourceMappingVK.uniformVarsBufferBindingPoint;
+	for (int i = 0; i < LATTE_NUM_MAX_TEX_UNITS; i++)
+		d.texBinding[i] = out.textureUnitMask[i] ? out.resourceMappingVK.textureUnitToBindingPoint[i] : -1;
 	d.declined = LatteDecompiler_SPIRVDeclineReason();
 	if (shader->hasError)
 	{
@@ -683,6 +821,14 @@ struct Context
 	uint8* uboData = nullptr;
 	VkShaderModule vs = VK_NULL_HANDLE;
 	bool rte = false;
+	// a texture of each kind, with mips, its view and sampler
+	struct Texture
+	{
+		VkImage image = VK_NULL_HANDLE;
+		VkDeviceMemory mem = VK_NULL_HANDLE;
+		VkImageView view = VK_NULL_HANDLE;
+		VkSampler sampler = VK_NULL_HANDLE;
+	} tex[TEX_KINDS];
 };
 
 static const char* kVS = R"(#version 450
@@ -732,6 +878,116 @@ static VkShaderModule Module(const Context& c, const std::vector<uint32>& words)
 	VkShaderModule m;
 	VKCHECK(vkCreateShaderModule(c.device, &si, nullptr, &m));
 	return m;
+}
+
+// 8x8 with 4 levels: a 2D, a 2D array of 4 layers, an 8 deep 3D (floats,
+// filtered linearly, repeating) and a 2D of uints (nearest); random texels
+// from a fixed seed, uploaded through a staging buffer
+static void CreateTexture(Context& c, TexKind kind)
+{
+	Context::Texture& t = c.tex[kind];
+	const bool isUint = kind == TEX_2D_UINT;
+	const uint32 layers = kind == TEX_2D_ARRAY ? 4 : 1;
+	const uint32 levels = 4;
+	VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+	ii.imageType = kind == TEX_3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
+	ii.format = isUint ? VK_FORMAT_R32G32B32A32_UINT : VK_FORMAT_R32G32B32A32_SFLOAT;
+	ii.extent = {8, 8, kind == TEX_3D ? 8u : 1u};
+	ii.mipLevels = levels;
+	ii.arrayLayers = layers;
+	ii.samples = VK_SAMPLE_COUNT_1_BIT;
+	ii.tiling = VK_IMAGE_TILING_OPTIMAL;
+	ii.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	VKCHECK(vkCreateImage(c.device, &ii, nullptr, &t.image));
+	VkMemoryRequirements req;
+	vkGetImageMemoryRequirements(c.device, t.image, &req);
+	t.mem = Bind(c, req, 0);
+	VKCHECK(vkBindImageMemory(c.device, t.image, t.mem, 0));
+	// every level's texels, one after the other
+	std::vector<VkBufferImageCopy> regions;
+	size_t bytes = 0;
+	for (uint32 l = 0; l < levels; l++)
+	{
+		uint32 e = 8u >> l;
+		VkBufferImageCopy r{};
+		r.bufferOffset = bytes;
+		r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, 0, layers};
+		r.imageExtent = {e, e, kind == TEX_3D ? e : 1u};
+		regions.push_back(r);
+		bytes += (size_t)e * e * (kind == TEX_3D ? e : 1u) * layers * 16;
+	}
+	VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+	bi.size = bytes;
+	bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+	VkBuffer staging;
+	VKCHECK(vkCreateBuffer(c.device, &bi, nullptr, &staging));
+	VkMemoryRequirements breq;
+	vkGetBufferMemoryRequirements(c.device, staging, &breq);
+	VkDeviceMemory stagingMem = Bind(c, breq, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	VKCHECK(vkBindBufferMemory(c.device, staging, stagingMem, 0));
+	void* map;
+	VKCHECK(vkMapMemory(c.device, stagingMem, 0, bytes, 0, &map));
+	std::mt19937 rng(1000 + kind);
+	uint32* texels = (uint32*)map;
+	for (size_t i = 0; i < bytes / 4; i++)
+	{
+		if (isUint)
+			texels[i] = rng();
+		else
+		{
+			float f = (float)((int)(rng() % 4001) - 2000) / 500.0f;
+			std::memcpy(texels + i, &f, 4);
+		}
+	}
+	vkUnmapMemory(c.device, stagingMem);
+	VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+	cai.commandPool = c.pool;
+	cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	cai.commandBufferCount = 1;
+	VkCommandBuffer cmd;
+	VKCHECK(vkAllocateCommandBuffers(c.device, &cai, &cmd));
+	VkCommandBufferBeginInfo cbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+	cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+	VKCHECK(vkBeginCommandBuffer(cmd, &cbi));
+	VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+	b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	b.image = t.image;
+	b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, levels, 0, layers};
+	b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+	b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+	vkCmdCopyBufferToImage(cmd, staging, t.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, (uint32)regions.size(), regions.data());
+	b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+	b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+	VKCHECK(vkEndCommandBuffer(cmd));
+	VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+	si.commandBufferCount = 1;
+	si.pCommandBuffers = &cmd;
+	VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+	VkFence fence;
+	VKCHECK(vkCreateFence(c.device, &fi, nullptr, &fence));
+	VKCHECK(vkQueueSubmit(c.queue, 1, &si, fence));
+	VKCHECK(vkWaitForFences(c.device, 1, &fence, VK_TRUE, UINT64_MAX));
+	vkDestroyFence(c.device, fence, nullptr);
+	vkFreeCommandBuffers(c.device, c.pool, 1, &cmd);
+	vkDestroyBuffer(c.device, staging, nullptr);
+	vkFreeMemory(c.device, stagingMem, nullptr);
+	VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+	vi.image = t.image;
+	vi.viewType = kind == TEX_3D ? VK_IMAGE_VIEW_TYPE_3D : (kind == TEX_2D_ARRAY ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D);
+	vi.format = ii.format;
+	vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, levels, 0, layers};
+	VKCHECK(vkCreateImageView(c.device, &vi, nullptr, &t.view));
+	VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+	sci.magFilter = sci.minFilter = isUint ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+	sci.mipmapMode = isUint ? VK_SAMPLER_MIPMAP_MODE_NEAREST : VK_SAMPLER_MIPMAP_MODE_LINEAR;
+	sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	sci.maxLod = (float)levels;
+	VKCHECK(vkCreateSampler(c.device, &sci, nullptr, &t.sampler));
 }
 
 static bool CreateContext(Context& c)
@@ -879,6 +1135,8 @@ static bool CreateContext(Context& c)
 	}
 	c.vs = Module(c, std::vector<uint32>(res.spirv, res.spirv + res.spirv_len));
 	rslc_result_free(&res, &opts);
+	for (int k = TEX_2D; k <= TEX_2D_UINT; k++)
+		CreateTexture(c, (TexKind)k);
 	return true;
 }
 
@@ -888,6 +1146,15 @@ static void DestroyContext(Context& c)
 		return;
 	vkDeviceWaitIdle(c.device);
 	vkDestroyShaderModule(c.device, c.vs, nullptr);
+	for (auto& t : c.tex)
+	{
+		if (!t.image)
+			continue;
+		vkDestroySampler(c.device, t.sampler, nullptr);
+		vkDestroyImageView(c.device, t.view, nullptr);
+		vkDestroyImage(c.device, t.image, nullptr);
+		vkFreeMemory(c.device, t.mem, nullptr);
+	}
 	vkUnmapMemory(c.device, c.uboMem);
 	vkDestroyBuffer(c.device, c.ubo, nullptr);
 	vkDestroyBuffer(c.device, c.readback, nullptr);
@@ -904,20 +1171,51 @@ static void DestroyContext(Context& c)
 }
 
 // the shader drawn over the target: what each pixel holds, as bits
-static std::vector<uint32> Draw(const Context& c, const Decompiled& d, const float inputs[16], const uint32* uniforms, size_t uniformBytes)
+static std::vector<uint32> Draw(const Context& c, const Decompiled& d, const uint8 texKind[4], const float inputs[16], const uint32* uniforms, size_t uniformBytes)
 {
-	// the uniform block at the shader's set and binding (set 0 empty, as the
-	// renderer's vertex set)
-	VkDescriptorSetLayoutBinding b{};
-	b.binding = (uint32)std::max(d.binding, (sint32)0);
-	b.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	b.descriptorCount = 1;
-	b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	// the uniform block and the texture units at the shader's set and
+	// bindings (set 0 empty, as the renderer's vertex set)
+	VkDescriptorSetLayoutBinding b[1 + LATTE_NUM_MAX_TEX_UNITS]{};
+	VkWriteDescriptorSet texWrites[LATTE_NUM_MAX_TEX_UNITS]{};
+	VkDescriptorImageInfo texInfos[LATTE_NUM_MAX_TEX_UNITS]{};
+	uint32 nb = 0, nTex = 0;
+	if (d.binding >= 0)
+	{
+		b[nb].binding = (uint32)d.binding;
+		b[nb].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		b[nb].descriptorCount = 1;
+		b[nb].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+		nb++;
+	}
+	for (int i = 0; i < LATTE_NUM_MAX_TEX_UNITS; i++)
+	{
+		if (d.texBinding[i] < 0)
+			continue;
+		if (i >= 4 || texKind[i] == TEX_NONE || texKind[i] >= TEX_CUBE)
+		{
+			std::printf("FAIL: texture unit %d drawn with no texture\n", i);
+			s_failures++;
+			continue;
+		}
+		const Context::Texture& t = c.tex[texKind[i]];
+		b[nb].binding = (uint32)d.texBinding[i];
+		b[nb].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		b[nb].descriptorCount = 1;
+		b[nb].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+		nb++;
+		texInfos[nTex] = {t.sampler, t.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+		texWrites[nTex].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		texWrites[nTex].dstBinding = (uint32)d.texBinding[i];
+		texWrites[nTex].descriptorCount = 1;
+		texWrites[nTex].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		texWrites[nTex].pImageInfo = &texInfos[nTex];
+		nTex++;
+	}
 	VkDescriptorSetLayoutCreateInfo dli{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
 	VkDescriptorSetLayout empty, set;
 	VKCHECK(vkCreateDescriptorSetLayout(c.device, &dli, nullptr, &empty));
-	dli.bindingCount = d.binding >= 0 ? 1 : 0;
-	dli.pBindings = &b;
+	dli.bindingCount = nb;
+	dli.pBindings = b;
 	VKCHECK(vkCreateDescriptorSetLayout(c.device, &dli, nullptr, &set));
 	VkDescriptorSetLayout sets[2] = {empty, set};
 	VkPushConstantRange pcr{VK_SHADER_STAGE_VERTEX_BIT, 0, 64};
@@ -928,11 +1226,11 @@ static std::vector<uint32> Draw(const Context& c, const Decompiled& d, const flo
 	pli.pPushConstantRanges = &pcr;
 	VkPipelineLayout layout;
 	VKCHECK(vkCreatePipelineLayout(c.device, &pli, nullptr, &layout));
-	VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1};
+	VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, LATTE_NUM_MAX_TEX_UNITS}};
 	VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
 	dpi.maxSets = 1;
-	dpi.poolSizeCount = 1;
-	dpi.pPoolSizes = &ps;
+	dpi.poolSizeCount = 2;
+	dpi.pPoolSizes = ps;
 	VkDescriptorPool dpool;
 	VKCHECK(vkCreateDescriptorPool(c.device, &dpi, nullptr, &dpool));
 	VkDescriptorSetAllocateInfo dai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
@@ -954,6 +1252,10 @@ static std::vector<uint32> Draw(const Context& c, const Decompiled& d, const flo
 		wds.pBufferInfo = &dbi;
 		vkUpdateDescriptorSets(c.device, 1, &wds, 0, nullptr);
 	}
+	for (uint32 i = 0; i < nTex; i++)
+		texWrites[i].dstSet = ds;
+	if (nTex)
+		vkUpdateDescriptorSets(c.device, nTex, texWrites, 0, nullptr);
 
 	VkShaderModule fs = Module(c, d.spirv);
 	VkPipelineShaderStageCreateInfo stages[2]{};
@@ -1017,7 +1319,7 @@ static std::vector<uint32> Draw(const Context& c, const Decompiled& d, const flo
 	rbi.pClearValues = &clear;
 	vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-	if (d.binding >= 0)
+	if (nb)
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 1, 1, &ds, 0, nullptr);
 	vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 64, inputs);
 	vkCmdDraw(cmd, 3, 1, 0, 0);
@@ -1154,6 +1456,7 @@ static int Differs(const Context& c, const Case& k, std::vector<uint32>* outA = 
 	std::vector<uint32> words = Assemble(k.p);
 	s_regs[Latte::REGADDR::SX_ALPHA_TEST_CONTROL] = k.alphaRaw;
 	g_testPreventInfiniteLoops = k.preventLoops;
+	SetTextureRegisters(s_regs, k.p);
 	Decompiled viaGlsl = Decompile(words, false, k.strictMul, k.rte);
 	Decompiled viaSpirv = Decompile(words, true, k.strictMul, k.rte);
 	if (viaSpirv.declined || !viaGlsl.ok || !viaSpirv.ok)
@@ -1168,8 +1471,8 @@ static int Differs(const Context& c, const Case& k, std::vector<uint32>* outA = 
 		std::memcpy(uniforms + viaGlsl.offsets.offset_uniformRegister / 4, k.cfile, viaGlsl.offsets.count_uniformRegister * 16);
 	if (viaGlsl.offsets.offset_alphaTestRef >= 0)
 		std::memcpy(uniforms + viaGlsl.offsets.offset_alphaTestRef / 4, &k.alphaRef, 4);
-	std::vector<uint32> a = Draw(c, viaGlsl, k.inputs, uniforms, sizeof(uniforms));
-	std::vector<uint32> b = Draw(c, viaSpirv, k.inputs, uniforms, sizeof(uniforms));
+	std::vector<uint32> a = Draw(c, viaGlsl, k.p.texKind, k.inputs, uniforms, sizeof(uniforms));
+	std::vector<uint32> b = Draw(c, viaSpirv, k.p.texKind, k.inputs, uniforms, sizeof(uniforms));
 	if (outA)
 		*outA = viaGlsl.spirv;
 	if (outB)
@@ -1239,6 +1542,7 @@ static void Minimize(const Context& c, Case k, const char* outDir)
 	Differs(c, k, &a, &b);
 	std::vector<uint32> words = Assemble(k.p);
 	g_testPreventInfiniteLoops = k.preventLoops;
+	SetTextureRegisters(s_regs, k.p);
 	std::string glsl = Decompile(words, false, k.strictMul, k.rte).glsl;
 	std::printf("minimal program (strictMul %d, rte %d, alpha %08x):\n%s\n", k.strictMul, k.rte, k.alphaRaw, glsl.c_str());
 	if (outDir)
@@ -1442,6 +1746,7 @@ int main(int argc, char** argv)
 		const bool strictMul = k.strictMul = gen.Chance(50);
 		const bool rte = k.rte = c.rte && gen.Chance(50);
 		g_testPreventInfiniteLoops = k.preventLoops = gen.Chance(50);
+		SetTextureRegisters(s_regs, p);
 		Decompiled viaGlsl = Decompile(words, false, strictMul, rte);
 		Decompiled viaSpirv = Decompile(words, true, strictMul, rte);
 		if (viaSpirv.declined)

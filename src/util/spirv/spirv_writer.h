@@ -86,6 +86,10 @@ uint32_t spv_type_vector(spv_writer_t *w, uint32_t component, uint32_t count);
 uint32_t spv_type_array(spv_writer_t *w, uint32_t element, uint32_t length_const);
 uint32_t spv_type_pointer(spv_writer_t *w, uint32_t storage_class, uint32_t type);
 uint32_t spv_type_function(spv_writer_t *w, uint32_t ret, const uint32_t *params, size_t n);
+/* a sampled image of the dimension (SpvDimension*), arrayed or not,
+ * single sampled, of an unknown format; and the sampled image type of it */
+uint32_t spv_type_image(spv_writer_t *w, uint32_t sampled_type, uint32_t dim, int arrayed);
+uint32_t spv_type_sampled_image(spv_writer_t *w, uint32_t image);
 /* not deduplicated: a struct is its own type, decorated as it is */
 uint32_t spv_type_struct(spv_writer_t *w, const uint32_t *members, size_t n);
 

@@ -148,6 +148,15 @@ static void test_dedup(void)
    CHECK(spv_type_vector(&w, tF, 4) != spv_type_vector(&w, tF, 3));
    CHECK(spv_type_pointer(&w, SpvStorageClassFunction, tF) == spv_type_pointer(&w, SpvStorageClassFunction, tF));
    CHECK(spv_type_pointer(&w, SpvStorageClassFunction, tF) != spv_type_pointer(&w, SpvStorageClassPrivate, tF));
+   /* images: by sampled type, dimension and arrayness; sampled images by image */
+   CHECK(spv_type_image(&w, tF, SpvDimension2D, 0) == spv_type_image(&w, tF, SpvDimension2D, 0));
+   CHECK(spv_type_image(&w, tF, SpvDimension2D, 0) != spv_type_image(&w, tF, SpvDimension2D, 1));
+   CHECK(spv_type_image(&w, tF, SpvDimension2D, 0) != spv_type_image(&w, tF, SpvDimension3D, 0));
+   CHECK(spv_type_image(&w, tF, SpvDimension2D, 0) != spv_type_image(&w, tU, SpvDimension2D, 0));
+   CHECK(spv_type_sampled_image(&w, spv_type_image(&w, tF, SpvDimension2D, 0)) ==
+      spv_type_sampled_image(&w, spv_type_image(&w, tF, SpvDimension2D, 0)));
+   CHECK(spv_type_sampled_image(&w, spv_type_image(&w, tF, SpvDimension2D, 0)) !=
+      spv_type_sampled_image(&w, spv_type_image(&w, tF, SpvDimension3D, 0)));
    /* the same bits as another type are another constant */
    a = spv_const_bits(&w, tI, 7);
    b = spv_const_bits(&w, tU, 7);

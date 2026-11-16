@@ -11,7 +11,11 @@
 // flow is the GLSL emitter's too: the active mask stacks as arrays of
 // bool, each clause in an if on them, loops as rslc lowers a while (a
 // header, a check, the body, a continue block), its short-circuited &&
-// where the right side is no bare variable or constant.
+// where the right side is no bare variable or constant. Values move
+// through memory as rslc moves them too - a register's or a uniform's
+// vec4 loaded and the channel extracted, a channel stored through its
+// access chain, the registers zeroed by stores at the start - as lavapipe's
+// optimizer folds otherwise in places.
 // What it does not cover yet it declines
 // (LatteDecompiler_emitSPIRVShader returns false) and the shader takes the
 // GLSL path as before; LatteDecompiler_SPIRVDeclineReason says why.
@@ -118,6 +122,8 @@ namespace
 		uint32 maskVar{}, maskCVar{};
 		sint32 maskLen{}, maskCLen{};
 		uint32 aluBreakVar{}; // the ALU_BREAK clause's aluBreak
+		// the texture units' sampler variables and the sampled image types
+		uint32 texVar[LATTE_NUM_MAX_TEX_UNITS]{}, texType[LATTE_NUM_MAX_TEX_UNITS]{};
 		// the loops open: rslc's blocks for each, its loopActive and counter
 		struct Loop
 		{
@@ -499,12 +505,15 @@ namespace
 			return Call(MulNonIEEEFunction(), tF, DT_F, tF, { a.id, b.id });
 		}
 
-		// a function variable, initialized as the GLSL emitter's declaration
+		// a function variable; initialized as rslc initializes a declaration:
+		// a store where it is declared, no initializer of the variable's own
 		uint32 Local(uint32 type, uint32 init)
 		{
 			uint32 ptr = spv_type_pointer(w, SpvStorageClassFunction, type);
-			uint32 words[4] = { ptr, spv_id(w), SpvStorageClassFunction, init };
-			spv_inst(w, SPV_SEC_LOCALS, SpvOpVariable, words, init ? 4 : 3);
+			uint32 words[3] = { ptr, spv_id(w), SpvStorageClassFunction };
+			spv_inst(w, SPV_SEC_LOCALS, SpvOpVariable, words, 3);
+			if (init)
+				Store(words[1], init);
 			return words[1];
 		}
 		uint32 Load(uint32 type, uint32 ptr) { return Op(SpvOpLoad, type, { ptr }); }
@@ -516,10 +525,22 @@ namespace
 			return Op(SpvOpAccessChain, ptr, { vecPtr, ConstI((sint32)chan) });
 		}
 
+		// a channel of a vec4 variable read as rslc reads R1i.x: the whole
+		// vector loaded, the channel extracted
+		uint32 ReadChannel(uint32 vecVar, uint32 chan)
+		{
+			uint32 v = Load(Vec4Of(dt), vecVar);
+			return Op(SpvOpCompositeExtract, TypeOf(dt), { v, chan });
+		}
+
+		// the registers are declared at the start, as the GLSL emitter's
 		uint32 GPR(uint32 index)
 		{
 			if (!gprVar[index])
-				gprVar[index] = Local(Vec4Of(dt), spv_const_null(w, Vec4Of(dt)));
+			{
+				Decline("register not declared");
+				gprVar[index] = Local(Vec4Of(dt), 0);
+			}
 			return gprVar[index];
 		}
 
@@ -709,6 +730,10 @@ namespace
 		bool LoopStart(sint32 d);
 		bool LoopEnd(sint32 d);
 		bool EmitControlledALUClause(LatteDecompilerCFInstruction& cf);
+		bool DeclareTextures();
+		bool EmitTEXClause(LatteDecompilerCFInstruction& cf);
+		bool EmitSample(LatteDecompilerTEXInstruction& t);
+		Val TexCoord(LatteDecompilerTEXInstruction& t, sint32 component);
 
 		bool Setup();
 		bool DeclareUniforms(LatteDecompilerOutputUniformOffsets& offsets, RendererAPI api, bool declare);
@@ -723,6 +748,7 @@ namespace
 		Val PVPSRead(LatteDecompilerALUInstruction& inst, uint8 unit);
 		uint32 OutputPtr(LatteDecompilerALUInstruction& inst);
 		uint32 PVPSOutputPtr(LatteDecompilerALUInstruction& inst);
+		uint32 ReadOutput(LatteDecompilerALUInstruction& inst);
 		void Assign(LatteDecompilerALUInstruction& inst, Val v);
 		bool EmitOP2(LatteDecompilerCFInstruction& cf, LatteDecompilerALUInstruction& inst);
 		bool EmitOP3(LatteDecompilerALUInstruction& inst);
@@ -968,7 +994,7 @@ namespace
 		}
 		for (uint32 i = 0; i < temporaryCount; i++)
 		{
-			uint32 v = Load(TypeOf(dt), Channel(GPR(temporaries[i].gpr), dt, temporaries[i].chan));
+			uint32 v = ReadChannel(GPR(temporaries[i].gpr), temporaries[i].chan);
 			Store(backupVar[temporaries[i].var], v);
 		}
 		return true;
@@ -980,7 +1006,7 @@ namespace
 		sint32 temp = TemporaryFor((uint8)gpr, inst.sourceOperand[index].chan);
 		if (temp >= 0)
 			return Leaf(Load(TypeOf(dt), backupVar[temp]));
-		return { Load(TypeOf(dt), Channel(GPR(gpr), dt, inst.sourceOperand[index].chan)), dt };
+		return { ReadChannel(GPR(gpr), inst.sourceOperand[index].chan), dt };
 	}
 
 	Val SpvShader::PVPSRead(LatteDecompilerALUInstruction& inst, uint8 unit)
@@ -992,7 +1018,7 @@ namespace
 			sint32 temp = TemporaryFor(pvps[unit].index, pvps[unit].unit);
 			if (temp >= 0)
 				return Leaf(Load(TypeOf(dt), backupVar[temp]));
-			return { Load(TypeOf(dt), Channel(GPR(pvps[unit].index), dt, pvps[unit].unit)), dt };
+			return { ReadChannel(GPR(pvps[unit].index), pvps[unit].unit), dt };
 		}
 		case PVPSAlias::PVPS:
 		{
@@ -1063,9 +1089,12 @@ namespace
 			Decline("uniform mode");
 			return { ConstI(0), requiredType };
 		}
-		uint32 ptr = spv_type_pointer(w, SpvStorageClassUniform, tI);
-		uint32 p = Op(SpvOpAccessChain, ptr, { ufBlockVar, ConstI(0), ConstI(arrayIndex), ConstI(op.chan) });
-		return Convert({ Load(tI, p), DT_I }, requiredType);
+		// as rslc reads uf_remappedPS[i].x: the ivec4 loaded, the channel
+		// extracted (a driver's optimizer sees the two differently)
+		uint32 ptr = spv_type_pointer(w, SpvStorageClassUniform, tV4I);
+		uint32 p = Op(SpvOpAccessChain, ptr, { ufBlockVar, ConstI(0), ConstI(arrayIndex) });
+		uint32 v = Load(tV4I, p);
+		return Convert({ Op(SpvOpCompositeExtract, tI, { v, (uint32)op.chan }), DT_I }, requiredType);
 	}
 
 	// a literal as the GLSL emitter writes it: the shortest decimal that
@@ -1203,6 +1232,21 @@ namespace
 			return PVPSOutputPtr(inst);
 		}
 		return Channel(GPR(inst.destGpr), dt, inst.destElem);
+	}
+
+	// what OutputPtr names, read: a PV or PS as itself, a channel of a
+	// register or of temp as rslc reads a channel
+	uint32 SpvShader::ReadOutput(LatteDecompilerALUInstruction& inst)
+	{
+		if (inst.writeMask == 0)
+		{
+			if (!IsReduction(inst) || inst.aluUnit > 3)
+				return Load(TypeOf(dt), PVPSOutputPtr(inst));
+			return ReadChannel(tempVar, inst.aluUnit);
+		}
+		if (inst.destRel != 0)
+			return Load(TypeOf(dt), PVPSOutputPtr(inst));
+		return ReadChannel(GPR(inst.destGpr), inst.destElem);
 	}
 
 	void SpvShader::Assign(LatteDecompilerALUInstruction& inst, Val v)
@@ -1637,8 +1681,7 @@ namespace
 			LatteDecompilerALUInstruction& last = inst;
 			if (last.omod != ALU_OMOD_NONE)
 			{
-				uint32 ptr = OutputPtr(last);
-				uint32 v = Load(TypeOf(dt), ptr);
+				uint32 v = ReadOutput(last);
 				uint32 f = dt == DT_F ? v : Op(SpvOpBitcast, tF, { v });
 				uint32 r;
 				if (last.omod == ALU_OMOD_MUL2)
@@ -1651,8 +1694,7 @@ namespace
 			}
 			if (last.destClamp != 0)
 			{
-				uint32 ptr = OutputPtr(last);
-				uint32 v = Load(TypeOf(dt), ptr);
+				uint32 v = ReadOutput(last);
 				uint32 r;
 				if (dt == DT_F)
 					r = Ext(GLSLstd450FClamp, tF, { v, ConstF(0.0f), ConstF(1.0f) });
@@ -1667,9 +1709,9 @@ namespace
 				for (int f = 0; f < 4; f++)
 				{
 					if (redc[f]->writeMask == 0)
-						Store(PVPSOutputPtr(*redc[f]), Load(TypeOf(dt), OutputPtr(*redc[0])));
+						Store(PVPSOutputPtr(*redc[f]), ReadOutput(*redc[0]));
 					else if (f != 0)
-						Store(OutputPtr(*redc[f]), Load(TypeOf(dt), OutputPtr(*redc[0])));
+						Store(OutputPtr(*redc[f]), ReadOutput(*redc[0]));
 				}
 			}
 			if (!Ok())
@@ -1683,7 +1725,7 @@ namespace
 		uint32 sel = cf.exportComponentSel[i];
 		if (sel < 4)
 		{
-			uint32 v = Load(TypeOf(dt), Channel(GPR(cf.exportSourceGPR + burst), dt, sel));
+			uint32 v = ReadChannel(GPR(cf.exportSourceGPR + burst), sel);
 			return Convert({ v, dt }, DT_F);
 		}
 		if (sel == 5)
@@ -1737,6 +1779,215 @@ namespace
 			for (uint32 k = 0; k < 4; k++)
 				c[k] = ExportComponent(cf, i, k).id;
 			Store(colorOut[colorIndex], Op(SpvOpCompositeConstruct, tV4F, { c[0], c[1], c[2], c[3] }));
+		}
+		return Ok();
+	}
+
+	// _emitTextureDefinitions: a sampler per texture unit used
+	bool SpvShader::DeclareTextures()
+	{
+		for (sint32 i = 0; i < LATTE_NUM_MAX_TEX_UNITS; i++)
+		{
+			if (!ctx->output->textureUnitMask[i])
+				continue;
+			const Latte::E_DIM dim = shader->textureUnitDim[i];
+			const bool isInt = shader->textureIsIntegerFormat[i];
+			if (shader->textureUsesDepthCompare[i])
+				return Decline("shadow sampler");
+			uint32 spvDim;
+			bool arrayed = false;
+			if (dim == Latte::E_DIM::DIM_2D)
+				spvDim = SpvDimension2D;
+			else if (dim == Latte::E_DIM::DIM_2D_ARRAY && !isInt)
+			{
+				spvDim = SpvDimension2D;
+				arrayed = true;
+			}
+			else if (dim == Latte::E_DIM::DIM_3D && !isInt)
+				spvDim = SpvDimension3D;
+			else
+				return Decline("texture dimension");
+			uint32 image = spv_type_image(w, isInt ? tU : tF, spvDim, arrayed ? 1 : 0);
+			texType[i] = spv_type_sampled_image(w, image);
+			uint32 ptr = spv_type_pointer(w, SpvStorageClassUniformConstant, texType[i]);
+			texVar[i] = spv_global_variable(w, ptr, SpvStorageClassUniformConstant);
+			Decorate(texVar[i], SpvDecorationDescriptorSet, { (uint32)ctx->output->resourceMappingVK.setIndex });
+			Decorate(texVar[i], SpvDecorationBinding, { (uint32)ctx->output->resourceMappingVK.textureUnitToBindingPoint[i] });
+		}
+		return true;
+	}
+
+	// _emitTEXSampleCoordInputComponent, as a float
+	Val SpvShader::TexCoord(LatteDecompilerTEXInstruction& t, sint32 component)
+	{
+		sint32 sel = t.textureFetch.srcSel[component];
+		if (sel < 4)
+			return Convert({ ReadChannel(GPR(t.srcGpr), (uint32)sel), dt }, DT_F);
+		if (sel == 4)
+			return KF(0.0);
+		if (sel == 5)
+			return KF(1.0);
+		Decline("texture coordinate select");
+		return KF(0.0);
+	}
+
+	// _emitTEXSampleTextureCode: SAMPLE, SAMPLE_L, SAMPLE_LZ and SAMPLE_LB
+	bool SpvShader::EmitSample(LatteDecompilerTEXInstruction& t)
+	{
+		const sint32 unit = t.textureFetch.textureIndex;
+		if (unit < 0 || unit >= LATTE_NUM_MAX_TEX_UNITS)
+			return Ok(); // the GLSL emitter writes nothing for it
+		const uint32 op = t.opcode;
+		if (op != GPU7_TEX_INST_SAMPLE && op != GPU7_TEX_INST_SAMPLE_L && op != GPU7_TEX_INST_SAMPLE_LZ && op != GPU7_TEX_INST_SAMPLE_LB)
+			return Decline("texture sample kind");
+		if (!texVar[unit])
+			return Decline("texture unit not declared");
+		const Latte::E_DIM dim = shader->textureUnitDim[unit];
+		const bool isInt = shader->textureIsIntegerFormat[unit];
+		uint32 written[4];
+		uint32 count = 0;
+		for (uint32 f = 0; f < 4; f++)
+		{
+			if (t.dstSel[f] < 4)
+				written[count++] = f;
+		}
+		if (count == 0)
+			return Decline("texture result written nowhere");
+		const bool hasOffset = t.textureFetch.offsetX != 0 || t.textureFetch.offsetY != 0 || t.textureFetch.offsetZ != 0;
+		const bool three = dim == Latte::E_DIM::DIM_3D || dim == Latte::E_DIM::DIM_2D_ARRAY;
+		if (!three && ActiveSettings::ForceSamplerRoundToPrecision())
+			return Decline("sampler round to precision");
+		// sampler, coordinates, then the level or bias, as the call reads them
+		uint32 sampler = Load(texType[unit], texVar[unit]);
+		Val c[3];
+		const uint32 n = three ? 3 : 2;
+		bool allConst = true;
+		for (uint32 i = 0; i < n; i++)
+		{
+			c[i] = TexCoord(t, (sint32)i);
+			allConst = allConst && c[i].k;
+		}
+		uint32 coordType = spv_type_vector(w, tF, n);
+		uint32 coord;
+		if (allConst)
+		{
+			uint32 parts[3] = { c[0].id, c[1].id, n == 3 ? c[2].id : 0 };
+			coord = spv_const_composite(w, coordType, parts, n);
+		}
+		else if (n == 3)
+			coord = Op(SpvOpCompositeConstruct, coordType, { c[0].id, c[1].id, c[2].id });
+		else
+			coord = Op(SpvOpCompositeConstruct, coordType, { c[0].id, c[1].id });
+		uint32 mask = 0;
+		uint32 operands[2];
+		uint32 nOperands = 0;
+		bool explicitLod = false;
+		if (op == GPU7_TEX_INST_SAMPLE_LB)
+		{
+			mask |= SpvImageOperandsBiasMask;
+			operands[nOperands++] = TexCoord(t, 3).id;
+		}
+		else if (op == GPU7_TEX_INST_SAMPLE_L)
+		{
+			mask |= SpvImageOperandsLodMask;
+			operands[nOperands++] = TexCoord(t, 3).id;
+			explicitLod = true;
+		}
+		else if (op == GPU7_TEX_INST_SAMPLE_LZ)
+		{
+			mask |= SpvImageOperandsLodMask;
+			operands[nOperands++] = ConstF(0.0f);
+			explicitLod = true;
+		}
+		if (hasOffset)
+		{
+			// ivec2(x/2, y/2), ivec3 for a 3D texture
+			const uint32 m = dim == Latte::E_DIM::DIM_3D ? 3 : 2;
+			uint32 parts[3] = { ConstI(t.textureFetch.offsetX / 2), ConstI(t.textureFetch.offsetY / 2), ConstI(t.textureFetch.offsetZ / 2) };
+			mask |= SpvImageOperandsConstOffsetMask;
+			operands[nOperands++] = spv_const_composite(w, spv_type_vector(w, tI, m), parts, m);
+		}
+		if (!Ok())
+			return false;
+		uint32 resultType = isInt ? tV4U : tV4F;
+		uint32 words[8];
+		size_t k = 0;
+		uint32 sample = spv_id(w);
+		words[k++] = resultType;
+		words[k++] = sample;
+		words[k++] = sampler;
+		words[k++] = coord;
+		if (mask)
+		{
+			words[k++] = mask;
+			for (uint32 i = 0; i < nOperands; i++)
+				words[k++] = operands[i];
+		}
+		spv_inst(w, SPV_SEC_BODY, explicitLod ? SpvOpImageSampleExplicitLod : SpvOpImageSampleImplicitLod, words, k);
+		// the components written, swizzled out, then converted as a whole
+		const uint32 elem = isInt ? tU : tF;
+		uint32 v;
+		if (count == 1)
+			v = Op(SpvOpCompositeExtract, elem, { sample, (uint32)t.dstSel[written[0]] });
+		else
+		{
+			uint32 shuffle[4 + 2 + 2];
+			size_t m = 0;
+			uint32 vt = spv_type_vector(w, elem, count);
+			shuffle[m++] = vt;
+			uint32 id = spv_id(w);
+			shuffle[m++] = id;
+			shuffle[m++] = sample;
+			shuffle[m++] = sample;
+			for (uint32 i = 0; i < count; i++)
+				shuffle[m++] = (uint32)t.dstSel[written[i]];
+			spv_inst(w, SPV_SEC_BODY, SpvOpVectorShuffle, shuffle, m);
+			v = id;
+		}
+		// floatBitsToInt and uintBitsToFloat: one bit cast of the whole;
+		// ivecN(uvecN), a constructor: a bit cast of each component
+		const sint32 sampleType = isInt ? DT_U : DT_F;
+		const bool perComponent = isInt && dt == DT_I && count > 1;
+		if (sampleType != dt && !perComponent)
+		{
+			uint32 to = count == 1 ? TypeOf(dt) : spv_type_vector(w, TypeOf(dt), count);
+			v = Op(SpvOpBitcast, to, { v });
+		}
+		// one channel through its access chain; more, as rslc writes a
+		// swizzle: the register loaded, the channels inserted, stored whole
+		if (count == 1)
+		{
+			Store(Channel(GPR(t.dstGpr), dt, written[0]), v);
+			return Ok();
+		}
+		if (perComponent)
+		{
+			// the ivecN built of the components' casts
+			uint32 parts[4];
+			for (uint32 i = 0; i < count; i++)
+				parts[i] = Op(SpvOpBitcast, tI, { Op(SpvOpCompositeExtract, tU, { v, i }) });
+			uint32 words[2 + 4];
+			size_t m = 0;
+			words[m++] = spv_type_vector(w, tI, count);
+			words[m++] = spv_id(w);
+			for (uint32 i = 0; i < count; i++)
+				words[m++] = parts[i];
+			spv_inst(w, SPV_SEC_BODY, SpvOpCompositeConstruct, words, m);
+			v = words[1];
+		}
+		uint32 reg = Load(Vec4Of(dt), GPR(t.dstGpr));
+		for (uint32 i = 0; i < count; i++)
+			reg = Op(SpvOpCompositeInsert, Vec4Of(dt), { Op(SpvOpCompositeExtract, TypeOf(dt), { v, i }), reg, written[i] });
+		Store(GPR(t.dstGpr), reg);
+		return Ok();
+	}
+
+	bool SpvShader::EmitTEXClause(LatteDecompilerCFInstruction& cf)
+	{
+		for (auto& t : cf.instructionsTEX)
+		{
+			if (!EmitSample(t))
+				return false;
 		}
 		return Ok();
 	}
@@ -1858,6 +2109,13 @@ namespace
 		case GPU7_CF_INST_EXPORT:
 		case GPU7_CF_INST_EXPORT_DONE:
 			return EmitExport(cf);
+		case GPU7_CF_INST_TEX:
+			if (hasActiveMask)
+			{
+				If(MaskIsTrue(true, d + 1), [&] { EmitTEXClause(cf); });
+				return Ok();
+			}
+			return EmitTEXClause(cf);
 		case GPU7_CF_INST_ELSE:
 			Else(d);
 			return Ok();
@@ -1916,8 +2174,6 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 		return decline("GPR array");
 	if (!shaderContext->list_subroutines.empty())
 		return decline("subroutines");
-	if (shaderContext->output->textureUnitMask.any())
-		return decline("textures");
 	if (shaderContext->analyzer.usesRelativeGPRRead || shaderContext->analyzer.usesRelativeGPRWrite)
 		return decline("relative GPR access");
 	if (shader->hasError)
@@ -1930,7 +2186,7 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 	LatteDecompilerOutputUniformOffsets offsetsVK, offsetsGL;
 	if (!s.DeclareUniforms(offsetsVK, RendererAPI::Vulkan, true) || !s.DeclareUniforms(offsetsGL, RendererAPI::OpenGL, false))
 		return decline(s.decline);
-	if (!s.DeclareIO())
+	if (!s.DeclareIO() || !s.DeclareTextures())
 		return decline(s.decline);
 	// main
 	uint32 fnType = spv_type_function(w, s.tVoid, nullptr, 0);
@@ -1943,14 +2199,20 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 	// the GLSL emitter's locals, as it declares and initializes them
 	uint32 zero = s.dt == DT_F ? s.ConstF(0.0f) : s.ConstI(0);
 	uint32 scalar = s.TypeOf(s.dt);
+	for (sint32 i = 0; i < LATTE_NUM_GPR; i++)
+	{
+		if (shaderContext->analyzer.usesRelativeGPRRead || (shaderContext->analyzer.gprUseMask[i / 8] & (1 << (i & 7))) != 0)
+			s.gprVar[i] = s.Local(s.Vec4Of(s.dt), spv_const_null(w, s.Vec4Of(s.dt)));
+	}
+	for (int b = 0; b < 5; b++)
+		s.backupVar[b] = s.Local(scalar, 0);
 	for (int p = 0; p < 2; p++)
 	{
 		for (int u = 0; u < 4; u++)
 			s.pvVar[p][u] = s.Local(scalar, zero);
-		s.psVar[p] = s.Local(scalar, zero);
 	}
-	for (int b = 0; b < 5; b++)
-		s.backupVar[b] = s.Local(scalar, 0);
+	for (int p = 0; p < 2; p++)
+		s.psVar[p] = s.Local(scalar, zero);
 	s.tempVar = s.Local(s.Vec4Of(s.dt), spv_const_null(w, s.Vec4Of(s.dt)));
 	s.tempResultFVar = s.Local(s.tF, 0);
 	// bool predResult = true; and the active mask stacks
