@@ -334,6 +334,30 @@ test-dynstate:
     - make -C test/dynstate clean
     - VN_VALIDATE=1 ./test/dynstate/run_tests.sh
 
+# Random R600 pixel shaders decompiled to GLSL for rslc and written as SPIR-V
+# directly, both drawn on lavapipe: every pixel the same, the same uniform
+# layout, the direct module shaped as rslc's and valid to spirv-val; plain,
+# under ASan + UBSan, and under the Khronos validation layer.
+test-decompiler:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: normal
+    GIT_SUBMODULE_PATHS: dependencies/fmt dependencies/glm dependencies/Vulkan-Headers
+    CC: gcc-12
+    CXX: g++-12
+    VN_REQUIRE_DEVICE: "1"
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 vulkan-validationlayers spirv-tools
+  script:
+    - ./test/decompiler/run_tests.sh
+    - make -C test/decompiler clean
+    - SANITIZER=address,undefined DECOMPILER_COUNT=300 ./test/decompiler/run_tests.sh
+    - make -C test/decompiler clean
+    - VN_VALIDATE=1 DECOMPILER_COUNT=150 ./test/decompiler/run_tests.sh
+
 # The core's XML layer over libretro-common's rxml and the settings files on
 # it. The core's precompiled header wants fmt and glm.
 test-xml:
@@ -586,6 +610,21 @@ test-mem-stream:
     - ./test/mem_stream/run_tests.sh
     - make -C test/mem_stream clean
     - SANITIZER=address,undefined ./test/mem_stream/run_tests.sh
+
+# The C (C89) the decompiler writes SPIR-V with; its module through spirv-val.
+test-spirv-writer:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    CC: gcc-12
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y --no-install-recommends spirv-tools
+  script:
+    - ./test/spirv_writer/run_tests.sh
+    - make -C test/spirv_writer clean
+    - SANITIZER=address,undefined ./test/spirv_writer/run_tests.sh
 
 # The C (C89) zlib streams go through, threads sharing its inflaters.
 test-zlib-stream:

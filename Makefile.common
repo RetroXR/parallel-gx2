@@ -69,6 +69,7 @@ CORE_SOURCES_C := \
 	$(CORE_DIR)/src/Cafe/Filesystem/host_fs.c \
 	$(CORE_DIR)/src/Cafe/IOSU/fsa/fsa_path.c \
 	$(CORE_DIR)/src/util/helpers/size_blocks.c \
+	$(CORE_DIR)/src/util/spirv/spirv_writer.c \
 	$(CORE_DIR)/src/Cafe/IOSU/PDM/pdm_store.c \
 	$(CORE_DIR)/src/Cafe/OS/libs/nn_olv/olv_offline.c \
 	$(CORE_DIR)/src/Cemu/ncrypto/eticket.c \
@@ -176,6 +177,7 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerAnalyzer.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerEmitGLSL.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerEmitGLSLAttrDecoder.cpp \
+	$(CORE_DIR)/src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerEmitSPIRV.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerRegisterDataTypeTracker.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/Renderer.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/RendererCore.cpp \

@@ -1098,6 +1098,11 @@ VkDeviceCreateInfo VulkanRenderer::CreateDeviceCreateInfo(const std::vector<VkDe
 	return createInfo;
 }
 
+RendererShader* VulkanRenderer::shader_createSPIRV(RendererShader::ShaderType type, uint64 baseHash, uint64 auxHash, std::vector<uint32> spirv)
+{
+	return new RendererShaderVk(type, baseHash, auxHash, std::move(spirv));
+}
+
 RendererShader* VulkanRenderer::shader_create(RendererShader::ShaderType type, uint64 baseHash, uint64 auxHash, std::string source, bool isGameShader, bool isGfxPackShader)
 {
 	return new RendererShaderVk(type, baseHash, auxHash, isGameShader, isGfxPackShader, std::move(source));

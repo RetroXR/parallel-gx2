@@ -99,6 +99,15 @@ RendererShaderVk::RendererShaderVk(ShaderType type, uint64 baseHash, uint64 auxH
 	cemu_assert_debug(ShaderVkThreadPool.HasThreadsRunning()); // make sure .StartThreads() was called
 }
 
+RendererShaderVk::RendererShaderVk(ShaderType type, uint64 baseHash, uint64 auxHash, std::vector<uint32> spirv)
+	: RendererShader(type, baseHash, auxHash, true, false), m_spirv(std::move(spirv))
+{
+	m_compilationState.store(COMPILATION_STATE::QUEUED, std::memory_order_relaxed);
+	m_ticket = new ShaderCompileTicket(this);
+	ShaderVkThreadPool.s_compilationQueue.push(m_ticket);
+	cemu_assert_debug(ShaderVkThreadPool.HasThreadsRunning());
+}
+
 RendererShaderVk::~RendererShaderVk()
 {
 	// first: a compile thread making them may be compiling this shader
@@ -165,10 +174,20 @@ void RendererShaderVk::FinishCompilation()
 {
 	m_glslCode.clear();
 	m_glslCode.shrink_to_fit();
+	std::vector<uint32>().swap(m_spirv);
 }
 
 void RendererShaderVk::CompileInternal(bool isRenderThread)
 {
+	// written as SPIR-V by the decompiler: only the module to make
+	if (!m_spirv.empty())
+	{
+		CreateVkShaderModule(m_spirv);
+		if (!s_isLoadingShadersVk)
+			++g_compiled_shaders_total;
+		FinishCompilation();
+		return;
+	}
 	// try to retrieve SPIR-V module from cache
 	if (s_isLoadingShadersVk && (m_isGameShader && !m_isGfxPackShader) && s_spirvCache)
 	{

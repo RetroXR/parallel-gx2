@@ -30,6 +30,10 @@ public:
     static void ShaderCacheLoading_Close();
 
 	RendererShaderVk(ShaderType type, uint64 baseHash, uint64 auxHash, bool isGameShader, bool isGfxPackShader, std::string glslCode);
+	// a game shader as SPIR-V already (the decompiler's direct output): its
+	// module made on a compile thread as any other, no GLSL compiled, nothing
+	// read from or written to the SPIR-V cache
+	RendererShaderVk(ShaderType type, uint64 baseHash, uint64 auxHash, std::vector<uint32> spirv);
 	virtual ~RendererShaderVk();
 
 	static void Init();
@@ -75,6 +79,7 @@ private:
 	void WaitUntilCompiled();
 
 	std::string m_glslCode;
+	std::vector<uint32> m_spirv;
 
 	void CreateVkShaderModule(std::span<uint32> spirvBuffer);
 

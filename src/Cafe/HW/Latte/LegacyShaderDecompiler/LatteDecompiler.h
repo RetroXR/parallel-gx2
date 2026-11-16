@@ -184,6 +184,10 @@ struct LatteDecompilerShader
 	// the source the decompiler wrote, until it is handed to the renderer
 	// (moved, not copied) or the shader is cleaned up after its compile
 	std::string shaderSource;
+	// for Vulkan, the SPIR-V written directly when the emitter covers the
+	// shader (LatteDecompilerEmitSPIRV.cpp), moved to the renderer as the
+	// source is; empty when the shader went the GLSL way
+	std::vector<uint32> spirv;
 	// separable shaders
 	RendererShader* shader{ nullptr };
 	bool isCustomShader{ false };
@@ -261,6 +265,10 @@ struct LatteDecompilerOptions
 	bool usesGeometryShader{ false };
 	// floating point math
 	bool strictMul{}; // if true, 0*anything=0 rule is emulated
+	// Vulkan: SPIR-V written directly where the SPIR-V emitter covers the
+	// shader (GLSL as well when shaders are dumped), GLSL for rslc otherwise;
+	// off, always GLSL (test/decompiler compares the two)
+	bool directSPIRV{ true };
 	// Vulkan-specific
 	bool useTFViaSSBO{ false };
 	struct
@@ -294,6 +302,8 @@ struct LatteDecompilerSubroutineInfo;
 
 void LatteDecompiler_DecompileVertexShader(uint64 shaderBaseHash, uint32* contextRegisters, uint8* programData, uint32 programSize, struct LatteFetchShader* fetchShader, LatteDecompilerOptions& options, LatteDecompilerOutput_t* output);
 void LatteDecompiler_DecompileGeometryShader(uint64 shaderBaseHash, uint32* contextRegisters, uint8* programData, uint32 programSize, uint8* gsCopyProgramData, uint32 gsCopyProgramSize, uint32 vsRingParameterCount, LatteDecompilerOptions& options, LatteDecompilerOutput_t* output);
+// why the calling thread's last shader went the GLSL way (nullptr: it did not)
+const char* LatteDecompiler_SPIRVDeclineReason();
 void LatteDecompiler_DecompilePixelShader(uint64 shaderBaseHash, uint32* contextRegisters, uint8* programData, uint32 programSize, LatteDecompilerOptions& options, LatteDecompilerOutput_t* output);
 
 // specialized shader parsers

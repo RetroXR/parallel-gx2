@@ -10,6 +10,7 @@
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
+#include "config/ActiveSettings.h"
 #ifdef ENABLE_VULKAN
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
 #endif
@@ -1077,9 +1078,19 @@ void _LatteDecompiler_Process(LatteDecompilerShaderContext* shaderContext, uint8
 	// emit code
 	if (shaderContext->shader->hasError == false)
 	{
-		if (g_renderer->GetType() == RendererAPI::OpenGL || g_renderer->GetType() == RendererAPI::Vulkan)
+		if (g_renderer->GetType() == RendererAPI::Vulkan)
 		{
-#if defined(ENABLE_OPENGL) || defined(ENABLE_VULKAN)
+#ifdef ENABLE_VULKAN
+			// SPIR-V directly where its emitter covers the shader; the GLSL
+			// too for a dump
+			bool direct = shaderContext->options->directSPIRV && LatteDecompiler_emitSPIRVShader(shaderContext, shaderContext->shader);
+			if (!direct || ActiveSettings::DumpShadersEnabled())
+				LatteDecompiler_emitGLSLShader(shaderContext, shaderContext->shader);
+#endif
+		}
+		if (g_renderer->GetType() == RendererAPI::OpenGL)
+		{
+#ifdef ENABLE_OPENGL
 			LatteDecompiler_emitGLSLShader(shaderContext, shaderContext->shader);
 #endif
 		}

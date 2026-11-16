@@ -13,6 +13,7 @@ cd "$(dirname "$0")/.." || exit 2
 
 list='
 src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerEmitGLSL.cpp LatteDecompiler_emitGLSLShader
+src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerEmitSPIRV.cpp LatteDecompiler_emitSPIRVShader
 src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerEmitMSL.cpp LatteDecompiler_emitMSLShader
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_CreateRendererShader
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_CleanupAfterCompile

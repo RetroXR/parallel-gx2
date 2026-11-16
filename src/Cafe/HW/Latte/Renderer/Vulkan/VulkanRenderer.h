@@ -380,6 +380,8 @@ public:
 	void buffer_bindUniformBuffer(LatteConst::ShaderType shaderType, uint32 bufferIndex, uint32 offset, uint32 size) override;
 
 	RendererShader* shader_create(RendererShader::ShaderType type, uint64 baseHash, uint64 auxHash, std::string source, bool isGameShader, bool isGfxPackShader) override;
+	// a game shader the decompiler wrote as SPIR-V, moved into it
+	RendererShader* shader_createSPIRV(RendererShader::ShaderType type, uint64 baseHash, uint64 auxHash, std::vector<uint32> spirv);
 
 	IndexAllocation indexData_reserveIndexMemory(uint32 size) override;
 	void indexData_releaseIndexMemory(IndexAllocation& allocation) override;

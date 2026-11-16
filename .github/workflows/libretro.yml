@@ -273,6 +273,21 @@ jobs:
           make -C test/dynstate clean
           VN_REQUIRE_DEVICE=1 VN_VALIDATE=1 ./test/dynstate/run_tests.sh
 
+      - name: "Shader decompiler, GLSL and direct SPIR-V"
+        # random R600 pixel shaders decompiled to GLSL for rslc and written as
+        # SPIR-V directly, both drawn on lavapipe: every pixel the same, the
+        # same uniform layout, the direct module shaped as rslc's and valid
+        # to spirv-val; plain, under ASan + UBSan, and under the Khronos
+        # validation layer, where any error fails
+        run: |
+          git submodule update --init --depth 1 dependencies/fmt dependencies/glm dependencies/Vulkan-Headers
+          sudo apt-get install -y mesa-vulkan-drivers libvulkan1 vulkan-validationlayers spirv-tools
+          VN_REQUIRE_DEVICE=1 ./test/decompiler/run_tests.sh
+          make -C test/decompiler clean
+          VN_REQUIRE_DEVICE=1 SANITIZER=address,undefined DECOMPILER_COUNT=300 ./test/decompiler/run_tests.sh
+          make -C test/decompiler clean
+          VN_REQUIRE_DEVICE=1 VN_VALIDATE=1 DECOMPILER_COUNT=150 ./test/decompiler/run_tests.sh
+
       - name: "XML"
         # the core's XML layer over libretro-common's rxml and the settings
         # files on it: plain, then under ASan + UBSan. The core's precompiled
@@ -452,6 +467,16 @@ jobs:
           ./test/mem_stream/run_tests.sh
           make -C test/mem_stream clean
           SANITIZER=address,undefined ./test/mem_stream/run_tests.sh
+
+      - name: "SPIR-V writer"
+        # the C (C89) the decompiler writes SPIR-V with: sections in order,
+        # types and constants one id each, buffers reused once warm, the
+        # module valid to spirv-val; plain and under ASan + UBSan
+        run: |
+          sudo apt-get install -y spirv-tools
+          ./test/spirv_writer/run_tests.sh
+          make -C test/spirv_writer clean
+          SANITIZER=address,undefined ./test/spirv_writer/run_tests.sh
 
       - name: "zlib streams"
         # the C (C89) games' and the core's zlib streams go through, with

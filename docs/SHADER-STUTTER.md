@@ -27,6 +27,12 @@ thread:
    `VkShaderModule`. The compile pool can take it off the GPU thread, but
    `PipelineCompiler::Compile` calls `PreponeCompilation` and does it there
    when the draw needs it now.
+   A shader the SPIR-V emitter covers (`LatteDecompilerEmitSPIRV.cpp`:
+   pixel shaders of ALU clauses and exports so far, more as it grows) is
+   written as SPIR-V by the decompiler and skips rslc; only its module is
+   made. It mirrors what rslc makes of the GLSL - the same operations,
+   folding and branches - and `test/decompiler` holds the two to the same
+   pixels and the same shape.
 3. **Pipeline.** `draw_createGraphicsPipeline` hashes the full state and
    calls `vkCreateGraphicsPipelines` for it. The only dynamic state is the
    blend constants, depth bias and the feedback loop; blend, depth, stencil,

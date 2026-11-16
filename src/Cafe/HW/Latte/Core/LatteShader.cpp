@@ -369,6 +369,13 @@ void LatteShader_CreateRendererShader(LatteDecompilerShader* shader, bool compil
 	}
 
 	// create shader
+#ifdef ENABLE_VULKAN
+	// SPIR-V the decompiler wrote directly: the module made from it, no GLSL
+	// to compile (a graphic pack's replacement is GLSL, and takes its place)
+	if (!customShaderSrc && !shader->spirv.empty() && g_renderer->GetType() == RendererAPI::Vulkan)
+		shader->shader = VulkanRenderer::GetInstance()->shader_createSPIRV(shaderType, shader->baseHash, shader->auxHash, std::move(shader->spirv));
+	else
+#endif
 	// the decompiler's source handed down to where the renderer keeps it,
 	// moved all the way; a graphic pack's, which the pack keeps, copied once
 	shader->shader = g_renderer->shader_create(shaderType, shader->baseHash, shader->auxHash,
@@ -456,6 +463,7 @@ LatteFetchShader* LatteSHRC_GetOrCreateFetchShader()
 void LatteShader_CleanupAfterCompile(LatteDecompilerShader* shader)
 {
 	std::string().swap(shader->shaderSource);
+	std::vector<uint32>().swap(shader->spirv);
 }
 
 void LatteShader_DumpShader(uint64 baseHash, uint64 auxHash, LatteDecompilerShader* shader)
