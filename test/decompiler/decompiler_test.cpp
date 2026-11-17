@@ -50,7 +50,9 @@ struct AluOp
 	uint32 src[3];   // sel
 	uint8 chan[3];
 	uint8 neg[3];
+	uint8 rel[3];    // relative to AR by indexMode
 	uint8 abs[2];
+	uint8 indexMode, destRel;
 	uint8 destGpr, destElem, writeMask, clamp, omod;
 	uint8 exec; // update execute mask (a predicate's, in a break clause)
 };
@@ -140,17 +142,18 @@ static void SetTextureRegisters(uint32* regs, const Program& p)
 
 static void EncodeAlu(const AluOp& op, bool last, uint32& w0, uint32& w1)
 {
-	w0 = (op.src[0] & 0x1FF) | ((uint32)op.chan[0] << 10) | ((uint32)op.neg[0] << 12) |
-		((op.src[1] & 0x1FF) << 13) | ((uint32)op.chan[1] << 23) | ((uint32)op.neg[1] << 25) | (last ? 0x80000000u : 0);
+	w0 = (op.src[0] & 0x1FF) | ((uint32)op.rel[0] << 9) | ((uint32)op.chan[0] << 10) | ((uint32)op.neg[0] << 12) |
+		((op.src[1] & 0x1FF) << 13) | ((uint32)op.rel[1] << 22) | ((uint32)op.chan[1] << 23) | ((uint32)op.neg[1] << 25) |
+		((uint32)op.indexMode << 26) | (last ? 0x80000000u : 0);
 	if (op.op3)
 	{
-		w1 = (op.src[2] & 0x1FF) | ((uint32)op.chan[2] << 10) | ((uint32)op.neg[2] << 12) | (op.opcode << 13) |
-			((uint32)op.destGpr << 21) | ((uint32)op.destElem << 29) | ((uint32)op.clamp << 31);
+		w1 = (op.src[2] & 0x1FF) | ((uint32)op.rel[2] << 9) | ((uint32)op.chan[2] << 10) | ((uint32)op.neg[2] << 12) | (op.opcode << 13) |
+			((uint32)op.destGpr << 21) | ((uint32)op.destRel << 28) | ((uint32)op.destElem << 29) | ((uint32)op.clamp << 31);
 	}
 	else
 	{
 		w1 = (uint32)op.abs[0] | ((uint32)op.abs[1] << 1) | ((uint32)op.exec << 2) | ((uint32)op.writeMask << 4) | ((uint32)op.omod << 5) |
-			(op.opcode << 7) | ((uint32)op.destGpr << 21) | ((uint32)op.destElem << 29) | ((uint32)op.clamp << 31);
+			(op.opcode << 7) | ((uint32)op.destGpr << 21) | ((uint32)op.destRel << 28) | ((uint32)op.destElem << 29) | ((uint32)op.clamp << 31);
 	}
 }
 
@@ -304,8 +307,7 @@ static const uint32 kOp3s[] = {
 	ALU_OP3_INST_CMOVE, ALU_OP3_INST_CMOVGT, ALU_OP3_INST_CMOVGE, ALU_OP3_INST_CNDE_INT, ALU_OP3_INST_CNDGT_INT,
 	ALU_OP3_INST_CMOVGE_INT,
 };
-// what the emitter declines, now and then
-static const uint32 kDeclined[] = { ALU_OP2_INST_MOVA_INT, ALU_OP2_INST_MOVA_FLOOR };
+static const uint32 kMova[] = { ALU_OP2_INST_MOVA_INT, ALU_OP2_INST_MOVA_FLOOR };
 static const uint32 kPredOps[] = {
 	ALU_OP2_INST_PRED_SETE, ALU_OP2_INST_PRED_SETGT, ALU_OP2_INST_PRED_SETGE, ALU_OP2_INST_PRED_SETNE,
 	ALU_OP2_INST_PRED_SETE_INT, ALU_OP2_INST_PRED_SETGT_INT, ALU_OP2_INST_PRED_SETGE_INT, ALU_OP2_INST_PRED_SETNE_INT,
@@ -384,6 +386,12 @@ struct Gen
 	{
 		uint32 kind = R(100);
 		op.chan[s] = (uint8)R(4);
+		// a register or uniform relative to AR's x to w, now and then
+		if ((kind < 45 || (kind >= 68 && kind < 85)) && Chance(6))
+		{
+			op.rel[s] = 1;
+			op.indexMode = (uint8)R(4);
+		}
 		if (kind < 45)
 			op.src[s] = R(kGPRs);
 		else if (kind < 55)
@@ -488,8 +496,8 @@ struct Gen
 			usedElem[e] = true;
 			AluOp op{};
 			uint32 kind = R(100);
-			if (allowDeclined && kind < 2)
-				op.opcode = kDeclined[R(2)];
+			if (kind < 3)
+				op.opcode = kMova[R(2)]; // AR's x to w
 		else if (kind < 6)
 			op.opcode = kPredOps[R(8)];
 			else if (kind < 25)
@@ -513,14 +521,19 @@ struct Gen
 			op.destGpr = Dest();
 			op.destElem = e;
 			op.writeMask = op.op3 ? 1 : (Chance(75) ? 1 : 0);
+			// a relative write (declined: the GLSL's register arrays), now and then
+			op.destRel = allowDeclined && Chance(2);
+			const bool mova = !op.op3 && (op.opcode == ALU_OP2_INST_MOVA_INT || op.opcode == ALU_OP2_INST_MOVA_FLOOR);
+			if (mova)
+				op.writeMask = 0; // into PV, as the hardware writes
 			if (!op.op3 && ((op.opcode >= ALU_OP2_INST_PRED_SETE && op.opcode <= ALU_OP2_INST_PRED_SETNE) ||
 				(op.opcode >= ALU_OP2_INST_PRED_SETE_INT && op.opcode <= ALU_OP2_INST_PRED_SETNE_INT)))
 			{
 				op.writeMask = 0;
 				op.exec = Chance(50);
 			}
-			op.clamp = Chance(10);
-			op.omod = (!op.op3 && Chance(10)) ? (uint8)(1 + R(3)) : 0;
+			op.clamp = mova ? 0 : Chance(10);
+			op.omod = (!op.op3 && !mova && Chance(10)) ? (uint8)(1 + R(3)) : 0;
 			g.ops.push_back(op);
 			if (!(op.op3 == false && op.opcode == ALU_OP2_INST_NOP))
 				written[e] = true;
@@ -1220,6 +1233,8 @@ static bool CreateContext(Context& c)
 	// cube map arrays, the decompiler's cube maps
 	VkPhysicalDeviceFeatures features{};
 	features.imageCubeArray = VK_TRUE;
+	// uniforms read past the array (an AR index out of it) read zeros
+	features.robustBufferAccess = VK_TRUE;
 	dci.pEnabledFeatures = &features;
 	dci.queueCreateInfoCount = 1;
 	dci.pQueueCreateInfos = &qi;
@@ -1293,14 +1308,14 @@ static bool CreateContext(Context& c)
 	vkGetBufferMemoryRequirements(c.device, c.readback, &breq);
 	c.readMem = Bind(c, breq, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 	VKCHECK(vkBindBufferMemory(c.device, c.readback, c.readMem, 0));
-	bi.size = 4096;
+	bi.size = 8192;
 	bi.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
 	VKCHECK(vkCreateBuffer(c.device, &bi, nullptr, &c.ubo));
 	vkGetBufferMemoryRequirements(c.device, c.ubo, &breq);
 	c.uboMem = Bind(c, breq, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 	VKCHECK(vkBindBufferMemory(c.device, c.ubo, c.uboMem, 0));
 	void* map;
-	VKCHECK(vkMapMemory(c.device, c.uboMem, 0, 4096, 0, &map));
+	VKCHECK(vkMapMemory(c.device, c.uboMem, 0, 8192, 0, &map));
 	c.uboData = (uint8*)map;
 
 	char err[512] = {};
@@ -1460,11 +1475,11 @@ static std::vector<uint32> Draw(const Context& c, const Decompiled& d, const uin
 	dai.pSetLayouts = &set;
 	VkDescriptorSet ds;
 	VKCHECK(vkAllocateDescriptorSets(c.device, &dai, &ds));
-	std::memset(c.uboData, 0, 4096);
+	std::memset(c.uboData, 0, 8192);
 	std::memcpy(c.uboData, uniforms, uniformBytes);
 	if (d.binding >= 0)
 	{
-		VkDescriptorBufferInfo dbi{c.ubo, 0, 4096};
+		VkDescriptorBufferInfo dbi{c.ubo, 0, 8192};
 		VkWriteDescriptorSet wds{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
 		wds.dstSet = ds;
 		wds.dstBinding = (uint32)d.binding;
@@ -1683,7 +1698,7 @@ static int Differs(const Context& c, const Case& k, std::vector<uint32>* outA = 
 	Decompiled viaSpirv = Decompile(words, true, k.strictMul, k.rte);
 	if (viaSpirv.declined || !viaGlsl.ok || !viaSpirv.ok)
 		return -1;
-	uint32 uniforms[1024] = {};
+	uint32 uniforms[2048] = {}; // a full register file (4 KiB) and what follows it
 	if (viaGlsl.uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_REMAPPED)
 	{
 		for (auto& e : viaGlsl.remapped)
@@ -2219,6 +2234,69 @@ static std::vector<Program> DirectedPrograms()
 			p.exportSel[i] = (uint8)i;
 		out.push_back(p);
 	}
+	// AR set by MOVA_INT 2, MOVA_FLOOR 1.7 and MOVA_INT 300 (out of range:
+	// -256), then registers and uniforms read relative to it: R[1+AR.x]
+	// (R3), c[1+AR.y] (c2), R[1+AR.z] (none: 0), and the MOVAs' own outputs
+	// summed from PV (2 + -256)
+	{
+		Program p{};
+		auto mov = [](uint8 dst, uint8 elem, uint32 src, uint8 chan) {
+			AluOp op{};
+			op.opcode = ALU_OP2_INST_MOV;
+			op.src[0] = src;
+			op.chan[0] = chan;
+			op.destGpr = dst;
+			op.destElem = elem;
+			op.writeMask = 1;
+			return op;
+		};
+		AluGroup regs{};
+		for (uint8 r = 0; r < 4; r++)
+		{
+			regs.ops.push_back(mov((uint8)(1 + r), 0, 253, r));
+			regs.literals[r] = 0x1000u + r; // R1.x to R4.x
+		}
+		AluGroup ar{};
+		const float floor17 = 1.7f;
+		ar.literals[0] = 2;
+		std::memcpy(&ar.literals[1], &floor17, 4);
+		ar.literals[2] = 300;
+		const uint32 movas[3] = { ALU_OP2_INST_MOVA_INT, ALU_OP2_INST_MOVA_FLOOR, ALU_OP2_INST_MOVA_INT };
+		for (uint8 e = 0; e < 3; e++)
+		{
+			AluOp op = mov(0, e, 253, e);
+			op.opcode = movas[e];
+			op.writeMask = 0;
+			ar.ops.push_back(op);
+		}
+		const uint32 srcs[3] = { 1, 256 + 1, 1 };
+		const uint8 modes[3] = { GPU7_INDEX_AR_X, GPU7_INDEX_AR_Y, GPU7_INDEX_AR_Z };
+		// one index mode an instruction: a group for each read
+		std::vector<AluGroup> groups = { regs, ar };
+		for (uint8 e = 0; e < 3; e++)
+		{
+			AluGroup g{};
+			AluOp op = mov(0, e, srcs[e], 0);
+			op.rel[0] = 1;
+			op.indexMode = modes[e];
+			g.ops.push_back(op);
+			if (e == 0)
+			{
+				AluOp sum = mov(0, 3, 254, 0); // PV.x + PV.z
+				sum.opcode = ALU_OP2_INST_ADD_INT;
+				sum.src[1] = 254;
+				sum.chan[1] = 2;
+				g.ops.push_back(sum);
+			}
+			groups.push_back(g);
+		}
+		p.clauses.push_back(groups);
+		p.cf = { { GPU7_CF_INST_ALU, 0, 0 } };
+		p.exportGpr = 0;
+		for (int i = 0; i < 4; i++)
+			p.exportSel[i] = (uint8)i;
+		out.push_back(p);
+	}
 	// a 1D at known coordinates (unit 1): a sample a texel over, the
 	// level 1 texel 3, its level count, and a gradient lookup of gradients
 	// (0.25, 1.0) and (0.5, 0.125) - level 2 by the x components
@@ -2513,11 +2591,11 @@ static std::vector<uint32> DrawVertex(const Context& c, const Decompiled& d, con
 	dai.pSetLayouts = &set;
 	VkDescriptorSet ds;
 	VKCHECK(vkAllocateDescriptorSets(c.device, &dai, &ds));
-	std::memset(c.uboData, 0, 4096);
-	std::memcpy(c.uboData, uniforms, 4096);
+	std::memset(c.uboData, 0, 8192);
+	std::memcpy(c.uboData, uniforms, 8192);
 	if (d.binding >= 0)
 	{
-		VkDescriptorBufferInfo dbi{c.ubo, 0, 4096};
+		VkDescriptorBufferInfo dbi{c.ubo, 0, 8192};
 		VkWriteDescriptorSet wds{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
 		wds.dstSet = ds;
 		wds.dstBinding = (uint32)d.binding;
@@ -2800,7 +2878,7 @@ int main(int argc, char** argv)
 	int direct = 0, declined = 0, drawn = 0, differing = 0, glslFailed = 0, offsetsDiffer = 0, shapeDiffers = 0;
 	std::map<std::string, int> reasons;
 	const std::vector<Program> directed = DirectedPrograms();
-	CHECK(directed.size() == 12);
+	CHECK(directed.size() == 13);
 	for (int i = 0; i < count + (int)directed.size(); i++)
 	{
 		const bool allowDeclined = (i % 5) == 0;
@@ -3037,7 +3115,7 @@ int main(int argc, char** argv)
 				continue;
 			for (auto& u : k.cfile)
 				u = gen.Literal();
-			uint32 uniforms[1024] = {};
+			uint32 uniforms[2048] = {}; // a full register file (4 KiB) and what follows it
 			if (viaGlsl.uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_REMAPPED)
 			{
 				for (auto& e : viaGlsl.remapped)

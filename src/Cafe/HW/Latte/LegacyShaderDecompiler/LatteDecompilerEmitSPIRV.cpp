@@ -858,10 +858,15 @@ namespace
 			uint32 aLabel = spv_id(w), bLabel = spv_id(w), mergeLabel = spv_id(w);
 			OpVoid(SpvOpSelectionMerge, { mergeLabel, SpvSelectionControlMaskNone });
 			OpVoid(SpvOpBranchConditional, { cond.id, aLabel, bLabel });
+			// a side's own blocks (a relative read's ternaries): the phi's
+			// predecessor is the side's last block
+			uint32 aLast = aLabel, bLast = bLabel;
 			Label(aLabel);
 			for (size_t i = 0; i < aWords;)
 			{
 				uint32 n = s_sides[i] >> 16;
+				if ((s_sides[i] & 0xFFFF) == SpvOpLabel)
+					aLast = s_sides[i + 1];
 				spv_inst(w, SPV_SEC_BODY, s_sides[i] & 0xFFFF, s_sides.data() + i + 1, n - 1);
 				i += n;
 			}
@@ -870,12 +875,14 @@ namespace
 			for (size_t i = aWords; i < s_sides.size();)
 			{
 				uint32 n = s_sides[i] >> 16;
+				if ((s_sides[i] & 0xFFFF) == SpvOpLabel)
+					bLast = s_sides[i + 1];
 				spv_inst(w, SPV_SEC_BODY, s_sides[i] & 0xFFFF, s_sides.data() + i + 1, n - 1);
 				i += n;
 			}
 			OpVoid(SpvOpBranch, { mergeLabel });
 			Label(mergeLabel);
-			return Run(Op(SpvOpPhi, TypeOf(type), { a.id, aLabel, b.id, bLabel }), type);
+			return Run(Op(SpvOpPhi, TypeOf(type), { a.id, aLast, b.id, bLast }), type);
 		}
 		size_t BodyAt() const { return w->sec[SPV_SEC_BODY].n; }
 
@@ -1152,6 +1159,9 @@ namespace
 		bool EmitExport(LatteDecompilerCFInstruction& cf);
 		Val Operand(LatteDecompilerALUInstruction& inst, sint32 index, sint32 requiredType);
 		Val UniformOperand(LatteDecompilerALUInstruction& inst, sint32 index, sint32 requiredType);
+		bool EmitMova(LatteDecompilerALUInstruction& inst);
+		uint32 ARChannel(uint32 indexMode);
+		uint32 RelativeGPRChain(uint32 base, uint32 from, uint32 chan, uint32 indexMode);
 		Val RegisterRead(LatteDecompilerALUInstruction& inst, sint32 index);
 		Val PVPSRead(LatteDecompilerALUInstruction& inst, uint8 unit);
 		uint32 OutputPtr(LatteDecompilerALUInstruction& inst);
@@ -1478,12 +1488,12 @@ namespace
 	Val SpvShader::UniformOperand(LatteDecompilerALUInstruction& inst, sint32 index, sint32 requiredType)
 	{
 		auto& op = inst.sourceOperand[index];
-		if (op.rel != 0)
+		bool isRegister = GPU7_ALU_SRC_IS_CFILE(op.sel);
+		if (op.rel != 0 && !(isRegister && shader->uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_FULL_CFILE))
 		{
 			Decline("relative uniform access");
 			return { ConstI(0), requiredType };
 		}
-		bool isRegister = GPU7_ALU_SRC_IS_CFILE(op.sel);
 		sint32 uniformOffset;
 		sint32 bufferIndex = 0;
 		if (isRegister)
@@ -1535,9 +1545,84 @@ namespace
 		// as rslc reads uf_remappedPS[i].x: the ivec4 loaded, the channel
 		// extracted (a driver's optimizer sees the two differently)
 		uint32 ptr = spv_type_pointer(w, SpvStorageClassUniform, tV4I);
-		uint32 p = Op(SpvOpAccessChain, ptr, { ufBlockVar, ConstI(0), ConstI(arrayIndex) });
+		// uf_uniformRegister<stage>[ARi.<c>+offset]: the sum not folded
+		uint32 at = op.rel != 0 ? Op(SpvOpIAdd, tI, { ARChannel(inst.indexMode), ConstI(arrayIndex) }) : ConstI(arrayIndex);
+		if (!Ok())
+			return { ConstI(0), requiredType };
+		uint32 p = Op(SpvOpAccessChain, ptr, { ufBlockVar, ConstI(0), at });
 		uint32 v = Load(tV4I, p);
 		return Convert({ Op(SpvOpCompositeExtract, tI, { v, (uint32)op.chan }), DT_I }, requiredType);
+	}
+
+	// ARi.x to ARi.w by the index mode, as the GLSL reads it: ARi loaded,
+	// the channel extracted
+	uint32 SpvShader::ARChannel(uint32 indexMode)
+	{
+		if (indexMode > GPU7_INDEX_AR_W)
+		{
+			Decline("index mode");
+			return ConstI(0);
+		}
+		return Op(SpvOpCompositeExtract, tI, { Load(tV4I, ariVar), indexMode });
+	}
+
+	// (ARi.c==i-base)?R<i>i.chan:... for each register from 'from' the
+	// analyzer marks used, then 0: rslc's ternaries of non-leaf sides, a
+	// branch each way and a phi, nested in the else
+	uint32 SpvShader::RelativeGPRChain(uint32 base, uint32 from, uint32 chan, uint32 indexMode)
+	{
+		uint32 i = from;
+		while (i < LATTE_NUM_GPR && (ctx->analyzer.gprUseMask[i / 8] & (1 << (i % 8))) == 0)
+			i++;
+		if (i >= LATTE_NUM_GPR)
+			return ConstI(0);
+		uint32 cond = Op(SpvOpIEqual, tBool, { ARChannel(indexMode), ConstI((sint32)(i - base)) });
+		uint32 thenL = spv_id(w), elseL = spv_id(w), merge = spv_id(w);
+		OpVoid(SpvOpSelectionMerge, { merge, SpvSelectionControlMaskNone });
+		OpVoid(SpvOpBranchConditional, { cond, thenL, elseL });
+		Label(thenL);
+		uint32 a = Op(SpvOpCompositeExtract, tI, { Load(tV4I, GPR(i)), chan });
+		uint32 aEnd = curBlock;
+		Branch(merge);
+		Label(elseL);
+		uint32 b = RelativeGPRChain(base, i + 1, chan, indexMode);
+		EnsureBlock();
+		uint32 bEnd = curBlock;
+		Branch(merge);
+		Label(merge);
+		return Op(SpvOpPhi, tI, { a, aEnd, b, bEnd });
+	}
+
+	// MOVA_FLOOR: floor, -256 outside -256..255, into ARi.c as an int, the
+	// float's bits out; MOVA_INT: the int the same way
+	bool SpvShader::EmitMova(LatteDecompilerALUInstruction& inst)
+	{
+		if (dt != DT_I)
+			return Decline("MOVA of a float shader"); // its int output a GLSL error
+		if (inst.destElem > 3)
+			return Decline("MOVA channel");
+		if (inst.opcode == ALU_OP2_INST_MOVA_FLOOR)
+		{
+			Store(tempResultFVar, Operand(inst, 0, DT_F).id);
+			Store(tempResultFVar, Ext(GLSLstd450Floor, tF, { Load(tF, tempResultFVar) }));
+			uint32 lo = Op(SpvOpFOrdGreaterThanEqual, tBool, { Load(tF, tempResultFVar), ConstF(-256.0f) });
+			uint32 hi = Op(SpvOpFOrdLessThanEqual, tBool, { Load(tF, tempResultFVar), ConstF(255.0f) });
+			uint32 in = Op(SpvOpLogicalAnd, tBool, { lo, hi });
+			Store(tempResultFVar, Op(SpvOpSelect, tF, { in, Load(tF, tempResultFVar), ConstF(-256.0f) }));
+			Store(Channel(ariVar, DT_I, inst.destElem), Op(SpvOpConvertFToS, tI, { Load(tF, tempResultFVar) }));
+			Assign(inst, Run(Op(SpvOpBitcast, tI, { Load(tF, tempResultFVar) }), DT_I));
+		}
+		else
+		{
+			Store(tempResultI, Operand(inst, 0, DT_I).id);
+			uint32 lo = Op(SpvOpSGreaterThanEqual, tBool, { Load(tI, tempResultI), ConstI(-256) });
+			uint32 hi = Op(SpvOpSLessThanEqual, tBool, { Load(tI, tempResultI), ConstI(255) });
+			uint32 in = Op(SpvOpLogicalAnd, tBool, { lo, hi });
+			Store(tempResultI, Op(SpvOpSelect, tI, { in, Load(tI, tempResultI), ConstI(-256) }));
+			Store(Channel(ariVar, DT_I, inst.destElem), Load(tI, tempResultI));
+			Assign(inst, Run(Load(tI, tempResultI), DT_I));
+		}
+		return Ok();
 	}
 
 	// a literal as the GLSL emitter writes it: the shortest decimal that
@@ -1566,16 +1651,29 @@ namespace
 		{
 			if (op.rel != 0)
 			{
-				Decline("relative GPR read");
-				return KI(0);
+				// _emitCodeToReadRelativeGPR: (ARi.c==0)?R<base>i.c:(ARi.c==1)?...:0,
+				// of an int shader (a float one mixes float and int sides)
+				if (dt != DT_I)
+				{
+					Decline("relative GPR read of a float shader");
+					return KI(0);
+				}
+				const uint32 base = GPU7_ALU_SRC_GET_GPR_INDEX(op.sel);
+				Val chain = Run(RelativeGPRChain(base, base, op.chan, inst.indexMode), DT_I);
+				if (!Ok())
+					return KI(0);
+				v = Convert(chain, requiredType);
 			}
-			Val r = RegisterRead(inst, index);
-			if (requiredType == DT_U && r.type == DT_F)
+			else
 			{
-				Decline("float register read as uint");
-				return KU(0);
+				Val r = RegisterRead(inst, index);
+				if (requiredType == DT_U && r.type == DT_F)
+				{
+					Decline("float register read as uint");
+					return KU(0);
+				}
+				v = Convert(r, requiredType);
 			}
-			v = Convert(r, requiredType);
 		}
 		else if (GPU7_ALU_SRC_IS_CONST_0F(op.sel))
 			v = requiredType == DT_F ? KF(0.0) : K(requiredType, 0);
@@ -2141,7 +2239,11 @@ namespace
 				if (inst.opcode == ALU_OP2_INST_NOP)
 					continue;
 				if (inst.opcode == ALU_OP2_INST_MOVA_FLOOR || inst.opcode == ALU_OP2_INST_MOVA_INT)
-					return Decline("MOVA");
+				{
+					if (!EmitMova(inst))
+						return false;
+				}
+				else
 				if (!EmitOP2(cf, inst))
 					return false;
 			}
@@ -3741,8 +3843,8 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 		return decline("GPR array");
 	if (!shaderContext->list_subroutines.empty())
 		return decline("subroutines");
-	if (shaderContext->analyzer.usesRelativeGPRRead || shaderContext->analyzer.usesRelativeGPRWrite)
-		return decline("relative GPR access");
+	if (shaderContext->analyzer.usesRelativeGPRWrite)
+		return decline("relative GPR write");
 	if (shader->hasError)
 		return decline("shader error");
 	s.dt = shaderContext->typeTracker.defaultDataType;
@@ -3784,6 +3886,8 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 		s.psVar[p] = s.Local(scalar, zero);
 	s.tempVar = s.Local(s.Vec4Of(s.dt), spv_const_null(w, s.Vec4Of(s.dt)));
 	s.tempResultFVar = s.Local(s.tF, 0);
+	s.tempResultI = s.Local(s.tI, 0); // int tempResulti;
+	s.ariVar = s.Local(s.tV4I, spv_const_null(w, s.tV4I)); // ivec4 ARi = ivec4(0);
 	// bool predResult = true; and the active mask stacks
 	s.predVar = s.Local(s.tBool, 0);
 	s.Store(s.predVar, spv_const_bool(w, 1));
