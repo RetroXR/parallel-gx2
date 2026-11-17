@@ -1903,6 +1903,11 @@ static void TestIdleWait()
 			while (!done.load())
 				if (gate.WaitIdle([&] { return done.load(); }))
 					moments++;
+			// the workers are done and the gate idle: a moment now, however
+			// the threads were scheduled (a loaded machine may have run every
+			// worker before the waiter's first look)
+			if (gate.WaitIdle([] { return false; }))
+				moments++;
 		});
 		std::vector<std::thread> workers;
 		for (int i = 0; i < 4; i++)

@@ -521,8 +521,11 @@ struct Gen
 			op.destGpr = Dest();
 			op.destElem = e;
 			op.writeMask = op.op3 ? 1 : (Chance(75) ? 1 : 0);
-			// a relative write (declined: the GLSL's register arrays), now and then
-			op.destRel = allowDeclined && Chance(2);
+			// a register written relative to AR (the registers then one array),
+			// now and then
+			op.destRel = Chance(4);
+			if (op.destRel && !op.rel[0] && !op.rel[1] && !op.rel[2])
+				op.indexMode = (uint8)R(4);
 			const bool mova = !op.op3 && (op.opcode == ALU_OP2_INST_MOVA_INT || op.opcode == ALU_OP2_INST_MOVA_FLOOR);
 			if (mova)
 				op.writeMask = 0; // into PV, as the hardware writes
@@ -2233,6 +2236,75 @@ static std::vector<Program> DirectedPrograms()
 		for (int i = 0; i < 4; i++)
 			p.exportSel[i] = (uint8)i;
 		out.push_back(p);
+		// the same with the registers one array (a write relative to AR):
+		// the layer read from R4.w by the array's name, where the GLSL
+		// emitter once named R4i, undeclared, and did not compile
+		AluGroup rel{};
+		AluOp w{};
+		w.opcode = ALU_OP2_INST_MOV;
+		w.src[0] = 4;
+		w.chan[0] = 0;
+		w.destGpr = 5;
+		w.destElem = 0;
+		w.writeMask = 1;
+		w.destRel = 1;
+		w.indexMode = GPU7_INDEX_AR_X;
+		rel.ops.push_back(w);
+		p.clauses[0].push_back(rel);
+		out.push_back(p);
+	}
+	// registers written relative to AR (the registers one array): MOVA_INT
+	// 1, then R[2+AR.x].y and, by AR.y (still 0), R[4+AR.y].z set from
+	// literals; R3 and R4 read back plainly, R[1+AR.x] (R2) relative
+	{
+		Program p{};
+		auto op2 = [](uint32 opcode, uint8 dst, uint8 elem, uint32 src, uint8 chan) {
+			AluOp op{};
+			op.opcode = opcode;
+			op.src[0] = src;
+			op.chan[0] = chan;
+			op.destGpr = dst;
+			op.destElem = elem;
+			op.writeMask = 1;
+			return op;
+		};
+		AluGroup init{};
+		for (uint8 r = 0; r < 4; r++)
+		{
+			init.ops.push_back(op2(ALU_OP2_INST_MOV, (uint8)(1 + r), r, 253, r));
+			init.literals[r] = 0x100u * (r + 1);
+		}
+		AluGroup ar{};
+		AluOp mova = op2(ALU_OP2_INST_MOVA_INT, 0, 0, 253, 0);
+		mova.writeMask = 0;
+		ar.ops.push_back(mova);
+		ar.literals[0] = 1;
+		AluGroup writes{};
+		AluOp w1 = op2(ALU_OP2_INST_MOV, 2, 1, 253, 0);
+		w1.destRel = 1;
+		w1.indexMode = GPU7_INDEX_AR_X;
+		writes.ops.push_back(w1);
+		writes.literals[0] = 0x7777u;
+		AluGroup writes2{};
+		AluOp w2 = op2(ALU_OP2_INST_MOV, 4, 2, 253, 1);
+		w2.destRel = 1;
+		w2.indexMode = GPU7_INDEX_AR_Y;
+		writes2.ops.push_back(w2);
+		writes2.literals[1] = 0x8888u;
+		AluGroup reads{};
+		reads.ops.push_back(op2(ALU_OP2_INST_MOV, 0, 0, 3, 1)); // R3.y
+		reads.ops.push_back(op2(ALU_OP2_INST_MOV, 0, 1, 4, 2)); // R4.z
+		AluOp rr = op2(ALU_OP2_INST_MOV, 0, 2, 1, 2);           // R[1+AR.x].z
+		rr.rel[0] = 1;
+		rr.indexMode = GPU7_INDEX_AR_X;
+		reads.ops.push_back(rr);
+		reads.ops.push_back(op2(ALU_OP2_INST_MOV, 0, 3, 3, 3)); // R3.w
+		p.clauses.push_back({ init, ar, writes, writes2, reads });
+		p.cf = { { GPU7_CF_INST_ALU, 0, 0 } };
+		p.exportGpr = 0;
+		for (int i = 0; i < 4; i++)
+			p.exportSel[i] = (uint8)i;
+		out.push_back(p);
 	}
 	// AR set by MOVA_INT 2, MOVA_FLOOR 1.7 and MOVA_INT 300 (out of range:
 	// -256), then registers and uniforms read relative to it: R[1+AR.x]
@@ -2878,7 +2950,7 @@ int main(int argc, char** argv)
 	int direct = 0, declined = 0, drawn = 0, differing = 0, glslFailed = 0, offsetsDiffer = 0, shapeDiffers = 0;
 	std::map<std::string, int> reasons;
 	const std::vector<Program> directed = DirectedPrograms();
-	CHECK(directed.size() == 13);
+	CHECK(directed.size() == 15);
 	for (int i = 0; i < count + (int)directed.size(); i++)
 	{
 		const bool allowDeclined = (i % 5) == 0;

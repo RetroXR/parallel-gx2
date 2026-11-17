@@ -2797,9 +2797,9 @@ void _emitTEXSetCubemapIndexCode(LatteDecompilerShaderContext* shaderContext, La
 	if (selector >= 4)
 		src->add(selector == 5 ? " = 1.0;" _CRLF : " = 0.0;" _CRLF);
 	else if (shaderContext->typeTracker.defaultDataType == LATTE_DECOMPILER_DTYPE_SIGNED_INT)
-		src->addFmt(" = intBitsToFloat(R{}i.{});" _CRLF, texInstruction->srcGpr, resultElemTable[texInstruction->textureFetch.srcSel[0]]);
+		src->addFmt(" = intBitsToFloat({}.{});" _CRLF, _getRegisterVarName(shaderContext, texInstruction->srcGpr), resultElemTable[texInstruction->textureFetch.srcSel[0]]);
 	else if (shaderContext->typeTracker.defaultDataType == LATTE_DECOMPILER_DTYPE_FLOAT)
-		src->addFmt(" = R{}f.{};" _CRLF, texInstruction->srcGpr, resultElemTable[texInstruction->textureFetch.srcSel[0]]);
+		src->addFmt(" = {}.{};" _CRLF, _getRegisterVarName(shaderContext, texInstruction->srcGpr), resultElemTable[texInstruction->textureFetch.srcSel[0]]);
 	else
 		cemu_assert_unimplemented();
 }

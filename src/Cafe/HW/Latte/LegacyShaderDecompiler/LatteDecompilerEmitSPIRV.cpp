@@ -117,6 +117,9 @@ namespace
 		sint32 dt; // the registers' type
 		uint32 tVoid, tBool, tF, tI, tU, tV4F, tV4I, tV4U, glsl;
 		uint32 gprVar[LATTE_NUM_GPR]{};
+		// ivec4 Ri[128] (vec4 Rf[128]): the registers as one array, where a
+		// register is written relative to AR
+		uint32 gprArrayVar{};
 		uint32 pvVar[2][4]{}, psVar[2]{}, backupVar[5]{}, tempVar{}, tempResultF{}, tempResultI{}, ariVar{}, predVar{};
 		uint32 ufBlockVar{};
 		// the active mask stacks (activeMaskStack, activeMaskStackC) and
@@ -727,6 +730,8 @@ namespace
 		// the registers are declared at the start, as the GLSL emitter's
 		uint32 GPR(uint32 index)
 		{
+			if (gprArrayVar)
+				return Op(SpvOpAccessChain, spv_type_pointer(w, SpvStorageClassFunction, Vec4Of(dt)), { gprArrayVar, ConstI((sint32)index) });
 			if (!gprVar[index])
 			{
 				Decline("register not declared");
@@ -1162,6 +1167,7 @@ namespace
 		bool EmitMova(LatteDecompilerALUInstruction& inst);
 		uint32 ARChannel(uint32 indexMode);
 		uint32 RelativeGPRChain(uint32 base, uint32 from, uint32 chan, uint32 indexMode);
+		uint32 RelativeGPR(uint32 base, uint32 indexMode);
 		Val RegisterRead(LatteDecompilerALUInstruction& inst, sint32 index);
 		Val PVPSRead(LatteDecompilerALUInstruction& inst, uint8 unit);
 		uint32 OutputPtr(LatteDecompilerALUInstruction& inst);
@@ -1593,6 +1599,18 @@ namespace
 		return Op(SpvOpPhi, tI, { a, aEnd, b, bEnd });
 	}
 
+	// R[base+ARi.c]: the register array's element at the sum
+	uint32 SpvShader::RelativeGPR(uint32 base, uint32 indexMode)
+	{
+		if (!gprArrayVar)
+		{
+			Decline("relative register without the register array");
+			return GPR(base);
+		}
+		uint32 at = Op(SpvOpIAdd, tI, { ConstI((sint32)base), ARChannel(indexMode) });
+		return Op(SpvOpAccessChain, spv_type_pointer(w, SpvStorageClassFunction, Vec4Of(dt)), { gprArrayVar, at });
+	}
+
 	// MOVA_FLOOR: floor, -256 outside -256..255, into ARi.c as an int, the
 	// float's bits out; MOVA_INT: the int the same way
 	bool SpvShader::EmitMova(LatteDecompilerALUInstruction& inst)
@@ -1649,7 +1667,16 @@ namespace
 		Val v{};
 		if (GPU7_ALU_SRC_IS_GPR(op.sel))
 		{
-			if (op.rel != 0)
+			if (op.rel != 0 && gprArrayVar)
+			{
+				// _emitCodeToReadRelativeGPR of the register array: R[base+ARi.c].chan
+				const uint32 base = GPU7_ALU_SRC_GET_GPR_INDEX(op.sel);
+				uint32 ptr = RelativeGPR(base, inst.indexMode);
+				if (!Ok())
+					return KI(0);
+				v = Convert(Run(ReadChannel(ptr, op.chan), dt), requiredType);
+			}
+			else if (op.rel != 0)
 			{
 				// _emitCodeToReadRelativeGPR: (ARi.c==0)?R<base>i.c:(ARi.c==1)?...:0,
 				// of an int shader (a float one mixes float and int sides)
@@ -1768,10 +1795,7 @@ namespace
 			return Channel(tempVar, dt, inst.aluUnit);
 		}
 		if (inst.destRel != 0)
-		{
-			Decline("relative GPR write");
-			return PVPSOutputPtr(inst);
-		}
+			return Channel(RelativeGPR(inst.destGpr, inst.indexMode), dt, inst.destElem);
 		return Channel(GPR(inst.destGpr), dt, inst.destElem);
 	}
 
@@ -1786,7 +1810,7 @@ namespace
 			return ReadChannel(tempVar, inst.aluUnit);
 		}
 		if (inst.destRel != 0)
-			return Load(TypeOf(dt), PVPSOutputPtr(inst));
+			return ReadChannel(RelativeGPR(inst.destGpr, inst.indexMode), inst.destElem);
 		return ReadChannel(GPR(inst.destGpr), inst.destElem);
 	}
 
@@ -2072,8 +2096,6 @@ namespace
 	bool SpvShader::EmitOP3(LatteDecompilerALUInstruction& inst)
 	{
 		const uint32 op = inst.opcode;
-		if (inst.destRel != 0)
-			return Decline("relative GPR write");
 		if (op == ALU_OP3_INST_CMOVGE || op == ALU_OP3_INST_CMOVE || op == ALU_OP3_INST_CMOVGT ||
 			op == ALU_OP3_INST_CNDE_INT || op == ALU_OP3_INST_CNDGT_INT || op == ALU_OP3_INST_CMOVGE_INT)
 		{
@@ -3839,12 +3861,8 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 #endif
 	if (shaderContext->analyzer.hasStreamoutEnable || shaderContext->analyzer.hasStreamoutWrite)
 		return decline("streamout");
-	if (shaderContext->typeTracker.useArrayGPRs)
-		return decline("GPR array");
 	if (!shaderContext->list_subroutines.empty())
 		return decline("subroutines");
-	if (shaderContext->analyzer.usesRelativeGPRWrite)
-		return decline("relative GPR write");
 	if (shader->hasError)
 		return decline("shader error");
 	s.dt = shaderContext->typeTracker.defaultDataType;
@@ -3868,10 +3886,20 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 	// the GLSL emitter's locals, as it declares and initializes them
 	uint32 zero = s.dt == DT_F ? s.ConstF(0.0f) : s.ConstI(0);
 	uint32 scalar = s.TypeOf(s.dt);
-	for (sint32 i = 0; i < LATTE_NUM_GPR; i++)
+	if (shaderContext->typeTracker.useArrayGPRs)
 	{
-		if (shaderContext->analyzer.usesRelativeGPRRead || (shaderContext->analyzer.gprUseMask[i / 8] & (1 << (i & 7))) != 0)
-			s.gprVar[i] = s.Local(s.Vec4Of(s.dt), spv_const_null(w, s.Vec4Of(s.dt)));
+		// ivec4 Ri[128]; then Ri[i] = ivec4(0); for each
+		s.gprArrayVar = s.Local(spv_type_array(w, s.Vec4Of(s.dt), s.ConstI(LATTE_NUM_GPR)), 0);
+		for (sint32 i = 0; i < LATTE_NUM_GPR; i++)
+			s.Store(s.GPR((uint32)i), spv_const_null(w, s.Vec4Of(s.dt)));
+	}
+	else
+	{
+		for (sint32 i = 0; i < LATTE_NUM_GPR; i++)
+		{
+			if (shaderContext->analyzer.usesRelativeGPRRead || (shaderContext->analyzer.gprUseMask[i / 8] & (1 << (i & 7))) != 0)
+				s.gprVar[i] = s.Local(s.Vec4Of(s.dt), spv_const_null(w, s.Vec4Of(s.dt)));
+		}
 	}
 	if (s.isVertex)
 		s.decVar = s.Local(s.tV4U, 0); // uvec4 attrDecoder;
