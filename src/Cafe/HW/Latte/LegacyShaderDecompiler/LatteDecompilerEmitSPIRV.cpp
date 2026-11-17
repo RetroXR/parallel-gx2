@@ -148,7 +148,7 @@ namespace
 		uint32 cubeSTMVar{}, cubeFaceVar{}, cubeIndexVar[LATTE_NUM_MAX_TEX_UNITS]{};
 		bool sampledCubeArray{};
 		uint32 tempResultFVar{};
-		uint32 ufMember[8 + LATTE_NUM_MAX_TEX_UNITS]{};
+		uint32 ufMember[16 + LATTE_NUM_MAX_TEX_UNITS]{};
 		uint32 inputVar[GPU7_PS_MAX_INPUTS]{};
 		uint32 colorOut[LATTE_NUM_COLOR_TARGET]{};
 		// a vertex shader's: the attributes, attrDecoder, the per-vertex
@@ -160,6 +160,11 @@ namespace
 		// uf_windowSpaceToClipSpaceTransform's and uf_pointSize's members of
 		// the uniform block, -1 where it has none
 		sint32 windowMember{-1}, pointSizeMember{-1};
+		// streamout through the storage buffer: uf_verticesPerInstance's and
+		// uf_streamoutBufferBase<n>'s members, int sb_buffer[], sbBase<n>
+		sint32 verticesPerInstanceMember{-1};
+		sint32 sbBaseMember[LATTE_NUM_STREAMOUT_BUFFER]{ -1, -1, -1, -1 };
+		uint32 sbVar{}, sbBaseVar[LATTE_NUM_STREAMOUT_BUFFER]{}, primitiveIdVar{};
 		uint32 paramVar[LATTE_ANALYZER_IMPORT_INDEX_PARAM_MAX + 1]{};
 		// a geometry shader's draw: the vertex shader's out Vertex { ivec4
 		// passV2GParameter<n>; } v2g, the ring it writes, and the pixel
@@ -963,6 +968,10 @@ namespace
 		bool EmitRingWrite(LatteDecompilerCFInstruction& cf);
 		bool EmitGeometryRingWrite(LatteDecompilerCFInstruction& cf);
 		bool EmitEmitVertex(LatteDecompilerCFInstruction& cf);
+		bool DeclareStreamout();
+		bool EmitStreamoutBases();
+		void StreamStore(uint32 buffer, uint32 dword, uint32 value);
+		bool EmitStreamWrite(LatteDecompilerCFInstruction& cf);
 		void SetPosition(uint32 pos);
 		uint32 BuiltinInput(uint32 builtin);
 		uint32 VertexOutSemantic(uint32 index);
@@ -1234,8 +1243,8 @@ namespace
 	bool SpvShader::DeclareUniforms(LatteDecompilerOutputUniformOffsets& uniformOffsets, RendererAPI api, bool declare)
 	{
 		auto* dc = ctx;
-		uint32 memberTypes[8 + LATTE_NUM_MAX_TEX_UNITS];
-		uint32 memberOffsets[8 + LATTE_NUM_MAX_TEX_UNITS];
+		uint32 memberTypes[16 + LATTE_NUM_MAX_TEX_UNITS];
+		uint32 memberOffsets[16 + LATTE_NUM_MAX_TEX_UNITS];
 		uint32 memberCount = 0;
 		uint32 uniformCurrentOffset = 0;
 		if (shader->uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_REMAPPED)
@@ -1331,14 +1340,20 @@ namespace
 		// shader's always, as the GLSL emitter's condition reads
 		if ((dc->analyzer.useSSBOForStreamout && isVertex && !usesGS) || isGeometry)
 		{
+			verticesPerInstanceMember = (sint32)memberCount;
 			memberTypes[memberCount] = tI;
 			memberOffsets[memberCount++] = uniformCurrentOffset;
 			uniformOffsets.offset_verticesPerInstance = uniformCurrentOffset;
 			uniformCurrentOffset += 4;
 			for (uint32 i = 0; i < LATTE_NUM_STREAMOUT_BUFFER; i++)
 			{
-				if (dc->output->streamoutBufferWriteMask[i])
-					return Decline("streamout buffer base");
+				if (!dc->output->streamoutBufferWriteMask[i])
+					continue;
+				sbBaseMember[i] = (sint32)memberCount;
+				memberTypes[memberCount] = tI;
+				memberOffsets[memberCount++] = uniformCurrentOffset;
+				uniformOffsets.offset_streamoutBufferBase[i] = uniformCurrentOffset;
+				uniformCurrentOffset += 4;
 			}
 		}
 		uniformOffsets.offset_endOfBlock = uniformCurrentOffset;
@@ -3903,6 +3918,108 @@ namespace
 		return Ok();
 	}
 
+	// layout(set, binding) buffer StreamoutBuffer { int sb_buffer[]; };, as
+	// rslc makes it (a BufferBlock in the Uniform storage class), where
+	// streamout is on and the shader writes it
+	bool SpvShader::DeclareStreamout()
+	{
+		auto& a = ctx->analyzer;
+		if ((a.hasStreamoutWrite || a.hasStreamoutEnable) && !ctx->options->useTFViaSSBO)
+			return Decline("transform feedback outputs");
+		if (isVertex && usesGS && a.useSSBOForStreamout)
+			return Decline("streamout through a geometry shader's vertex shader");
+		if (!NotPixel() || !a.hasStreamoutEnable || !a.useSSBOForStreamout || !a.hasStreamoutWrite)
+			return Ok();
+		const uint32 arr = spv_type_runtime_array(w, tI);
+		Decorate(arr, SpvDecorationArrayStride, { 4 });
+		uint32 block = spv_type_struct(w, &arr, 1);
+		uint32 member[4] = { block, 0, SpvDecorationOffset, 0 };
+		spv_inst(w, SPV_SEC_DECORATION, SpvOpMemberDecorate, member, 4);
+		Decorate(block, SpvDecorationBufferBlock);
+		sbVar = spv_global_variable(w, spv_type_pointer(w, SpvStorageClassUniform, block), SpvStorageClassUniform);
+		Decorate(sbVar, SpvDecorationDescriptorSet, { (uint32)ctx->output->resourceMappingVK.setIndex });
+		Decorate(sbVar, SpvDecorationBinding, { (uint32)ctx->output->resourceMappingVK.getTFStorageBufferBindingPoint() });
+		return Ok();
+	}
+
+	// int sbBase<n> = uf_streamoutBufferBase<n>/4 + (gl_VertexID +
+	// uf_verticesPerInstance * gl_InstanceID)*<stride>; a geometry shader's
+	// from (gl_PrimitiveIDIn * <its vertices>)
+	bool SpvShader::EmitStreamoutBases()
+	{
+		if (!ctx->analyzer.useSSBOForStreamout || !NotPixel())
+			return Ok();
+		uint32 maxVertices = 0;
+		if (isGeometry)
+		{
+			const uint32 bytesPerVertex = ctx->contextRegisters[mmSQ_GS_VERT_ITEMSIZE] * 4;
+			if (bytesPerVertex == 0)
+				return Decline("geometry vertex size");
+			maxVertices = ((ctx->contextRegisters[mmSQ_GSVS_RING_ITEMSIZE] & 0x7FFF) * 4) / bytesPerVertex;
+		}
+		for (uint32 i = 0; i < LATTE_NUM_STREAMOUT_BUFFER; i++)
+		{
+			if (!ctx->output->streamoutBufferWriteMask[i])
+				continue;
+			if (sbBaseMember[i] < 0 || verticesPerInstanceMember < 0)
+				return Decline("streamout base not declared");
+			const uint32 ptrI = spv_type_pointer(w, SpvStorageClassUniform, tI);
+			uint32 base = Op(SpvOpSDiv, tI, { Load(tI, Op(SpvOpAccessChain, ptrI, { ufBlockVar, ConstI(sbBaseMember[i]) })), ConstI(4) });
+			uint32 index;
+			if (isGeometry)
+			{
+				if (!primitiveIdVar)
+				{
+					primitiveIdVar = spv_global_variable(w, spv_type_pointer(w, SpvStorageClassInput, tI), SpvStorageClassInput);
+					Decorate(primitiveIdVar, SpvDecorationBuiltIn, { SpvBuiltInPrimitiveId });
+					interfaceIds[interfaceCount++] = primitiveIdVar;
+				}
+				index = Op(SpvOpIMul, tI, { Load(tI, primitiveIdVar), ConstI((sint32)maxVertices) });
+			}
+			else
+			{
+				uint32 vid = Load(tI, BuiltinInput(SpvBuiltInVertexIndex));
+				uint32 perInstance = Load(tI, Op(SpvOpAccessChain, ptrI, { ufBlockVar, ConstI(verticesPerInstanceMember) }));
+				uint32 iid = Load(tI, BuiltinInput(SpvBuiltInInstanceIndex));
+				index = Op(SpvOpIAdd, tI, { vid, Op(SpvOpIMul, tI, { perInstance, iid }) });
+			}
+			const sint32 stride = (sint32)(ctx->output->streamoutBufferStride[i] / 4);
+			sbBaseVar[i] = Local(tI, Op(SpvOpIAdd, tI, { base, Op(SpvOpIMul, tI, { index, ConstI(stride) }) }));
+		}
+		return Ok();
+	}
+
+	// sb_buffer[sbBase<buffer> + dword] = value
+	void SpvShader::StreamStore(uint32 buffer, uint32 dword, uint32 value)
+	{
+		if (!sbVar || buffer >= LATTE_NUM_STREAMOUT_BUFFER || !sbBaseVar[buffer])
+		{
+			Decline("streamout buffer not declared");
+			return;
+		}
+		uint32 at = Op(SpvOpIAdd, tI, { Load(tI, sbBaseVar[buffer]), ConstI((sint32)dword) });
+		Store(Op(SpvOpAccessChain, spv_type_pointer(w, SpvStorageClassUniform, tI), { sbVar, ConstI(0), at }), value);
+	}
+
+	// _emitStreamWriteCode: a vertex shader's MEM_STREAM<n>_WRITE, each
+	// channel in the mask (of the array's) to sb_buffer[sbBase<n> + <base>
+	// + i]; nothing where streamout is off
+	bool SpvShader::EmitStreamWrite(LatteDecompilerCFInstruction& cf)
+	{
+		if (!ctx->analyzer.hasStreamoutEnable || !isVertex)
+			return Ok();
+		const uint32 buffer = cf.type == GPU7_CF_INST_MEM_STREAM0_WRITE ? 0 : 1;
+		const uint32 arraySize = cf.memWriteArraySize + 1;
+		for (uint32 i = 0; i < arraySize && i < 4; i++)
+		{
+			if ((cf.memWriteCompMask & (1u << i)) == 0)
+				continue;
+			uint32 v = Convert({ ReadChannel(GPR(cf.exportSourceGPR), i), dt }, DT_I).id;
+			StreamStore(buffer, cf.exportArrayBase + i, v);
+		}
+		return Ok();
+	}
+
 	// SET_POSITION(pos): gl_Position = pos, and its z to 0..1 where the clip
 	// space is OpenGL's: gl_Position.z = (gl_Position.z + gl_Position.w) / 2.0
 	void SpvShader::SetPosition(uint32 pos)
@@ -3930,6 +4047,35 @@ namespace
 		uint32 bytesPerVertex = ctx->contextRegisters[mmSQ_GS_VERT_ITEMSIZE] * 4;
 		if (bytesPerVertex == 0)
 			bytesPerVertex = 1;
+		if (ctx->analyzer.hasStreamoutEnable)
+		{
+			// to the stream the copy shader writes from that offset instead:
+			// sb_buffer[sbBase<n> + <its dword> + i] = the register's channel
+			// i, each masked in; none past an offset it does not write
+			for (uint32 burst = 0; burst < cf.exportBurstCount + 1; burst++)
+			{
+				const uint32 offset = (cf.exportArrayBase * 4 + burst * 0x10) % bytesPerVertex;
+				const LatteGSCopyShaderStreamWrite_t* sw = nullptr;
+				for (auto& it : ctx->parsedGSCopyShader->list_streamWrites)
+				{
+					if (it.offset == offset)
+					{
+						sw = &it;
+						break;
+					}
+				}
+				if (!sw)
+					return Ok();
+				for (uint32 i = 0; i < 4; i++)
+				{
+					if ((cf.memWriteCompMask & (1u << i)) == 0)
+						continue;
+					uint32 v = Convert({ ReadChannel(GPR(cf.exportSourceGPR + burst), i), dt }, DT_I).id;
+					StreamStore(sw->bufferIndex, sw->exportArrayBase + i, v);
+				}
+			}
+			return Ok();
+		}
 		const uint32 parameterOffset = (cf.exportArrayBase * 4) % bytesPerVertex;
 		uint8 sel[4];
 		uint32 count = 0;
@@ -3989,6 +4135,17 @@ namespace
 				Store(Op(SpvOpAccessChain, spv_type_pointer(w, SpvStorageClassOutput, tF), { perVertexVar, ConstI(1) }), Load(tF, ref));
 			}
 			OpVoid(SpvOpEmitVertex, {});
+			// sbBase<n> += the stride, a vertex on
+			if (ctx->analyzer.useSSBOForStreamout)
+			{
+				for (uint32 i = 0; i < LATTE_NUM_STREAMOUT_BUFFER; i++)
+				{
+					if (!ctx->output->streamoutBufferWriteMask[i] || !sbBaseVar[i])
+						continue;
+					const sint32 stride = (sint32)(ctx->output->streamoutBufferStride[i] / 4);
+					Store(sbBaseVar[i], Op(SpvOpIAdd, tI, { Load(tI, sbBaseVar[i]), ConstI(stride) }));
+				}
+			}
 		};
 		if (hasActiveMask)
 			If(MaskIsTrue(true, cf.activeStackDepth + 1), emit);
@@ -4162,6 +4319,9 @@ namespace
 			return EmitRingWrite(cf);
 		case GPU7_CF_INST_EMIT_VERTEX:
 			return EmitEmitVertex(cf);
+		case GPU7_CF_INST_MEM_STREAM0_WRITE:
+		case GPU7_CF_INST_MEM_STREAM1_WRITE:
+			return EmitStreamWrite(cf);
 		case GPU7_CF_INST_TEX:
 			if (hasActiveMask)
 			{
@@ -4230,8 +4390,6 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 	if (s.isVertex)
 		return decline("vertex shader on Android");
 #endif
-	if (shaderContext->analyzer.hasStreamoutEnable || shaderContext->analyzer.hasStreamoutWrite)
-		return decline("streamout");
 	if (!shaderContext->list_subroutines.empty())
 		return decline("subroutines");
 	if (shader->hasError)
@@ -4244,7 +4402,8 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 	LatteDecompilerOutputUniformOffsets offsetsVK, offsetsGL;
 	if (!s.DeclareUniforms(offsetsVK, RendererAPI::Vulkan, true) || !s.DeclareUniforms(offsetsGL, RendererAPI::OpenGL, false))
 		return decline(s.decline);
-	if (!(s.isVertex ? s.DeclareVertexIO() : s.isGeometry ? s.DeclareGeometryIO() : s.DeclareIO()) || !s.DeclareTextures())
+	if (!(s.isVertex ? s.DeclareVertexIO() : s.isGeometry ? s.DeclareGeometryIO() : s.DeclareIO()) || !s.DeclareTextures() ||
+		!s.DeclareStreamout())
 		return decline(s.decline);
 	// main
 	uint32 fnType = spv_type_function(w, s.tVoid, nullptr, 0);
@@ -4317,8 +4476,9 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 		s.MaskStore(true, 0, spv_const_bool(w, 1));
 		s.MaskStore(true, 1, spv_const_bool(w, 1));
 	}
-	// (a geometry shader reads the ring where it fetches from it)
-	if (!(s.isVertex ? s.EmitVertexInputs() : s.isGeometry ? true : s.EmitInputs()))
+	// the streamout buffers' bases; the inputs (a geometry shader reads the
+	// ring where it fetches from it)
+	if (!s.EmitStreamoutBases() || !(s.isVertex ? s.EmitVertexInputs() : s.isGeometry ? true : s.EmitInputs()))
 		return decline(s.decline);
 	for (auto& cf : shaderContext->cfInstructions)
 	{

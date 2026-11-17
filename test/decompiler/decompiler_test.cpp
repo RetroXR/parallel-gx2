@@ -97,7 +97,9 @@ struct Program
 	// a vertex shader's exports, in order, in place of the pixel export:
 	// type 1 (60 the position) or 2 (a parameter), the last one done; or
 	// type 3, a MEM_RING_WRITE to the geometry shader (base in dwords, the
-	// channel mask in sel[0]); type 4, a geometry shader's EMIT_VERTEX
+	// channel mask in sel[0]); type 4, a geometry shader's EMIT_VERTEX;
+	// type 5, a MEM_STREAM<sel[1]>_WRITE (base in dwords of the vertex, the
+	// mask in sel[0], the array size - 1 in sel[2])
 	struct VsExport
 	{
 		uint8 type, gpr, burst;
@@ -288,6 +290,13 @@ static std::vector<uint32> Assemble(const Program& p)
 		{
 			const Program::VsExport& e = p.vsExports[i];
 			const bool last = i + 1 == p.vsExports.size();
+			if (e.type == 5)
+			{
+				cf.push_back((uint32)e.base | ((uint32)e.gpr << 15) | (3u << 30));
+				cf.push_back((uint32)e.sel[2] | ((uint32)e.sel[0] << 12) | (last ? (1u << 21) : 0) |
+					((uint32)(e.sel[1] ? GPU7_CF_INST_MEM_STREAM1_WRITE : GPU7_CF_INST_MEM_STREAM0_WRITE) << 23) | (1u << 31));
+				continue;
+			}
 			if (e.type == 4)
 			{
 				cf.push_back(0);
@@ -942,6 +951,7 @@ struct Decompiled
 	sint32 texBinding[LATTE_NUM_MAX_TEX_UNITS]; // -1: the unit is not used
 	bool shadow[LATTE_NUM_MAX_TEX_UNITS]; // a shadow sampler: the depth texture
 	sint8 attrLoc[LATTE_NUM_MAX_ATTRIBUTE_LOCATIONS]; // a vertex shader's
+	sint32 tfBinding = -1; // the streamout storage buffer's, where written
 	std::string glsl;
 };
 
@@ -1035,10 +1045,17 @@ struct Context
 	VkRenderPass renderPass = VK_NULL_HANDLE;
 	VkImage color = VK_NULL_HANDLE;
 	VkDeviceMemory colorMem = VK_NULL_HANDLE, readMem = VK_NULL_HANDLE, uboMem = VK_NULL_HANDLE;
+	static const uint32 kStreamoutBytes = 32768;
 	VkImageView colorView = VK_NULL_HANDLE;
 	VkFramebuffer framebuffer = VK_NULL_HANDLE;
 	VkBuffer readback = VK_NULL_HANDLE, ubo = VK_NULL_HANDLE;
 	uint8* uboData = nullptr;
+	// the streamout storage buffer (kStreamoutBytes), written by vertex
+	// and geometry shaders where the device lets them store
+	VkBuffer sbuf = VK_NULL_HANDLE;
+	VkDeviceMemory sbufMem = VK_NULL_HANDLE;
+	uint8* sbufData = nullptr;
+	bool vertexStores = false;
 	VkShaderModule vs = VK_NULL_HANDLE;
 	bool rte = false;
 	bool largePoints = false; // points of sizes other than 1
@@ -1315,6 +1332,9 @@ static bool CreateContext(Context& c)
 	// and its points' size, where it emits points
 	c.geometryPointSize = has.features.shaderTessellationAndGeometryPointSize != VK_FALSE;
 	features.shaderTessellationAndGeometryPointSize = has.features.shaderTessellationAndGeometryPointSize;
+	// streamout: the vertex and geometry shaders' stores to the buffer
+	c.vertexStores = has.features.vertexPipelineStoresAndAtomics != VK_FALSE;
+	features.vertexPipelineStoresAndAtomics = has.features.vertexPipelineStoresAndAtomics;
 	// uniforms read past the array (an AR index out of it) read zeros
 	features.robustBufferAccess = VK_TRUE;
 	dci.pEnabledFeatures = &features;
@@ -1399,6 +1419,14 @@ static bool CreateContext(Context& c)
 	void* map;
 	VKCHECK(vkMapMemory(c.device, c.uboMem, 0, 8192, 0, &map));
 	c.uboData = (uint8*)map;
+	bi.size = Context::kStreamoutBytes;
+	bi.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+	VKCHECK(vkCreateBuffer(c.device, &bi, nullptr, &c.sbuf));
+	vkGetBufferMemoryRequirements(c.device, c.sbuf, &breq);
+	c.sbufMem = Bind(c, breq, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	VKCHECK(vkBindBufferMemory(c.device, c.sbuf, c.sbufMem, 0));
+	VKCHECK(vkMapMemory(c.device, c.sbufMem, 0, Context::kStreamoutBytes, 0, &map));
+	c.sbufData = (uint8*)map;
 
 	char err[512] = {};
 	rslc_opts opts{};
@@ -1475,6 +1503,9 @@ static void DestroyContext(Context& c)
 	}
 	vkUnmapMemory(c.device, c.uboMem);
 	vkDestroyBuffer(c.device, c.ubo, nullptr);
+	vkUnmapMemory(c.device, c.sbufMem);
+	vkDestroyBuffer(c.device, c.sbuf, nullptr);
+	vkFreeMemory(c.device, c.sbufMem, nullptr);
 	vkDestroyBuffer(c.device, c.readback, nullptr);
 	vkFreeMemory(c.device, c.uboMem, nullptr);
 	vkFreeMemory(c.device, c.readMem, nullptr);
@@ -1686,6 +1717,9 @@ static bool SameOffsets(const LatteDecompilerOutputUniformOffsets& a, const Latt
 		a.offset_windowSpaceToClipSpaceTransform != b.offset_windowSpaceToClipSpaceTransform || a.offset_endOfBlock != b.offset_endOfBlock ||
 		a.offset_verticesPerInstance != b.offset_verticesPerInstance)
 		return false;
+	for (int i = 0; i < LATTE_NUM_STREAMOUT_BUFFER; i++)
+		if (a.offset_streamoutBufferBase[i] != b.offset_streamoutBufferBase[i])
+			return false;
 	for (int i = 0; i < LATTE_NUM_MAX_TEX_UNITS; i++)
 		if (a.offset_texScale[i] != b.offset_texScale[i])
 			return false;
@@ -2544,6 +2578,12 @@ struct VSCase
 	bool gsCase, gsPointsOut;
 	bool gsTrianglesIn; // fed triangles (each pixel's three vertices alike), not points
 	bool noCoverage; // a directed case drawing some pixels only
+	// streamout enabled: the strides of buffers 0 and 1 in dwords, the
+	// writes (a geometry shader's through its copy shader's), compared
+	// with the pixels; a geometry shader's draws nothing then
+	bool streamout;
+	bool streamoutOff; // the writes there but VGT_STRMOUT_EN clear: dropped
+	uint32 strmStride[2];
 	int gsIn, gsOut;
 	std::vector<uint32> copyShader;
 	float pointSize;
@@ -2617,9 +2657,15 @@ static void SetVertexState(const VSCase& k)
 	lcr.PA_CL_VTE_CNTL.set_VPORT_X_SCALE_ENA(k.viewportScale);
 	lcr.PA_CL_VTE_CNTL.set_VPORT_Y_SCALE_ENA(true);
 	lcr.PA_CL_VTE_CNTL.set_VPORT_Z_SCALE_ENA(true);
-	lcr.VGT_PRIMITIVE_TYPE.set_PRIMITIVE_MODE((k.points || (k.gsCase && !k.gsTrianglesIn)) ? Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::POINTS :
+	// the draw's primitives: a geometry shader's input (points or
+	// triangles, whatever it emits), else points or triangles
+	const bool drawPoints = k.gsCase ? !k.gsTrianglesIn : k.points;
+	lcr.VGT_PRIMITIVE_TYPE.set_PRIMITIVE_MODE(drawPoints ? Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::POINTS :
 		Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::TRIANGLES);
 	s_regs[mmVGT_GS_OUT_PRIM_TYPE] = k.gsPointsOut ? 0 : 2;
+	s_regs[mmVGT_STRMOUT_EN] = (k.streamout && !k.streamoutOff) ? 1 : 0;
+	for (int b = 0; b < 4; b++)
+		s_regs[mmVGT_STRMOUT_VTX_STRIDE_0 + b * 4] = b < 2 ? k.strmStride[b] : 0;
 	s_regs[mmSQ_GS_VERT_ITEMSIZE] = (uint32)(4 * k.gsOut);
 	s_regs[mmSQ_GSVS_RING_ITEMSIZE] = (uint32)(3 * 4 * k.gsOut);
 	g_testPSInputTable.count = k.psCount;
@@ -2649,6 +2695,7 @@ static Decompiled DecompileVertex(const std::vector<uint32>& program, bool direc
 	options.strictMul = k.strictMul;
 	options.directSPIRV = direct;
 	options.usesGeometryShader = k.usesGS || k.gsCase; // a geometry shader's draw, all its stages
+	options.useTFViaSSBO = true; // as the Vulkan renderer's
 	options.spirvInstrinsics.hasRoundingModeRTEFloat32 = k.rte;
 	LatteDecompilerOutput_t out{};
 	SetVertexState(k);
@@ -2669,6 +2716,7 @@ static Decompiled DecompileVertex(const std::vector<uint32>& program, bool direc
 		d.shadow[i] = shader->textureUsesDepthCompare[i];
 	}
 	std::memcpy(d.attrLoc, out.resourceMappingVK.attributeMapping, sizeof(d.attrLoc));
+	d.tfBinding = out.resourceMappingVK.tfStorageBindingPoint;
 	d.declined = LatteDecompiler_SPIRVDeclineReason();
 	if (shader->hasError)
 	{
@@ -2711,6 +2759,15 @@ static std::vector<uint32> DrawVertex(const Context& c, const Decompiled& d, con
 	VkWriteDescriptorSet texWrites[LATTE_NUM_MAX_TEX_UNITS]{};
 	VkDescriptorImageInfo texInfos[LATTE_NUM_MAX_TEX_UNITS]{};
 	uint32 nb = 0, nTex = 0;
+	// the streamout buffer, where the shader writes one
+	if (d.tfBinding >= 0)
+	{
+		b[nb].binding = (uint32)d.tfBinding;
+		b[nb].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		b[nb].descriptorCount = 1;
+		b[nb].stageFlags = k.gsCase ? VK_SHADER_STAGE_GEOMETRY_BIT : VK_SHADER_STAGE_VERTEX_BIT;
+		nb++;
+	}
 	if (d.binding >= 0)
 	{
 		b[nb].binding = (uint32)d.binding;
@@ -2765,10 +2822,11 @@ static std::vector<uint32> DrawVertex(const Context& c, const Decompiled& d, con
 	pli.pSetLayouts = setLayouts;
 	VkPipelineLayout layout;
 	VKCHECK(vkCreatePipelineLayout(c.device, &pli, nullptr, &layout));
-	VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, LATTE_NUM_MAX_TEX_UNITS}};
+	VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, LATTE_NUM_MAX_TEX_UNITS},
+		{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}};
 	VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
 	dpi.maxSets = 1;
-	dpi.poolSizeCount = 2;
+	dpi.poolSizeCount = 3;
 	dpi.pPoolSizes = ps;
 	VkDescriptorPool dpool;
 	VKCHECK(vkCreateDescriptorPool(c.device, &dpi, nullptr, &dpool));
@@ -2789,6 +2847,19 @@ static std::vector<uint32> DrawVertex(const Context& c, const Decompiled& d, con
 		wds.descriptorCount = 1;
 		wds.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 		wds.pBufferInfo = &dbi;
+		vkUpdateDescriptorSets(c.device, 1, &wds, 0, nullptr);
+	}
+	// the streamout buffer filled with a pattern, the writes over it
+	std::memset(c.sbufData, 0xCD, Context::kStreamoutBytes);
+	if (d.tfBinding >= 0)
+	{
+		VkDescriptorBufferInfo sbi{c.sbuf, 0, Context::kStreamoutBytes};
+		VkWriteDescriptorSet wds{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+		wds.dstSet = ds;
+		wds.dstBinding = (uint32)d.tfBinding;
+		wds.descriptorCount = 1;
+		wds.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		wds.pBufferInfo = &sbi;
 		vkUpdateDescriptorSets(c.device, 1, &wds, 0, nullptr);
 	}
 	for (uint32 i = 0; i < nTex; i++)
@@ -2871,6 +2942,9 @@ static std::vector<uint32> DrawVertex(const Context& c, const Decompiled& d, con
 	vps.pScissors = &sc;
 	VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
 	rs.cullMode = VK_CULL_MODE_NONE;
+	// a geometry shader writing the stream writes no vertex (its outputs
+	// go to the buffer instead): nothing to rasterize
+	rs.rasterizerDiscardEnable = (k.gsCase && k.streamout) ? VK_TRUE : VK_FALSE;
 	rs.lineWidth = 1.0f;
 	VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
 	ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
@@ -2880,7 +2954,10 @@ static std::vector<uint32> DrawVertex(const Context& c, const Decompiled& d, con
 	cb.attachmentCount = 1;
 	cb.pAttachments = &cba;
 	VkGraphicsPipelineCreateInfo gpi{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-	gpi.stageCount = gs ? 3 : 2;
+	// (no fragment stage where nothing is rasterized)
+	if (rs.rasterizerDiscardEnable)
+		stages[1] = stages[2];
+	gpi.stageCount = rs.rasterizerDiscardEnable ? 2 : gs ? 3 : 2;
 	gpi.pStages = stages;
 	gpi.pVertexInputState = &vin;
 	gpi.pInputAssemblyState = &ia;
@@ -2944,6 +3021,12 @@ static std::vector<uint32> DrawVertex(const Context& c, const Decompiled& d, con
 	VKCHECK(vkMapMemory(c.device, c.readMem, 0, pixels.size() * 4, 0, &map));
 	std::memcpy(pixels.data(), map, pixels.size() * 4);
 	vkUnmapMemory(c.device, c.readMem);
+	// and the streamout buffer after them, compared alike
+	if (d.tfBinding >= 0)
+	{
+		const uint32* sb = (const uint32*)c.sbufData;
+		pixels.insert(pixels.end(), sb, sb + Context::kStreamoutBytes / 4);
+	}
 	vkFreeCommandBuffers(c.device, c.pool, 1, &cmd);
 	vkDestroyPipeline(c.device, pipeline, nullptr);
 	vkDestroyShaderModule(c.device, vs, nullptr);
@@ -2998,7 +3081,25 @@ static VkShaderModule GeometryFeeder(const Context& c, const VSCase& k)
 // triangle over the pixel into R9 to R11, then for each a ring write of
 // the corner and of each parameter (registers of the program's, some
 // written twice in part) and EMIT_VERTEX; and its copy shader
-static std::vector<uint32> MakeCopyShader(int gsOut);
+// a stream write of a register to buffer b: some channels, at a dword of
+// the vertex the stride leaves room for
+static Program::VsExport StreamWrite(Gen& gen, uint32 b, uint8 gpr, uint32 strideDwords)
+{
+	Program::VsExport e{};
+	e.type = 5;
+	e.gpr = gpr;
+	e.sel[0] = (uint8)(1 + gen.R(15));
+	e.sel[1] = (uint8)b;
+	e.sel[2] = 3;
+	uint32 top = 0;
+	for (uint32 c = 0; c < 4; c++)
+		if (e.sel[0] & (1u << c))
+			top = c + 1;
+	e.base = (uint16)gen.R(strideDwords - top + 1);
+	return e;
+}
+
+static std::vector<uint32> MakeCopyShader(int gsOut, const std::vector<Program::VsExport>& streams = {});
 
 static VSCase MakeGeometryCase(Gen& gen, bool allowDeclined)
 {
@@ -3115,23 +3216,46 @@ static VSCase MakeGeometryCase(Gen& gen, bool allowDeclined)
 		e.type = 4;
 		p.vsExports.push_back(e);
 	}
-	k.copyShader = MakeCopyShader(k.gsOut);
+	// streamout now and then: the copy shader's stream writes of some
+	// outputs, the ring writes of those to the buffer instead
+	std::vector<Program::VsExport> streams;
+	k.streamout = gen.Chance(25);
+	if (k.streamout)
+	{
+		k.strmStride[0] = 4 + gen.R(5);
+		k.strmStride[1] = 4 + gen.R(5);
+		for (int o = 0; o < k.gsOut; o++)
+		{
+			if (o > 0 && !gen.Chance(70))
+				continue;
+			const uint32 b = gen.R(2);
+			streams.push_back(StreamWrite(gen, b, (uint8)o, k.strmStride[b]));
+		}
+	}
+	k.copyShader = MakeCopyShader(k.gsOut, streams);
 	return k;
 }
 
 // the copy shader of gsOut outputs: a VTX clause fetching each from the
 // ring into R<o>, then the position's export (R0) and the parameters'
 // (R1 on, parameter o - 1)
-static std::vector<uint32> MakeCopyShader(int gsOut)
+static std::vector<uint32> MakeCopyShader(int gsOut, const std::vector<Program::VsExport>& streams)
 {
 	VSCase k{};
 	k.gsOut = gsOut;
 	std::vector<uint32> cs;
-	const uint32 cfCount = 1 + (uint32)k.gsOut;
+	const uint32 cfCount = 1 + (uint32)streams.size() + (uint32)k.gsOut;
 	const uint32 vtxAddr = (cfCount + 1) & ~1u;
 	const uint32 n = (uint32)k.gsOut - 1;
 	cs.push_back(vtxAddr);
 	cs.push_back(((n & 7) << 10) | (((n >> 3) & 1) << 19) | ((uint32)GPU7_CF_INST_VTX << 23) | (1u << 31));
+	// the stream writes of the fetched registers, before the exports
+	for (auto& e : streams)
+	{
+		cs.push_back((uint32)e.base | ((uint32)e.gpr << 15) | (3u << 30));
+		cs.push_back((uint32)e.sel[2] | ((uint32)e.sel[0] << 12) |
+			((uint32)(e.sel[1] ? GPU7_CF_INST_MEM_STREAM1_WRITE : GPU7_CF_INST_MEM_STREAM0_WRITE) << 23) | (1u << 31));
+	}
 	for (int o = 0; o < k.gsOut; o++)
 	{
 		const bool last = o + 1 == k.gsOut;
@@ -3251,7 +3375,7 @@ static VSCase MakeDirectedGeometryCase()
 	return k;
 }
 
-static VSCase MakeVertexCase(Gen& gen, bool allowDeclined)
+static VSCase MakeVertexCase(Gen& gen, bool allowDeclined, bool forceStreamoutOff = false)
 {
 	VSCase k{};
 	gen.vertexMode = true;
@@ -3393,6 +3517,23 @@ static VSCase MakeVertexCase(Gen& gen, bool allowDeclined)
 		if (gen.Chance(75))
 			ring(1 + gen.R(params), (uint8)gen.R(kGPRs - 1), (uint8)(1 + gen.R(14)), 0);
 		k.psCount = (int)params;
+	}
+	// streamout now and then (not through a geometry shader): stream writes
+	// before the exports, to buffers 0 and 1 of 4 to 8 dwords a vertex
+	k.streamout = !k.usesGS && (gen.Chance(25) || forceStreamoutOff);
+	if (k.streamout)
+	{
+		k.streamoutOff = gen.Chance(20) || forceStreamoutOff;
+		k.strmStride[0] = 4 + gen.R(5);
+		k.strmStride[1] = 4 + gen.R(5);
+		std::vector<Program::VsExport> writes;
+		const uint32 n = 1 + gen.R(3);
+		for (uint32 i = 0; i < n; i++)
+		{
+			const uint32 b = gen.R(2);
+			writes.push_back(StreamWrite(gen, b, (uint8)(gen.Chance(30) ? kPosGpr : gen.R(kGPRs)), k.strmStride[b]));
+		}
+		p.vsExports.insert(p.vsExports.begin(), writes.begin(), writes.end());
 	}
 	k.dxClip = gen.Chance(50);
 	k.viewportScale = !gen.Chance(15);
@@ -3618,6 +3759,8 @@ int main(int argc, char** argv)
 		int vDirect = 0, vDeclined = 0, vDrawn = 0, vDiffering = 0, vShape = 0;
 		int vGsDrawn = 0; // of the drawn, writing the ring to a geometry shader
 		int gsCaseDrawn = 0; // of the drawn, geometry shaders
+		int soDrawn = 0; // of the drawn, writing the streamout buffer
+		int soOffDrawn = 0; // of those, with streamout off (the writes dropped)
 		std::map<std::string, int> vReasons;
 		{
 			// a copy shader the parser does not take (an ALU clause): the
@@ -3632,7 +3775,10 @@ int main(int argc, char** argv)
 		{
 			const bool allowDeclined = (i % 5) == 0;
 			// every fourth a geometry shader's
-			VSCase k = i == 3 ? MakeDirectedGeometryCase() : (i % 4) == 3 ? MakeGeometryCase(gen, allowDeclined) : MakeVertexCase(gen, allowDeclined);
+			// every fourth a geometry shader's; every sixteenth else stream
+			// writes with streamout off
+			VSCase k = i == 3 ? MakeDirectedGeometryCase() : (i % 4) == 3 ? MakeGeometryCase(gen, allowDeclined) :
+				MakeVertexCase(gen, allowDeclined, (i % 16) == 6);
 			k.strictMul = gen.Chance(50);
 			k.rte = c.rte && gen.Chance(50);
 			k.preventLoops = gen.Chance(50);
@@ -3684,6 +3830,7 @@ int main(int argc, char** argv)
 				}
 			}
 			if (!SameOffsets(viaGlsl.offsets, viaSpirv.offsets) || viaGlsl.binding != viaSpirv.binding || viaGlsl.setIndex != viaSpirv.setIndex ||
+				viaGlsl.tfBinding != viaSpirv.tfBinding ||
 				std::memcmp(viaGlsl.attrLoc, viaSpirv.attrLoc, sizeof(viaGlsl.attrLoc)) != 0)
 			{
 				std::printf("FAIL: vertex program %d: resource layout differs\n", i);
@@ -3718,20 +3865,50 @@ int main(int argc, char** argv)
 				const float transform[2] = { 2.0f / (float)W, 2.0f / (float)H };
 				std::memcpy(uniforms + viaGlsl.offsets.offset_windowSpaceToClipSpaceTransform / 4, transform, 8);
 			}
+			// uf_verticesPerInstance and the streamout bases (buffer b at
+			// b * 16 KiB)
+			if (viaGlsl.offsets.offset_verticesPerInstance >= 0)
+			{
+				const sint32 perInstance = k.gsCase ? (sint32)(W * H) : kVerts;
+				std::memcpy(uniforms + viaGlsl.offsets.offset_verticesPerInstance / 4, &perInstance, 4);
+			}
+			for (int b = 0; b < LATTE_NUM_STREAMOUT_BUFFER; b++)
+			{
+				if (viaGlsl.offsets.offset_streamoutBufferBase[b] >= 0)
+				{
+					const sint32 base = b * 16384;
+					std::memcpy(uniforms + viaGlsl.offsets.offset_streamoutBufferBase[b] / 4, &base, 4);
+				}
+			}
 			if (viaGlsl.offsets.offset_pointSize >= 0)
 				std::memcpy(uniforms + viaGlsl.offsets.offset_pointSize / 4, &k.pointSize, 4);
-			if ((k.points && !c.largePoints) || ((k.usesGS || k.gsCase) && !c.geometryShader) || (k.gsPointsOut && !c.geometryPointSize))
+			if ((k.points && !c.largePoints) || ((k.usesGS || k.gsCase) && !c.geometryShader) || (k.gsPointsOut && !c.geometryPointSize) ||
+				(k.streamout && !c.vertexStores))
 				continue;
 			vDrawn++;
 			vGsDrawn += k.usesGS;
 			gsCaseDrawn += k.gsCase;
+			soDrawn += k.streamout;
+			soOffDrawn += k.streamout && k.streamoutOff;
 			bool same = true;
 			for (int l = -1; l < k.psCount; l++)
 			{
 				VkShaderModule fs = l < 0 ? c.fsDepth : c.fsParam[l];
 				std::vector<uint32> a = DrawVertex(c, viaGlsl, k, fs, uniforms);
 				std::vector<uint32> b = DrawVertex(c, viaSpirv, k, fs, uniforms);
-				if (l < 0 && !k.points && !k.noCoverage && !WritesRelative(k.p))
+				if (k.streamout && !k.streamoutOff && l < 0)
+				{
+					// the stream written: the buffer drawn back, not all the pattern
+					bool written = false;
+					for (size_t q = W * H * 4; q < a.size(); q++)
+						written |= a[q] != 0xCDCDCDCDu;
+					if (a.size() <= W * H * 4 || !written)
+					{
+						std::printf("FAIL: vertex program %d wrote no stream\n", i);
+						s_failures++;
+					}
+				}
+				if (l < 0 && !k.points && !k.noCoverage && !(k.gsCase && k.streamout) && !WritesRelative(k.p))
 				{
 					// every pixel's triangle drawn: the depth there, not the clear
 					// (but for points, and where a write relative to AR may land
@@ -3787,7 +3964,10 @@ int main(int argc, char** argv)
 		}
 		CHECK(vsCount == 0 || vDirect * 2 > vsCount);
 		// vertex shaders writing the ring are drawn, not declined
-		std::printf("decompiler: %d vertex shaders drawn writing the ring, %d geometry shaders drawn\n", vGsDrawn, gsCaseDrawn);
+		std::printf("decompiler: %d vertex shaders drawn writing the ring, %d geometry shaders drawn, %d writing the stream\n", vGsDrawn, gsCaseDrawn, soDrawn);
+		CHECK(!device || !c.vertexStores || vsCount < 100 || soDrawn * 10 > vDrawn);
+		// stream writes with streamout off are drawn (dropped), not declined
+		CHECK(!device || !c.vertexStores || vsCount < 100 || soOffDrawn > 0);
 		// geometry shaders are drawn, not declined
 		CHECK(!device || !c.geometryShader || vsCount < 100 || gsCaseDrawn * 8 > vDrawn);
 		CHECK(!device || !c.geometryShader || vsCount < 100 || vGsDrawn * 20 > vDrawn);

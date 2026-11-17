@@ -293,6 +293,14 @@ uint32_t spv_type_array(spv_writer_t *w, uint32_t element, uint32_t length_const
    return spv_global(w, SpvOpTypeArray, o, 3, 0);
 }
 
+uint32_t spv_type_runtime_array(spv_writer_t *w, uint32_t element)
+{
+   uint32_t o[2];
+   o[0] = 0;
+   o[1] = element;
+   return spv_global(w, SpvOpTypeRuntimeArray, o, 2, 0);
+}
+
 uint32_t spv_type_pointer(spv_writer_t *w, uint32_t storage_class, uint32_t type)
 {
    uint32_t o[3];

@@ -84,6 +84,8 @@ uint32_t spv_type_int(spv_writer_t *w, int is_signed);
 uint32_t spv_type_float(spv_writer_t *w);
 uint32_t spv_type_vector(spv_writer_t *w, uint32_t component, uint32_t count);
 uint32_t spv_type_array(spv_writer_t *w, uint32_t element, uint32_t length_const);
+/* an array of no length (a storage buffer's last member) */
+uint32_t spv_type_runtime_array(spv_writer_t *w, uint32_t element);
 uint32_t spv_type_pointer(spv_writer_t *w, uint32_t storage_class, uint32_t type);
 uint32_t spv_type_function(spv_writer_t *w, uint32_t ret, const uint32_t *params, size_t n);
 /* a sampled image of the dimension (SpvDimension*), arrayed or not,

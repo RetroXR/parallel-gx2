@@ -167,6 +167,10 @@ static void test_dedup(void)
    CHECK(spv_const_bool(&w, 1) == spv_const_bool(&w, 1) && spv_const_bool(&w, 1) != spv_const_bool(&w, 0));
    CHECK(spv_const_null(&w, tF) == spv_const_null(&w, tF));
    /* structs: each its own */
+   /* runtime arrays: one per element type, apart from sized arrays */
+   CHECK(spv_type_runtime_array(&w, tI) == spv_type_runtime_array(&w, tI));
+   CHECK(spv_type_runtime_array(&w, tI) != spv_type_runtime_array(&w, tF));
+   CHECK(spv_type_runtime_array(&w, tI) != spv_type_array(&w, tI, a));
    s1 = spv_type_struct(&w, &tF, 1);
    s2 = spv_type_struct(&w, &tF, 1);
    CHECK(s1 != s2);
