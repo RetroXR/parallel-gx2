@@ -166,6 +166,13 @@ namespace
 		// shader's inputs at their semantics' locations
 		bool usesGS{};
 		uint32 v2gVar{}, v2gCount{};
+		// a geometry shader's: in Vertex { ... } v2g[], the vertices it takes
+		// (1, 3 or 4), its passG2PParameter<n> outputs by n, gl_PerVertex
+		bool isGeometry{};
+		uint32 gsInputVertices{};
+		uint32 g2pVar[256]{};
+		// a stage other than the pixel shader: no discard, no implicit level
+		bool NotPixel() const { return isVertex || isGeometry; }
 		uint32 vertexIndexVar{}, instanceIndexVar{};
 		uint32 interfaceIds[LATTE_NUM_MAX_ATTRIBUTE_LOCATIONS + 32 + 8];
 		uint32 interfaceCount{};
@@ -797,7 +804,7 @@ namespace
 		// if (cond) discard;
 		void KillIf(uint32 cond)
 		{
-			if (isVertex)
+			if (NotPixel())
 			{
 				Decline("kill in a vertex shader"); // no discard there: no GLSL either
 				return;
@@ -947,11 +954,16 @@ namespace
 		bool LoopEnd(sint32 d);
 		bool EmitControlledALUClause(LatteDecompilerCFInstruction& cf);
 		bool DeclareVertexIO();
+		bool DeclareGeometryIO();
+		bool EmitRingRead(LatteDecompilerTEXInstruction& t);
 		bool EmitVertexInputs();
 		bool EmitAttributeImport(LatteParsedFetchShaderAttribute& attrib);
 		bool EmitAttributeDecode(LatteParsedFetchShaderAttribute& attrib);
 		bool EmitVertexExport(LatteDecompilerCFInstruction& cf);
 		bool EmitRingWrite(LatteDecompilerCFInstruction& cf);
+		bool EmitGeometryRingWrite(LatteDecompilerCFInstruction& cf);
+		bool EmitEmitVertex(LatteDecompilerCFInstruction& cf);
+		void SetPosition(uint32 pos);
 		uint32 BuiltinInput(uint32 builtin);
 		uint32 VertexOutSemantic(uint32 index);
 		// attrDecoder's statements, as rslc makes them
@@ -1268,7 +1280,7 @@ namespace
 			uniformOffsets.offset_windowSpaceToClipSpaceTransform = uniformCurrentOffset;
 			uniformCurrentOffset += 8;
 		}
-		bool alphaTestEnable = !isVertex && dc->contextRegistersNew->SX_ALPHA_TEST_CONTROL.get_ALPHA_TEST_ENABLE();
+		bool alphaTestEnable = !NotPixel() && dc->contextRegistersNew->SX_ALPHA_TEST_CONTROL.get_ALPHA_TEST_ENABLE();
 		if (alphaTestEnable)
 		{
 			uniformCurrentOffset = (uniformCurrentOffset + 3) & ~3;
@@ -1277,7 +1289,7 @@ namespace
 			uniformOffsets.offset_alphaTestRef = uniformCurrentOffset;
 			uniformCurrentOffset += 4;
 		}
-		if (isVertex && dc->analyzer.outputPointSize && !dc->analyzer.writesPointSize)
+		if (((isVertex && !usesGS) || isGeometry) && dc->analyzer.outputPointSize && !dc->analyzer.writesPointSize)
 		{
 			// uf_pointSize, the render state's, where the shader writes none
 			uniformCurrentOffset = (uniformCurrentOffset + 3) & ~3;
@@ -1287,17 +1299,17 @@ namespace
 			uniformOffsets.offset_pointSize = uniformCurrentOffset;
 			uniformCurrentOffset += 4;
 		}
-		if (!isVertex && dc->analyzer.hasFragCoordAccess)
+		if (!NotPixel() && dc->analyzer.hasFragCoordAccess)
 			return Decline("gl_FragCoord");
 		// uf_tex<n>Scale for each unit fetched from by texel, the first
 		// after the padding where uf_fragCoordScale was
-		bool fragCoordPadding = !isVertex;
+		bool fragCoordPadding = !NotPixel();
 		for (sint32 t = 0; t < LATTE_NUM_MAX_TEX_UNITS; t++)
 		{
 			texScaleMember[t] = -1;
 			if (!dc->analyzer.texUnitUsesTexelCoordinates.test(t))
 				continue;
-			if (isVertex)
+			if (NotPixel())
 				return Decline("texel coordinates in a vertex shader");
 			if (fragCoordPadding)
 			{
@@ -1314,6 +1326,20 @@ namespace
 			memberOffsets[memberCount++] = uniformCurrentOffset;
 			uniformOffsets.offset_texScale[t] = uniformCurrentOffset;
 			uniformCurrentOffset += 8;
+		}
+		// uf_verticesPerInstance (and the streamout bases): a geometry
+		// shader's always, as the GLSL emitter's condition reads
+		if ((dc->analyzer.useSSBOForStreamout && isVertex && !usesGS) || isGeometry)
+		{
+			memberTypes[memberCount] = tI;
+			memberOffsets[memberCount++] = uniformCurrentOffset;
+			uniformOffsets.offset_verticesPerInstance = uniformCurrentOffset;
+			uniformCurrentOffset += 4;
+			for (uint32 i = 0; i < LATTE_NUM_STREAMOUT_BUFFER; i++)
+			{
+				if (dc->output->streamoutBufferWriteMask[i])
+					return Decline("streamout buffer base");
+			}
 		}
 		uniformOffsets.offset_endOfBlock = uniformCurrentOffset;
 		if (!declare || api != RendererAPI::Vulkan || !dc->hasUniformVarBlock)
@@ -2665,7 +2691,7 @@ namespace
 		uint32 operands[2];
 		uint32 nOperands = 0;
 		bool explicitLod = false;
-		if (isVertex && (op == GPU7_TEX_INST_SAMPLE || op == GPU7_TEX_INST_SAMPLE_LB))
+		if (NotPixel() && (op == GPU7_TEX_INST_SAMPLE || op == GPU7_TEX_INST_SAMPLE_LB))
 		{
 			// texture() outside a fragment shader: level 0, the bias read
 			// as the call's argument and dropped, as rslc lowers it
@@ -2712,7 +2738,7 @@ namespace
 	{
 		const sint32 unit = t.textureFetch.textureIndex;
 		uint32 op = t.opcode;
-		if (isVertex && op == GPU7_TEX_INST_SAMPLE_C_LZ)
+		if (NotPixel() && op == GPU7_TEX_INST_SAMPLE_C_LZ)
 			op = GPU7_TEX_INST_SAMPLE_C; // the vertex shader's level is zero
 		if (!shader->textureUsesDepthCompare[unit])
 			return Decline("compare of a sampler without one");
@@ -2775,7 +2801,7 @@ namespace
 			mask |= SpvImageOperandsLodMask;
 			operands[nOperands++] = TexCoord(t, 3).id;
 		}
-		else if (op == GPU7_TEX_INST_SAMPLE_C_LZ || isVertex)
+		else if (op == GPU7_TEX_INST_SAMPLE_C_LZ || NotPixel())
 		{
 			mask |= SpvImageOperandsLodMask;
 			operands[nOperands++] = ConstF(0.0f);
@@ -2973,7 +2999,7 @@ namespace
 	{
 		const sint32 unit = t.textureFetch.textureIndex;
 		const Latte::E_DIM dim = shader->textureUnitDim[unit];
-		if (isVertex)
+		if (NotPixel())
 			return Decline("texture level query in a vertex shader");
 		imageQuery = true;
 		uint32 sampler = Load(texType[unit], texVar[unit]);
@@ -3054,7 +3080,7 @@ namespace
 	// _emitTEXGetGradientsHV: dFdx() or dFdy() of the coordinates' vec4
 	bool SpvShader::EmitGetGradients(LatteDecompilerTEXInstruction& t)
 	{
-		if (isVertex)
+		if (NotPixel())
 			return Decline("gradients in a vertex shader");
 		Val c[4];
 		for (uint32 i = 0; i < 4; i++)
@@ -3140,6 +3166,15 @@ namespace
 			if (op == GPU7_TEX_INST_SET_GRADIENTS_H || op == GPU7_TEX_INST_SET_GRADIENTS_V)
 			{
 				if (!EmitSetGradients(t))
+					return false;
+				continue;
+			}
+			if (op == GPU7_TEX_INST_VFETCH)
+			{
+				// a geometry shader's read of the ring; vertex fetches else
+				if (!isGeometry || unit != 0x9F)
+					return Decline("vertex fetch");
+				if (!EmitRingRead(t))
 					return false;
 				continue;
 			}
@@ -3700,17 +3735,7 @@ namespace
 				Store(finalPos, Op(SpvOpVectorShuffle, tV4F, { old, moved, 4, 5, 2, 3 }));
 				pos = Load(tV4F, finalPos);
 			}
-			uint32 posPtr = Op(SpvOpAccessChain, spv_type_pointer(w, SpvStorageClassOutput, tV4F), { perVertexVar, ConstI(0) });
-			Store(posPtr, pos);
-			if (!ctx->contextRegistersNew->PA_CL_CLIP_CNTL.get_DX_CLIP_SPACE_DEF())
-			{
-				// gl_Position.z = (gl_Position.z + gl_Position.w) / 2.0
-				uint32 ptrF = spv_type_pointer(w, SpvStorageClassOutput, tF);
-				uint32 z = Load(tF, Op(SpvOpAccessChain, ptrF, { perVertexVar, ConstI(0), ConstI(2) }));
-				uint32 wv = Load(tF, Op(SpvOpAccessChain, ptrF, { perVertexVar, ConstI(0), ConstI(3) }));
-				uint32 r = Op(SpvOpFDiv, tF, { Op(SpvOpFAdd, tF, { z, wv }), ConstF(2.0f) });
-				Store(Op(SpvOpAccessChain, ptrF, { perVertexVar, ConstI(0), ConstI(2) }), r);
-			}
+			SetPosition(pos);
 			return Ok();
 		}
 		if (cf.exportType == 2 && cf.exportArrayBase < 32)
@@ -3767,10 +3792,217 @@ namespace
 		return Decline("vertex export");
 	}
 
+	// a geometry shader's interface: rslc's own gl_PerVertex (the position,
+	// the point size, a clip and a cull distance) in gl_in[] and out,
+	// V2G_LAYOUT in Vertex { ivec4 passV2GParameter<n>; } v2g[], and the
+	// copy shader's parameters as passG2PParameter<n> at n's location
+	bool SpvShader::DeclareGeometryIO()
+	{
+		if (!ctx->parsedGSCopyShader)
+			return Decline("no copy shader");
+		switch (ctx->contextRegistersNew->VGT_PRIMITIVE_TYPE.get_PRIMITIVE_MODE())
+		{
+		case Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::POINTS: gsInputVertices = 1; break;
+		case Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::TRIANGLES: gsInputVertices = 3; break;
+		case Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::LINE_STRIP: gsInputVertices = 4; break;
+		default: return Decline("geometry input primitive");
+		}
+		const uint32 gsOutPrimType = ctx->contextRegisters[mmVGT_GS_OUT_PRIM_TYPE];
+		if (gsOutPrimType > 2)
+			return Decline("geometry output primitive");
+		const uint32 floatArr = spv_type_array(w, tF, ConstI(1));
+		const uint32 members[4] = { tV4F, tF, floatArr, floatArr };
+		auto perVertexBlock = [&] {
+			uint32 block = spv_type_struct(w, members, 4);
+			Decorate(block, SpvDecorationBlock);
+			const uint32 builtins[4] = { SpvBuiltInPosition, SpvBuiltInPointSize, SpvBuiltInClipDistance, SpvBuiltInCullDistance };
+			for (uint32 i = 0; i < 4; i++)
+			{
+				uint32 words[4] = { block, i, SpvDecorationBuiltIn, builtins[i] };
+				spv_inst(w, SPV_SEC_DECORATION, SpvOpMemberDecorate, words, 4);
+			}
+			return block;
+		};
+		const uint32 inCount = ConstI((sint32)gsInputVertices);
+		uint32 glIn = spv_global_variable(w, spv_type_pointer(w, SpvStorageClassInput, spv_type_array(w, perVertexBlock(), inCount)), SpvStorageClassInput);
+		interfaceIds[interfaceCount++] = glIn;
+		v2gCount = shader->ringParameterCountFromPrevStage;
+		if (v2gCount == 0 || v2gCount > 32)
+			return Decline("ring parameter count");
+		uint32 vmembers[32];
+		for (uint32 i = 0; i < v2gCount; i++)
+			vmembers[i] = tV4I;
+		uint32 vblock = spv_type_struct(w, vmembers, v2gCount);
+		Decorate(vblock, SpvDecorationBlock);
+		v2gVar = spv_global_variable(w, spv_type_pointer(w, SpvStorageClassInput, spv_type_array(w, vblock, inCount)), SpvStorageClassInput);
+		Decorate(v2gVar, SpvDecorationLocation, { 0 });
+		interfaceIds[interfaceCount++] = v2gVar;
+		const uint32 ptrOut = spv_type_pointer(w, SpvStorageClassOutput, tV4F);
+		for (sint32 i = 0; i < ctx->parsedGSCopyShader->numParam; i++)
+		{
+			auto& m = ctx->parsedGSCopyShader->paramMapping[i];
+			if (m.exportType != 2)
+				continue;
+			if (g2pVar[m.exportParam])
+				return Decline("parameter declared twice");
+			for (uint32 j = 0; j < 256; j++)
+			{
+				if (g2pVar[j] && (j & 0x7F) == (m.exportParam & 0x7F))
+					return Decline("parameter declared twice");
+			}
+			uint32 v = spv_global_variable(w, ptrOut, SpvStorageClassOutput);
+			Decorate(v, SpvDecorationLocation, { (uint32)(m.exportParam & 0x7F) });
+			g2pVar[m.exportParam] = v;
+			interfaceIds[interfaceCount++] = v;
+		}
+		perVertexVar = spv_global_variable(w, spv_type_pointer(w, SpvStorageClassOutput, perVertexBlock()), SpvStorageClassOutput);
+		interfaceIds[interfaceCount++] = perVertexVar;
+		return Ok();
+	}
+
+	// _emitGSReadInputVFetchCode: R<d>.<the written> = (v2g[0].
+	// passV2GParameter<offset/16>.<their selects>), the int vector converted
+	// to the registers' type (the first vertex's, as the GLSL emitter reads)
+	bool SpvShader::EmitRingRead(LatteDecompilerTEXInstruction& t)
+	{
+		if (t.textureFetch.srcSel[0] >= 4 || t.textureFetch.srcSel[1] >= 4)
+			return Decline("ring read select");
+		const uint32 param = t.textureFetch.offset / 16;
+		if (param >= v2gCount || !v2gVar)
+			return Decline("ring parameter not declared");
+		uint32 dst[4], src[4];
+		uint32 count = 0;
+		for (uint32 f = 0; f < 4; f++)
+		{
+			if (t.dstSel[f] < 4)
+			{
+				dst[count] = f;
+				src[count++] = t.dstSel[f];
+			}
+			else if (t.dstSel[f] != 7)
+				return Decline("ring read constant");
+		}
+		if (count == 0)
+			return Decline("ring read of no channel");
+		uint32 member = Load(tV4I, Op(SpvOpAccessChain, spv_type_pointer(w, SpvStorageClassInput, tV4I), { v2gVar, ConstI(0), ConstI((sint32)param) }));
+		const uint32 tVnI = count == 1 ? tI : spv_type_vector(w, tI, count);
+		uint32 v;
+		if (count == 1)
+			v = Op(SpvOpCompositeExtract, tI, { member, src[0] });
+		else if (count == 2)
+			v = Op(SpvOpVectorShuffle, tVnI, { member, member, src[0], src[1] });
+		else if (count == 3)
+			v = Op(SpvOpVectorShuffle, tVnI, { member, member, src[0], src[1], src[2] });
+		else
+			v = Op(SpvOpVectorShuffle, tVnI, { member, member, src[0], src[1], src[2], src[3] });
+		if (dt == DT_F)
+			v = Op(SpvOpBitcast, count == 1 ? tF : spv_type_vector(w, tF, count), { v });
+		const uint32 elem = TypeOf(dt);
+		for (uint32 i = 0; i < count; i++)
+			Store(Channel(GPR(t.dstGpr), dt, dst[i]), count == 1 ? v : Op(SpvOpCompositeExtract, elem, { v, i }));
+		return Ok();
+	}
+
+	// SET_POSITION(pos): gl_Position = pos, and its z to 0..1 where the clip
+	// space is OpenGL's: gl_Position.z = (gl_Position.z + gl_Position.w) / 2.0
+	void SpvShader::SetPosition(uint32 pos)
+	{
+		uint32 posPtr = Op(SpvOpAccessChain, spv_type_pointer(w, SpvStorageClassOutput, tV4F), { perVertexVar, ConstI(0) });
+		Store(posPtr, pos);
+		if (!ctx->contextRegistersNew->PA_CL_CLIP_CNTL.get_DX_CLIP_SPACE_DEF())
+		{
+			uint32 ptrF = spv_type_pointer(w, SpvStorageClassOutput, tF);
+			uint32 z = Load(tF, Op(SpvOpAccessChain, ptrF, { perVertexVar, ConstI(0), ConstI(2) }));
+			uint32 wv = Load(tF, Op(SpvOpAccessChain, ptrF, { perVertexVar, ConstI(0), ConstI(3) }));
+			uint32 r = Op(SpvOpFDiv, tF, { Op(SpvOpFAdd, tF, { z, wv }), ConstF(2.0f) });
+			Store(Op(SpvOpAccessChain, ptrF, { perVertexVar, ConstI(0), ConstI(2) }), r);
+		}
+	}
+
+	// _emitCFRingWriteCode of a geometry shader: each of the burst to the
+	// output the copy shader exports from its offset in the vertex, the
+	// position as { vec4 pos = vec4(0.0,0.0,0.0,1.0); pos.<mask> = ...;
+	// SET_POSITION(pos); }, a parameter as passG2PParameter<n>.<mask> = ...
+	bool SpvShader::EmitGeometryRingWrite(LatteDecompilerCFInstruction& cf)
+	{
+		if (cf.memWriteElemSize != 3 || (cf.exportArrayBase & 3) != 0)
+			return Decline("ring write layout");
+		uint32 bytesPerVertex = ctx->contextRegisters[mmSQ_GS_VERT_ITEMSIZE] * 4;
+		if (bytesPerVertex == 0)
+			bytesPerVertex = 1;
+		const uint32 parameterOffset = (cf.exportArrayBase * 4) % bytesPerVertex;
+		uint8 sel[4];
+		uint32 count = 0;
+		for (uint32 k = 0; k < 4; k++)
+		{
+			if (cf.memWriteCompMask & (1u << k))
+				sel[count++] = (uint8)k;
+		}
+		if (count == 0)
+			return Decline("ring write of no channel");
+		const uint32 tVnF = count == 1 ? tF : spv_type_vector(w, tF, count);
+		for (uint32 burst = 0; burst < cf.exportBurstCount + 1; burst++)
+		{
+			uint32 exportType = 0, exportBase = 0;
+			if (!LatteGSCopyShaderParser_getExportTypeByOffset(ctx->parsedGSCopyShader, parameterOffset + burst * 16, &exportType, &exportBase))
+				return Decline("ring write the copy shader does not export");
+			const bool position = exportType == 1 && exportBase == GPU7_DECOMPILER_CF_EXPORT_BASE_POSITION;
+			if (!position && !(exportType == 2 && exportBase < 16))
+				continue; // the GLSL emitter writes nothing for it
+			// vecN(the register's masked channels, as floats)
+			uint32 c[4];
+			for (uint32 i = 0; i < count; i++)
+				c[i] = Convert({ ReadChannel(GPR(cf.exportSourceGPR + burst), sel[i]), dt }, DT_F).id;
+			uint32 part = count == 1 ? c[0] : Construct(tVnF, c, count);
+			uint32 target;
+			if (position)
+			{
+				const uint32 init[4] = { ConstF(0.0f), ConstF(0.0f), ConstF(0.0f), ConstF(1.0f) };
+				target = Local(tV4F, spv_const_composite(w, tV4F, init, 4));
+			}
+			else
+			{
+				target = g2pVar[exportBase];
+				if (!target)
+					return Decline("geometry output not declared");
+			}
+			uint32 reg = Load(tV4F, target);
+			for (uint32 i = 0; i < count; i++)
+				reg = Op(SpvOpCompositeInsert, tV4F, { count == 1 ? part : Op(SpvOpCompositeExtract, tF, { part, i }), reg, sel[i] });
+			Store(target, reg);
+			if (position)
+				SetPosition(Load(tV4F, target));
+		}
+		return Ok();
+	}
+
+	// EMIT_VERTEX, under the active mask: gl_PointSize = uf_pointSize where
+	// the render state's, then EmitVertex()
+	bool SpvShader::EmitEmitVertex(LatteDecompilerCFInstruction& cf)
+	{
+		if (!isGeometry)
+			return Decline("emit vertex outside a geometry shader");
+		auto emit = [&] {
+			if (pointSizeMember >= 0)
+			{
+				uint32 ref = Op(SpvOpAccessChain, spv_type_pointer(w, SpvStorageClassUniform, tF), { ufBlockVar, ConstI(pointSizeMember) });
+				Store(Op(SpvOpAccessChain, spv_type_pointer(w, SpvStorageClassOutput, tF), { perVertexVar, ConstI(1) }), Load(tF, ref));
+			}
+			OpVoid(SpvOpEmitVertex, {});
+		};
+		if (hasActiveMask)
+			If(MaskIsTrue(true, cf.activeStackDepth + 1), emit);
+		else
+			emit();
+		return Ok();
+	}
+
 	// _emitCFRingWriteCode of a vertex shader: v2g.passV2GParameter<n>.<mask>
 	// = ivecN(the register's masked channels), for each of the burst
 	bool SpvShader::EmitRingWrite(LatteDecompilerCFInstruction& cf)
 	{
+		if (isGeometry)
+			return EmitGeometryRingWrite(cf);
 		if (!isVertex || !usesGS)
 			return Decline("ring write");
 		if (cf.memWriteElemSize != 3 || (cf.exportArrayBase & 3) != 0)
@@ -3928,6 +4160,8 @@ namespace
 			return isVertex ? EmitVertexExport(cf) : EmitExport(cf);
 		case GPU7_CF_INST_MEM_RING_WRITE:
 			return EmitRingWrite(cf);
+		case GPU7_CF_INST_EMIT_VERTEX:
+			return EmitEmitVertex(cf);
 		case GPU7_CF_INST_TEX:
 			if (hasActiveMask)
 			{
@@ -3985,9 +4219,11 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 		return false;
 	};
 	// what this emitter covers so far
-	if (shader->shaderType != LatteConst::ShaderType::Pixel && shader->shaderType != LatteConst::ShaderType::Vertex)
-		return decline("geometry shader");
+	if (shader->shaderType != LatteConst::ShaderType::Pixel && shader->shaderType != LatteConst::ShaderType::Vertex &&
+		shader->shaderType != LatteConst::ShaderType::Geometry)
+		return decline("shader type");
 	s.isVertex = shader->shaderType == LatteConst::ShaderType::Vertex;
+	s.isGeometry = shader->shaderType == LatteConst::ShaderType::Geometry;
 	s.usesGS = shaderContext->options->usesGeometryShader;
 #ifdef __ANDROID__
 	// the unused output locations the GLSL emitter writes there
@@ -4008,7 +4244,7 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 	LatteDecompilerOutputUniformOffsets offsetsVK, offsetsGL;
 	if (!s.DeclareUniforms(offsetsVK, RendererAPI::Vulkan, true) || !s.DeclareUniforms(offsetsGL, RendererAPI::OpenGL, false))
 		return decline(s.decline);
-	if (!(s.isVertex ? s.DeclareVertexIO() : s.DeclareIO()) || !s.DeclareTextures())
+	if (!(s.isVertex ? s.DeclareVertexIO() : s.isGeometry ? s.DeclareGeometryIO() : s.DeclareIO()) || !s.DeclareTextures())
 		return decline(s.decline);
 	// main
 	uint32 fnType = spv_type_function(w, s.tVoid, nullptr, 0);
@@ -4081,7 +4317,8 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 		s.MaskStore(true, 0, spv_const_bool(w, 1));
 		s.MaskStore(true, 1, spv_const_bool(w, 1));
 	}
-	if (!(s.isVertex ? s.EmitVertexInputs() : s.EmitInputs()))
+	// (a geometry shader reads the ring where it fetches from it)
+	if (!(s.isVertex ? s.EmitVertexInputs() : s.isGeometry ? true : s.EmitInputs()))
 		return decline(s.decline);
 	for (auto& cf : shaderContext->cfInstructions)
 	{
@@ -4090,7 +4327,9 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 	}
 	if (s.loopDepth != 0)
 		return decline("loop without an end");
-	if (s.curBlock && s.pointSizeMember >= 0)
+	if (s.curBlock && s.isGeometry)
+		s.OpVoid(SpvOpEndPrimitive, {}); // EndPrimitive(); at the end
+	if (s.curBlock && s.isVertex && s.pointSizeMember >= 0)
 	{
 		// gl_PointSize = uf_pointSize; at the end
 		uint32 ref = s.Op(SpvOpAccessChain, spv_type_pointer(w, SpvStorageClassUniform, s.tF), { s.ufBlockVar, s.ConstI(s.pointSizeMember) });
@@ -4100,9 +4339,32 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 		s.OpVoid(SpvOpReturn, {});
 	s.OpVoid(SpvOpFunctionEnd, {});
 	// entry point and modes
-	uint32 epWords[2] = { s.isVertex ? (uint32)SpvExecutionModelVertex : (uint32)SpvExecutionModelFragment, mainId };
+	uint32 epWords[2] = { s.isVertex ? (uint32)SpvExecutionModelVertex : s.isGeometry ? (uint32)SpvExecutionModelGeometry :
+		(uint32)SpvExecutionModelFragment, mainId };
 	spv_inst_str(w, SPV_SEC_ENTRY_POINT, SpvOpEntryPoint, epWords, 2, "main", s.interfaceIds, s.interfaceCount);
-	if (!s.isVertex)
+	if (s.isGeometry)
+	{
+		// layout(<input>) in; layout(<output>, max_vertices=<n>) out; as rslc
+		// writes them, with its Invocations 1
+		uint32 cap = SpvCapabilityGeometry;
+		spv_inst(w, SPV_SEC_CAPABILITY, SpvOpCapability, &cap, 1);
+		const uint32 inMode = s.gsInputVertices == 1 ? SpvExecutionModeInputPoints : s.gsInputVertices == 3 ?
+			SpvExecutionModeTriangles : SpvExecutionModeInputLinesAdjacency;
+		const uint32 gsOutPrimType = shaderContext->contextRegisters[mmVGT_GS_OUT_PRIM_TYPE];
+		const uint32 outMode = gsOutPrimType == 0 ? SpvExecutionModeOutputPoints : gsOutPrimType == 1 ?
+			SpvExecutionModeOutputLineStrip : SpvExecutionModeOutputTriangleStrip;
+		const uint32 bytesPerVertex = shaderContext->contextRegisters[mmSQ_GS_VERT_ITEMSIZE] * 4;
+		if (bytesPerVertex == 0)
+			return decline("geometry vertex size");
+		uint32 maxVertices = ((shaderContext->contextRegisters[mmSQ_GSVS_RING_ITEMSIZE] & 0x7FFF) * 4) / bytesPerVertex;
+		if (!shaderContext->analyzer.hasLoops && shaderContext->analyzer.numEmitVertex < maxVertices)
+			maxVertices = shaderContext->analyzer.numEmitVertex;
+		const uint32 modes[4][3] = { { mainId, inMode, 0 }, { mainId, SpvExecutionModeInvocations, 1 }, { mainId, outMode, 0 },
+			{ mainId, SpvExecutionModeOutputVertices, maxVertices } };
+		for (uint32 i = 0; i < 4; i++)
+			spv_inst(w, SPV_SEC_EXEC_MODE, SpvOpExecutionMode, modes[i], i == 1 || i == 3 ? 3 : 2);
+	}
+	else if (!s.isVertex)
 	{
 		uint32 mode[2] = { mainId, SpvExecutionModeOriginUpperLeft };
 		spv_inst(w, SPV_SEC_EXEC_MODE, SpvOpExecutionMode, mode, 2);

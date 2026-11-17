@@ -70,6 +70,9 @@ struct TexOp
 	uint8 srcSel[4], dstSel[4];
 	sint8 offset[3];
 	bool unnormalized; // texel coordinates
+	// a VFETCH (the unit the buffer, 0x9F the ring) at this byte offset
+	bool vfetch;
+	uint16 vtxOffset;
 };
 
 // a CF instruction: an ALU or TEX clause of a kind, or one without a clause
@@ -94,7 +97,7 @@ struct Program
 	// a vertex shader's exports, in order, in place of the pixel export:
 	// type 1 (60 the position) or 2 (a parameter), the last one done; or
 	// type 3, a MEM_RING_WRITE to the geometry shader (base in dwords, the
-	// channel mask in sel[0])
+	// channel mask in sel[0]); type 4, a geometry shader's EMIT_VERTEX
 	struct VsExport
 	{
 		uint8 type, gpr, burst;
@@ -102,12 +105,26 @@ struct Program
 		uint8 sel[4];
 	};
 	bool vertex = false;
+	bool geometry = false; // a geometry shader's (with vertex set)
 	std::vector<VsExport> vsExports;
+	// ring writes in the CF list (a CFEntry of MEM_RING_WRITE, its clause
+	// the index here), to sit between clauses as EMIT_VERTEX entries do
+	std::vector<VsExport> cfRing;
 	std::vector<float> inputs; // a directed program's, in place of random ones
 };
 
 static void EncodeTex(const TexOp& t, uint32 w[4])
 {
+	if (t.vfetch)
+	{
+		// VTX_WORD0-2: fetch type 2, the buffer, source R<srcGpr>.x
+		w[0] = (uint32)GPU7_TEX_INST_VFETCH | (2u << 5) | ((uint32)t.unit << 8) | ((uint32)t.srcGpr << 16);
+		w[1] = (uint32)t.dstGpr | ((uint32)t.dstSel[0] << 9) | ((uint32)t.dstSel[1] << 12) | ((uint32)t.dstSel[2] << 15) |
+			((uint32)t.dstSel[3] << 18);
+		w[2] = t.vtxOffset;
+		w[3] = 0;
+		return;
+	}
 	w[0] = (uint32)t.opcode | ((uint32)t.unit << 8) | ((uint32)t.srcGpr << 16);
 	w[1] = (uint32)t.dstGpr | ((uint32)t.dstSel[0] << 9) | ((uint32)t.dstSel[1] << 12) | ((uint32)t.dstSel[2] << 15) |
 		((uint32)t.dstSel[3] << 18) | (t.unnormalized ? 0u : 0xF0000000u);
@@ -122,7 +139,7 @@ static void EncodeTex(const TexOp& t, uint32 w[4])
 static void SetTextureRegisters(uint32* regs, const Program& p)
 {
 	LatteContextRegister& lcr = *(LatteContextRegister*)regs;
-	auto* units = p.vertex ? lcr.SQ_TEX_START_VS : lcr.SQ_TEX_START_PS;
+	auto* units = p.geometry ? lcr.SQ_TEX_START_GS : p.vertex ? lcr.SQ_TEX_START_VS : lcr.SQ_TEX_START_PS;
 	for (int u = 0; u < 4; u++)
 	{
 		Latte::E_DIM dim = Latte::E_DIM::DIM_2D;
@@ -250,18 +267,33 @@ static std::vector<uint32> Assemble(const Program& p)
 			cf.push_back(clauseStart[e.clause]);
 			cf.push_back(((clauseWords[e.clause] - 1) << 18) | ((e.type & 0xF) << 26) | (1u << 31));
 		}
+		else if (e.type == GPU7_CF_INST_MEM_RING_WRITE)
+		{
+			const Program::VsExport& r = p.cfRing[e.clause];
+			cf.push_back((uint32)r.base | ((uint32)r.gpr << 15) | (3u << 30));
+			cf.push_back(((uint32)r.sel[0] << 12) | ((uint32)r.burst << 17) | ((uint32)GPU7_CF_INST_MEM_RING_WRITE << 23) | (1u << 31));
+		}
 		else
 		{
 			cf.push_back(0);
 			cf.push_back((uint32)e.popCount | (e.type << 23) | (1u << 31));
 		}
 	}
+	// a program of the CF list alone ends with its last entry
+	if (p.vertex && p.vsExports.empty() && !cf.empty())
+		cf.back() |= 1u << 21;
 	if (p.vertex)
 	{
 		for (size_t i = 0; i < p.vsExports.size(); i++)
 		{
 			const Program::VsExport& e = p.vsExports[i];
 			const bool last = i + 1 == p.vsExports.size();
+			if (e.type == 4)
+			{
+				cf.push_back(0);
+				cf.push_back((last ? (1u << 21) : 0) | ((uint32)GPU7_CF_INST_EMIT_VERTEX << 23) | (1u << 31));
+				continue;
+			}
 			if (e.type == 3)
 			{
 				cf.push_back((uint32)e.base | ((uint32)e.gpr << 15) | (3u << 30));
@@ -698,6 +730,11 @@ struct Gen
 				t.offset[0] = t.offset[1] = t.offset[2] = 0;
 			if (t.opcode == GPU7_TEX_INST_GET_GRADIENTS_H || t.opcode == GPU7_TEX_INST_GET_GRADIENTS_V || (cube && !allowDeclined))
 				t.offset[0] = t.offset[1] = t.offset[2] = 0;
+			// no offset on a 3D texture outside a pixel shader: lavapipe
+			// (Mesa 25.2) calls through a null pointer on some textureLodOffset
+			// of one there, rslc's module as well as the direct one
+			if (vertexMode && kind == TEX_3D)
+				t.offset[0] = t.offset[1] = t.offset[2] = 0;
 			if (cube && Chance(40))
 			{
 				// the cube array's layer first, now and then
@@ -1006,6 +1043,7 @@ struct Context
 	bool rte = false;
 	bool largePoints = false; // points of sizes other than 1
 	bool geometryShader = false;
+	bool geometryPointSize = false;
 	// a texture of each kind, with mips, its view and sampler
 	struct Texture
 	{
@@ -1274,6 +1312,9 @@ static bool CreateContext(Context& c)
 	// the test's geometry shader, after a vertex shader writing the ring
 	c.geometryShader = has.features.geometryShader != VK_FALSE;
 	features.geometryShader = has.features.geometryShader;
+	// and its points' size, where it emits points
+	c.geometryPointSize = has.features.shaderTessellationAndGeometryPointSize != VK_FALSE;
+	features.shaderTessellationAndGeometryPointSize = has.features.shaderTessellationAndGeometryPointSize;
 	// uniforms read past the array (an AR index out of it) read zeros
 	features.robustBufferAccess = VK_TRUE;
 	dci.pEnabledFeatures = &features;
@@ -1642,7 +1683,8 @@ static bool SameOffsets(const LatteDecompilerOutputUniformOffsets& a, const Latt
 	if (a.offset_remapped != b.offset_remapped || a.offset_uniformRegister != b.offset_uniformRegister ||
 		a.count_uniformRegister != b.count_uniformRegister || a.offset_alphaTestRef != b.offset_alphaTestRef ||
 		a.offset_pointSize != b.offset_pointSize || a.offset_fragCoordScale != b.offset_fragCoordScale ||
-		a.offset_windowSpaceToClipSpaceTransform != b.offset_windowSpaceToClipSpaceTransform || a.offset_endOfBlock != b.offset_endOfBlock)
+		a.offset_windowSpaceToClipSpaceTransform != b.offset_windowSpaceToClipSpaceTransform || a.offset_endOfBlock != b.offset_endOfBlock ||
+		a.offset_verticesPerInstance != b.offset_verticesPerInstance)
 		return false;
 	for (int i = 0; i < LATTE_NUM_MAX_TEX_UNITS; i++)
 		if (a.offset_texScale[i] != b.offset_texScale[i])
@@ -2495,6 +2537,15 @@ struct VSCase
 	// with a geometry shader (the test's): the position and the parameters
 	// written to the ring, the parameters drawn from it
 	bool usesGS;
+	// a geometry shader's case: p the geometry shader, fed one point a pixel
+	// by the test's vertex shader with gsIn ring parameters (the position
+	// first), writing gsOut (the position first) for each of three vertices
+	// of a triangle strip (or points) through its copy shader
+	bool gsCase, gsPointsOut;
+	bool gsTrianglesIn; // fed triangles (each pixel's three vertices alike), not points
+	bool noCoverage; // a directed case drawing some pixels only
+	int gsIn, gsOut;
+	std::vector<uint32> copyShader;
 	float pointSize;
 	uint32 cfile[256 * 4];
 	std::vector<uint8> vertexData; // 16 bytes a vertex, each attribute in turn
@@ -2566,8 +2617,11 @@ static void SetVertexState(const VSCase& k)
 	lcr.PA_CL_VTE_CNTL.set_VPORT_X_SCALE_ENA(k.viewportScale);
 	lcr.PA_CL_VTE_CNTL.set_VPORT_Y_SCALE_ENA(true);
 	lcr.PA_CL_VTE_CNTL.set_VPORT_Z_SCALE_ENA(true);
-	lcr.VGT_PRIMITIVE_TYPE.set_PRIMITIVE_MODE(k.points ? Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::POINTS :
+	lcr.VGT_PRIMITIVE_TYPE.set_PRIMITIVE_MODE((k.points || (k.gsCase && !k.gsTrianglesIn)) ? Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::POINTS :
 		Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::TRIANGLES);
+	s_regs[mmVGT_GS_OUT_PRIM_TYPE] = k.gsPointsOut ? 0 : 2;
+	s_regs[mmSQ_GS_VERT_ITEMSIZE] = (uint32)(4 * k.gsOut);
+	s_regs[mmSQ_GSVS_RING_ITEMSIZE] = (uint32)(3 * 4 * k.gsOut);
 	g_testPSInputTable.count = k.psCount;
 	for (int i = 0; i < k.psCount; i++)
 	{
@@ -2594,11 +2648,15 @@ static Decompiled DecompileVertex(const std::vector<uint32>& program, bool direc
 	LatteDecompilerOptions options;
 	options.strictMul = k.strictMul;
 	options.directSPIRV = direct;
-	options.usesGeometryShader = k.usesGS;
+	options.usesGeometryShader = k.usesGS || k.gsCase; // a geometry shader's draw, all its stages
 	options.spirvInstrinsics.hasRoundingModeRTEFloat32 = k.rte;
 	LatteDecompilerOutput_t out{};
 	SetVertexState(k);
-	LatteDecompiler_DecompileVertexShader(0x5678, s_regs, (uint8*)program.data(), (uint32)program.size() * 4, &s_fetchShader, options, &out);
+	if (k.gsCase)
+		LatteDecompiler_DecompileGeometryShader(0x9abc, s_regs, (uint8*)program.data(), (uint32)program.size() * 4,
+			(uint8*)k.copyShader.data(), (uint32)k.copyShader.size() * 4, (uint32)k.gsIn, options, &out);
+	else
+		LatteDecompiler_DecompileVertexShader(0x5678, s_regs, (uint8*)program.data(), (uint32)program.size() * 4, &s_fetchShader, options, &out);
 	LatteDecompilerShader* shader = out.shader;
 	d.offsets = out.uniformOffsetsVK;
 	d.remapped = shader->list_remappedUniformEntries;
@@ -2632,7 +2690,7 @@ static Decompiled DecompileVertex(const std::vector<uint32>& program, bool direc
 		opts.err = err;
 		opts.err_cap = sizeof(err);
 		rslc_result res{};
-		if (rslc_compile(glsl.data(), glsl.size(), RSLC_STAGE_VERTEX, &opts, &res))
+		if (rslc_compile(glsl.data(), glsl.size(), k.gsCase ? RSLC_STAGE_GEOMETRY : RSLC_STAGE_VERTEX, &opts, &res))
 		{
 			d.spirv.assign(res.spirv, res.spirv + res.spirv_len);
 			rslc_result_free(&res, &opts);
@@ -2645,6 +2703,8 @@ static Decompiled DecompileVertex(const std::vector<uint32>& program, bool direc
 
 // the vertex shader over the grid, the fragment shader given passing on
 // what it shows
+static VkShaderModule GeometryFeeder(const Context& c, const VSCase& k);
+
 static std::vector<uint32> DrawVertex(const Context& c, const Decompiled& d, const VSCase& k, VkShaderModule fs, const uint32* uniforms)
 {
 	VkDescriptorSetLayoutBinding b[1 + LATTE_NUM_MAX_TEX_UNITS]{};
@@ -2656,7 +2716,7 @@ static std::vector<uint32> DrawVertex(const Context& c, const Decompiled& d, con
 		b[nb].binding = (uint32)d.binding;
 		b[nb].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 		b[nb].descriptorCount = 1;
-		b[nb].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+		b[nb].stageFlags = k.gsCase ? VK_SHADER_STAGE_GEOMETRY_BIT : VK_SHADER_STAGE_VERTEX_BIT;
 		nb++;
 	}
 	for (int i = 0; i < LATTE_NUM_MAX_TEX_UNITS; i++)
@@ -2673,7 +2733,7 @@ static std::vector<uint32> DrawVertex(const Context& c, const Decompiled& d, con
 		b[nb].binding = (uint32)d.texBinding[i];
 		b[nb].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 		b[nb].descriptorCount = 1;
-		b[nb].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+		b[nb].stageFlags = k.gsCase ? VK_SHADER_STAGE_GEOMETRY_BIT : VK_SHADER_STAGE_VERTEX_BIT;
 		nb++;
 		texInfos[nTex] = {t.sampler, t.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 		texWrites[nTex].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -2683,19 +2743,26 @@ static std::vector<uint32> DrawVertex(const Context& c, const Decompiled& d, con
 		texWrites[nTex].pImageInfo = &texInfos[nTex];
 		nTex++;
 	}
-	if (d.setIndex != 0)
+	// a vertex shader's resources in set 0, a geometry shader's in set 2
+	// (the sets before it empty, as the renderer's other stages')
+	const int setIndex = k.gsCase ? 2 : 0;
+	if (d.setIndex != setIndex)
 	{
-		std::printf("FAIL: a vertex shader's resources in set %d\n", d.setIndex);
+		std::printf("FAIL: a %s shader's resources in set %d\n", k.gsCase ? "geometry" : "vertex", d.setIndex);
 		s_failures++;
 	}
 	VkDescriptorSetLayoutCreateInfo dli{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+	VkDescriptorSetLayout empty;
+	VKCHECK(vkCreateDescriptorSetLayout(c.device, &dli, nullptr, &empty));
 	dli.bindingCount = nb;
 	dli.pBindings = b;
 	VkDescriptorSetLayout set;
 	VKCHECK(vkCreateDescriptorSetLayout(c.device, &dli, nullptr, &set));
+	VkDescriptorSetLayout setLayouts[3] = { empty, empty, empty };
+	setLayouts[setIndex] = set;
 	VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-	pli.setLayoutCount = 1;
-	pli.pSetLayouts = &set;
+	pli.setLayoutCount = (uint32)setIndex + 1;
+	pli.pSetLayouts = setLayouts;
 	VkPipelineLayout layout;
 	VKCHECK(vkCreatePipelineLayout(c.device, &pli, nullptr, &layout));
 	VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, LATTE_NUM_MAX_TEX_UNITS}};
@@ -2741,8 +2808,9 @@ static std::vector<uint32> DrawVertex(const Context& c, const Decompiled& d, con
 		va[nAttr] = {(uint32)loc, (uint32)i, VertexFormat(k.attribs[i].format), 0};
 		nAttr++;
 	}
-	std::memcpy(c.vbufData, k.vertexData.data(), k.vertexData.size());
-	VkShaderModule vs = Module(c, d.spirv);
+	if (!k.vertexData.empty())
+		std::memcpy(c.vbufData, k.vertexData.data(), k.vertexData.size());
+	VkShaderModule vs = k.gsCase ? GeometryFeeder(c, k) : Module(c, d.spirv);
 	VkPipelineShaderStageCreateInfo stages[3]{};
 	stages[0].sType = stages[1].sType = stages[2].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 	stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -2752,7 +2820,14 @@ static std::vector<uint32> DrawVertex(const Context& c, const Decompiled& d, con
 	stages[1].module = fs;
 	stages[1].pName = "main";
 	VkShaderModule gs = VK_NULL_HANDLE;
-	if (k.usesGS)
+	if (k.gsCase)
+	{
+		gs = Module(c, d.spirv);
+		stages[2].stage = VK_SHADER_STAGE_GEOMETRY_BIT;
+		stages[2].module = gs;
+		stages[2].pName = "main";
+	}
+	else if (k.usesGS)
 	{
 		// the ring's parameters through: the position from 0, parameter l
 		// at location l from l + 1
@@ -2786,7 +2861,7 @@ static std::vector<uint32> DrawVertex(const Context& c, const Decompiled& d, con
 	vin.vertexAttributeDescriptionCount = nAttr;
 	vin.pVertexAttributeDescriptions = va;
 	VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-	ia.topology = k.points ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	ia.topology = (k.points && !k.gsCase) || (k.gsCase && !k.gsTrianglesIn) ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 	VkViewport vp{0, 0, (float)W, (float)H, 0, 1};
 	VkRect2D sc{{0, 0}, {W, H}};
 	VkPipelineViewportStateCreateInfo vps{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
@@ -2837,13 +2912,13 @@ static std::vector<uint32> DrawVertex(const Context& c, const Decompiled& d, con
 	vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 	if (nb)
-		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &ds, 0, nullptr);
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, (uint32)setIndex, 1, &ds, 0, nullptr);
 	for (uint32 i = 0; i < nAttr; i++)
 	{
 		VkDeviceSize offset = (VkDeviceSize)vb[i].binding * kVerts * 16;
 		vkCmdBindVertexBuffers(cmd, vb[i].binding, 1, &c.vbuf, &offset);
 	}
-	vkCmdDraw(cmd, kVerts, 1, 0, 0);
+	vkCmdDraw(cmd, k.gsCase ? W * H * (k.gsTrianglesIn ? 3 : 1) : kVerts, 1, 0, 0);
 	vkCmdEndRenderPass(cmd);
 	VkBufferImageCopy region{};
 	region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -2876,6 +2951,7 @@ static std::vector<uint32> DrawVertex(const Context& c, const Decompiled& d, con
 		vkDestroyShaderModule(c.device, gs, nullptr);
 	vkDestroyDescriptorPool(c.device, dpool, nullptr);
 	vkDestroyPipelineLayout(c.device, layout, nullptr);
+	vkDestroyDescriptorSetLayout(c.device, empty, nullptr);
 	vkDestroyDescriptorSetLayout(c.device, set, nullptr);
 	return pixels;
 }
@@ -2889,6 +2965,290 @@ static bool WritesRelative(const Program& p)
 				if (op.destRel)
 					return true;
 	return false;
+}
+
+// a geometry shader case's vertex shader: a point at each pixel's centre,
+// the ring's parameters from the vertex index (the position first, at a
+// depth inside the volume either way)
+static VkShaderModule GeometryFeeder(const Context& c, const VSCase& k)
+{
+	std::string g = "#version 450\nlayout(location = 0) out Vertex\n{\n";
+	for (int i = 0; i < k.gsIn; i++)
+		g += fmt::format(" ivec4 passV2GParameter{};\n", i);
+	g += k.gsTrianglesIn ? "}v2g;\nvoid main()\n{\nint i = gl_VertexIndex / 3;\n" : "}v2g;\nvoid main()\n{\nint i = gl_VertexIndex;\n";
+	g +=
+		"vec2 c = vec2(float(i % 4) + 0.5, float(i / 4) + 0.5) * 0.5 - 1.0;\n"
+		"v2g.passV2GParameter0 = floatBitsToInt(vec4(c, 0.2 + 0.03 * float(i), 1.0));\n";
+	for (int q = 1; q < k.gsIn; q++)
+		g += fmt::format("v2g.passV2GParameter{0} = floatBitsToInt(vec4(float(i) * 0.37 + {0}.0, float(i) * -1.3 + {0}.5, {0}.25 - float(i) * 0.21, float(i * {0}) * 0.11 + float(gl_VertexIndex % 3)));\n", q);
+	// a position of its own too, the corner of a small triangle (a primitive
+	// the rasterizer would draw, before the geometry shader replaces it)
+	g += "int r = gl_VertexIndex % 3;\nfloat dx = 0.0;\nfloat dy = 0.0;\nif (r == 1)\n\tdx = 0.25;\nif (r == 2)\n\tdy = 0.25;\ngl_Position = vec4(c.x + dx, c.y + dy, 0.5, 1.0);\n}\n";
+	std::vector<uint32> words;
+	if (!CompileGlsl(g, words, false, RSLC_STAGE_VERTEX))
+	{
+		std::printf("FAIL: the test's vertex shader for a geometry shader does not compile\n");
+		std::exit(1);
+	}
+	return Module(c, words);
+}
+
+// a geometry shader: the ring's parameters fetched (the position into R8,
+// the rest into R0 to R7), a random program, the three corners of a
+// triangle over the pixel into R9 to R11, then for each a ring write of
+// the corner and of each parameter (registers of the program's, some
+// written twice in part) and EMIT_VERTEX; and its copy shader
+static std::vector<uint32> MakeCopyShader(int gsOut);
+
+static VSCase MakeGeometryCase(Gen& gen, bool allowDeclined)
+{
+	VSCase k{};
+	k.gsCase = true;
+	k.viewportScale = true;
+	gen.vertexMode = true;
+	k.p = gen.Make(allowDeclined);
+	gen.vertexMode = false;
+	Program& p = k.p;
+	p.vertex = true;
+	p.geometry = true;
+	k.gsIn = 2 + (int)gen.R(4);
+	k.gsOut = 2 + (int)gen.R(3);
+	k.gsPointsOut = gen.Chance(20);
+	k.gsTrianglesIn = gen.Chance(30);
+	k.points = k.gsPointsOut;
+	k.pointSize = (float)(1 + gen.R(4));
+	k.psCount = k.gsOut - 1;
+	k.dxClip = gen.Chance(50);
+	if (p.cf.empty())
+	{
+		for (size_t i = 0; i < p.clauses.size(); i++)
+			p.cf.push_back({ GPU7_CF_INST_ALU, (int)i, 0 });
+	}
+	// the fetches, first
+	std::vector<TexOp> fetch;
+	for (int q = 0; q < k.gsIn; q++)
+	{
+		TexOp t{};
+		t.vfetch = true;
+		t.opcode = GPU7_TEX_INST_VFETCH;
+		t.unit = 0x9F;
+		t.vtxOffset = (uint16)(16 * q);
+		t.dstGpr = (uint8)(q == 0 ? kPosGpr : gen.R(kGPRs));
+		for (int c = 0; c < 4; c++)
+			t.dstSel[c] = (uint8)c;
+		if (q != 0 && gen.Chance(25))
+		{
+			// some channels, swizzled, some masked
+			for (int c = 0; c < 4; c++)
+				t.dstSel[c] = (uint8)(gen.Chance(80) ? gen.R(4) : 7);
+			if (gen.Chance(40))
+			{
+				// one channel, of another
+				for (int c = 0; c < 4; c++)
+					t.dstSel[c] = 7;
+				t.dstSel[gen.R(4)] = (uint8)gen.R(4);
+			}
+			if (t.dstSel[0] == 7 && t.dstSel[1] == 7 && t.dstSel[2] == 7 && t.dstSel[3] == 7)
+				t.dstSel[0] = 0;
+		}
+		fetch.push_back(t);
+	}
+	p.texClauses.push_back(fetch);
+	p.cf.insert(p.cf.begin(), CFEntry{ GPU7_CF_INST_TEX, (int)p.texClauses.size() - 1, 0 });
+	// the corners: R9 to R11 = R8 + (-d,-d), (2d,-d), (-d,2d), d half a pixel
+	const float d = 1.0f / (float)W;
+	const float off[3][2] = { { -d, -d }, { 2 * d, -d }, { -d, 2 * d } };
+	std::vector<AluGroup> corners;
+	for (int v = 0; v < 3; v++)
+	{
+		AluGroup g{};
+		for (uint8 c = 0; c < 4; c++)
+		{
+			AluOp op{};
+			op.opcode = c < 2 ? ALU_OP2_INST_ADD : ALU_OP2_INST_MOV;
+			op.src[0] = (uint32)kPosGpr;
+			op.chan[0] = c;
+			if (c < 2)
+			{
+				op.src[1] = 253;
+				op.chan[1] = c;
+				std::memcpy(&g.literals[c], &off[v][c], 4);
+			}
+			op.destGpr = (uint8)(9 + v);
+			op.destElem = c;
+			op.writeMask = 1;
+			g.ops.push_back(op);
+		}
+		corners.push_back(g);
+	}
+	p.clauses.push_back(corners);
+	p.cf.push_back({ GPU7_CF_INST_ALU, (int)p.clauses.size() - 1, 0 });
+	// the vertices
+	const uint32 vertDwords = 4 * (uint32)k.gsOut;
+	auto ring = [&](uint32 base, uint8 gpr, uint8 mask, uint8 burst = 0) {
+		Program::VsExport r{};
+		r.type = 3;
+		r.base = (uint16)base;
+		r.gpr = gpr;
+		r.sel[0] = mask;
+		r.burst = burst;
+		p.vsExports.push_back(r);
+	};
+	for (uint32 v = 0; v < 3; v++)
+	{
+		// the corner, now and then without its w (the default 1.0 then)
+		ring(v * vertDwords, (uint8)(9 + v), gen.Chance(20) ? 0x7 : 0xF);
+		for (int o = 1; o < k.gsOut; o++)
+		{
+			if (o + 1 < k.gsOut && gen.Chance(25))
+			{
+				// two parameters from two registers at once
+				ring(v * vertDwords + 4 * (uint32)o, (uint8)gen.R(kGPRs - 1), 0xF, 1);
+				o++;
+			}
+			else
+				ring(v * vertDwords + 4 * (uint32)o, (uint8)gen.R(kGPRs), 0xF);
+		}
+		if (gen.Chance(50))
+			ring(v * vertDwords + 4 * (1 + gen.R((uint32)k.gsOut - 1)), (uint8)gen.R(kGPRs), (uint8)(1 + gen.R(14)));
+		Program::VsExport e{};
+		e.type = 4;
+		p.vsExports.push_back(e);
+	}
+	k.copyShader = MakeCopyShader(k.gsOut);
+	return k;
+}
+
+// the copy shader of gsOut outputs: a VTX clause fetching each from the
+// ring into R<o>, then the position's export (R0) and the parameters'
+// (R1 on, parameter o - 1)
+static std::vector<uint32> MakeCopyShader(int gsOut)
+{
+	VSCase k{};
+	k.gsOut = gsOut;
+	std::vector<uint32> cs;
+	const uint32 cfCount = 1 + (uint32)k.gsOut;
+	const uint32 vtxAddr = (cfCount + 1) & ~1u;
+	const uint32 n = (uint32)k.gsOut - 1;
+	cs.push_back(vtxAddr);
+	cs.push_back(((n & 7) << 10) | (((n >> 3) & 1) << 19) | ((uint32)GPU7_CF_INST_VTX << 23) | (1u << 31));
+	for (int o = 0; o < k.gsOut; o++)
+	{
+		const bool last = o + 1 == k.gsOut;
+		const uint32 type = o == 0 ? 1 : 2;
+		const uint32 base = o == 0 ? GPU7_DECOMPILER_CF_EXPORT_BASE_POSITION : (uint32)(o - 1);
+		cs.push_back(base | (type << 13) | ((uint32)o << 15));
+		cs.push_back(0 | (1 << 3) | (2 << 6) | (3 << 9) | (last ? (1u << 21) : 0) |
+			((uint32)(last ? GPU7_CF_INST_EXPORT_DONE : GPU7_CF_INST_EXPORT) << 23) | (1u << 31));
+	}
+	cs.resize(vtxAddr * 2, 0);
+	for (int o = 0; o < k.gsOut; o++)
+	{
+		TexOp t{};
+		t.vfetch = true;
+		t.unit = 0x9F;
+		t.vtxOffset = (uint16)(16 * o);
+		t.dstGpr = (uint8)o;
+		for (int c = 0; c < 4; c++)
+			t.dstSel[c] = (uint8)c;
+		uint32 w[4];
+		EncodeTex(t, w);
+		cs.insert(cs.end(), w, w + 4);
+	}
+	return cs;
+}
+
+// a geometry shader emitting its third vertex under a predicate (a pixel's
+// x past the middle): EMIT_VERTEX in a conditional block, read under its
+// own level of the active mask; the left half's strips of two vertices
+// draw nothing
+static VSCase MakeDirectedGeometryCase()
+{
+	VSCase k{};
+	k.gsCase = true;
+	k.viewportScale = true;
+	k.noCoverage = true;
+	k.gsIn = 2;
+	k.gsOut = 2;
+	k.psCount = 1;
+	Program& p = k.p;
+	p.vertex = true;
+	p.geometry = true;
+	for (int u = 0; u < 4; u++)
+		p.texKind[u] = TEX_NONE;
+	std::vector<TexOp> fetch;
+	for (int q = 0; q < 2; q++)
+	{
+		TexOp t{};
+		t.vfetch = true;
+		t.opcode = GPU7_TEX_INST_VFETCH;
+		t.unit = 0x9F;
+		t.vtxOffset = (uint16)(16 * q);
+		t.dstGpr = (uint8)(q == 0 ? kPosGpr : 1);
+		for (int c = 0; c < 4; c++)
+			t.dstSel[c] = (uint8)c;
+		fetch.push_back(t);
+	}
+	p.texClauses.push_back(fetch);
+	p.cf.push_back({ GPU7_CF_INST_TEX, 0, 0 });
+	// the corners into R9 to R11
+	const float d = 1.0f / (float)W;
+	const float off[3][2] = { { -d, -d }, { 2 * d, -d }, { -d, 2 * d } };
+	std::vector<AluGroup> corners;
+	for (int v = 0; v < 3; v++)
+	{
+		AluGroup g{};
+		for (uint8 c = 0; c < 4; c++)
+		{
+			AluOp op{};
+			op.opcode = c < 2 ? ALU_OP2_INST_ADD : ALU_OP2_INST_MOV;
+			op.src[0] = (uint32)kPosGpr;
+			op.chan[0] = c;
+			if (c < 2)
+			{
+				op.src[1] = 253;
+				op.chan[1] = c;
+				std::memcpy(&g.literals[c], &off[v][c], 4);
+			}
+			op.destGpr = (uint8)(9 + v);
+			op.destElem = c;
+			op.writeMask = 1;
+			g.ops.push_back(op);
+		}
+		corners.push_back(g);
+	}
+	p.clauses.push_back(corners);
+	p.cf.push_back({ GPU7_CF_INST_ALU, 0, 0 });
+	// x > 0, the right half
+	AluGroup predGroup{};
+	AluOp pred{};
+	pred.opcode = ALU_OP2_INST_PRED_SETGT;
+	pred.src[0] = (uint32)kPosGpr;
+	pred.src[1] = 248; // 0.0
+	pred.exec = 1;
+	predGroup.ops.push_back(pred);
+	p.clauses.push_back({ predGroup });
+	auto vertex = [&](uint8 corner) {
+		Program::VsExport r{};
+		r.type = 3;
+		r.gpr = corner;
+		r.sel[0] = 0xF;
+		r.base = 0;
+		p.cfRing.push_back(r);
+		p.cf.push_back({ GPU7_CF_INST_MEM_RING_WRITE, (int)p.cfRing.size() - 1, 0 });
+		r.gpr = 1;
+		r.base = 4;
+		p.cfRing.push_back(r);
+		p.cf.push_back({ GPU7_CF_INST_MEM_RING_WRITE, (int)p.cfRing.size() - 1, 0 });
+		p.cf.push_back({ GPU7_CF_INST_EMIT_VERTEX, 0, 0 });
+	};
+	vertex(9);
+	vertex(10);
+	p.cf.push_back({ GPU7_CF_INST_ALU_PUSH_BEFORE, 1, 0 });
+	vertex(11);
+	p.cf.push_back({ GPU7_CF_INST_POP, 0, 1 });
+	k.copyShader = MakeCopyShader(2);
+	return k;
 }
 
 static VSCase MakeVertexCase(Gen& gen, bool allowDeclined)
@@ -3257,11 +3617,22 @@ int main(int argc, char** argv)
 		const int vsCount = count / 2;
 		int vDirect = 0, vDeclined = 0, vDrawn = 0, vDiffering = 0, vShape = 0;
 		int vGsDrawn = 0; // of the drawn, writing the ring to a geometry shader
+		int gsCaseDrawn = 0; // of the drawn, geometry shaders
 		std::map<std::string, int> vReasons;
+		{
+			// a copy shader the parser does not take (an ALU clause): the
+			// geometry shader an error both ways, not a read of no copy shader
+			VSCase k = MakeDirectedGeometryCase();
+			k.copyShader = { 0, (8u << 26) | (1u << 21) | (1u << 31) };
+			std::vector<uint32> words = Assemble(k.p);
+			CHECK(!DecompileVertex(words, false, k).ok);
+			CHECK(!DecompileVertex(words, true, k).ok);
+		}
 		for (int i = 0; i < vsCount; i++)
 		{
 			const bool allowDeclined = (i % 5) == 0;
-			VSCase k = MakeVertexCase(gen, allowDeclined);
+			// every fourth a geometry shader's
+			VSCase k = i == 3 ? MakeDirectedGeometryCase() : (i % 4) == 3 ? MakeGeometryCase(gen, allowDeclined) : MakeVertexCase(gen, allowDeclined);
 			k.strictMul = gen.Chance(50);
 			k.rte = c.rte && gen.Chance(50);
 			k.preventLoops = gen.Chance(50);
@@ -3349,17 +3720,18 @@ int main(int argc, char** argv)
 			}
 			if (viaGlsl.offsets.offset_pointSize >= 0)
 				std::memcpy(uniforms + viaGlsl.offsets.offset_pointSize / 4, &k.pointSize, 4);
-			if ((k.points && !c.largePoints) || (k.usesGS && !c.geometryShader))
+			if ((k.points && !c.largePoints) || ((k.usesGS || k.gsCase) && !c.geometryShader) || (k.gsPointsOut && !c.geometryPointSize))
 				continue;
 			vDrawn++;
 			vGsDrawn += k.usesGS;
+			gsCaseDrawn += k.gsCase;
 			bool same = true;
 			for (int l = -1; l < k.psCount; l++)
 			{
 				VkShaderModule fs = l < 0 ? c.fsDepth : c.fsParam[l];
 				std::vector<uint32> a = DrawVertex(c, viaGlsl, k, fs, uniforms);
 				std::vector<uint32> b = DrawVertex(c, viaSpirv, k, fs, uniforms);
-				if (l < 0 && !k.points && !WritesRelative(k.p))
+				if (l < 0 && !k.points && !k.noCoverage && !WritesRelative(k.p))
 				{
 					// every pixel's triangle drawn: the depth there, not the clear
 					// (but for points, and where a write relative to AR may land
@@ -3415,7 +3787,9 @@ int main(int argc, char** argv)
 		}
 		CHECK(vsCount == 0 || vDirect * 2 > vsCount);
 		// vertex shaders writing the ring are drawn, not declined
-		std::printf("decompiler: %d vertex shaders drawn writing the ring\n", vGsDrawn);
+		std::printf("decompiler: %d vertex shaders drawn writing the ring, %d geometry shaders drawn\n", vGsDrawn, gsCaseDrawn);
+		// geometry shaders are drawn, not declined
+		CHECK(!device || !c.geometryShader || vsCount < 100 || gsCaseDrawn * 8 > vDrawn);
 		CHECK(!device || !c.geometryShader || vsCount < 100 || vGsDrawn * 20 > vDrawn);
 	}
 	(void)glslFailed;

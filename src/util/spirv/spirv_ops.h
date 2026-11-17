@@ -225,6 +225,7 @@ enum
    SpvBuiltInPosition = 0,
    SpvBuiltInPointSize = 1,
    SpvBuiltInClipDistance = 3,
+   SpvBuiltInCullDistance = 4,
    SpvBuiltInPrimitiveId = 7,
    SpvBuiltInInvocationId = 8,
    SpvBuiltInFragCoord = 15,
