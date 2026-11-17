@@ -157,6 +157,9 @@ namespace
 		uint32 attrVar[LATTE_NUM_MAX_ATTRIBUTE_LOCATIONS]{};
 		uint32 decVar{};
 		uint32 perVertexVar{};
+		// uf_windowSpaceToClipSpaceTransform's and uf_pointSize's members of
+		// the uniform block, -1 where it has none
+		sint32 windowMember{-1}, pointSizeMember{-1};
 		uint32 paramVar[LATTE_ANALYZER_IMPORT_INDEX_PARAM_MAX + 1]{};
 		uint32 vertexIndexVar{}, instanceIndexVar{};
 		uint32 interfaceIds[LATTE_NUM_MAX_ATTRIBUTE_LOCATIONS + 32 + 8];
@@ -1250,9 +1253,15 @@ namespace
 			!dc->contextRegistersNew->PA_CL_VTE_CNTL.get_VPORT_Y_SCALE_ENA() ||
 			!dc->contextRegistersNew->PA_CL_VTE_CNTL.get_VPORT_Z_SCALE_ENA();
 		if (isVertex && hasAnyViewportScaleDisabled)
-			return Decline("window space to clip space transform");
-		if (dc->analyzer.outputPointSize)
-			return Decline("point size");
+		{
+			// uf_windowSpaceToClipSpaceTransform (GX2 special state 0)
+			uniformCurrentOffset = (uniformCurrentOffset + 7) & ~7;
+			windowMember = (sint32)memberCount;
+			memberTypes[memberCount] = spv_type_vector(w, tF, 2);
+			memberOffsets[memberCount++] = uniformCurrentOffset;
+			uniformOffsets.offset_windowSpaceToClipSpaceTransform = uniformCurrentOffset;
+			uniformCurrentOffset += 8;
+		}
 		bool alphaTestEnable = !isVertex && dc->contextRegistersNew->SX_ALPHA_TEST_CONTROL.get_ALPHA_TEST_ENABLE();
 		if (alphaTestEnable)
 		{
@@ -1260,6 +1269,16 @@ namespace
 			memberTypes[memberCount] = tF;
 			memberOffsets[memberCount++] = uniformCurrentOffset;
 			uniformOffsets.offset_alphaTestRef = uniformCurrentOffset;
+			uniformCurrentOffset += 4;
+		}
+		if (isVertex && dc->analyzer.outputPointSize && !dc->analyzer.writesPointSize)
+		{
+			// uf_pointSize, the render state's, where the shader writes none
+			uniformCurrentOffset = (uniformCurrentOffset + 3) & ~3;
+			pointSizeMember = (sint32)memberCount;
+			memberTypes[memberCount] = tF;
+			memberOffsets[memberCount++] = uniformCurrentOffset;
+			uniformOffsets.offset_pointSize = uniformCurrentOffset;
 			uniformCurrentOffset += 4;
 		}
 		if (!isVertex && dc->analyzer.hasFragCoordAccess)
@@ -3167,11 +3186,19 @@ namespace
 			Decorate(attrVar[i], SpvDecorationLocation, { (uint32)ctx->output->resourceMappingVK.attributeMapping[i] });
 			interfaceIds[interfaceCount++] = attrVar[i];
 		}
-		// out gl_PerVertex { vec4 gl_Position; };
-		uint32 block = spv_type_struct(w, &tV4F, 1);
+		// out gl_PerVertex { vec4 gl_Position; float gl_PointSize; }, the
+		// point size where the primitives are points
+		const uint32 members[2] = { tV4F, tF };
+		const bool pointSize = ctx->analyzer.outputPointSize;
+		uint32 block = spv_type_struct(w, members, pointSize ? 2 : 1);
 		Decorate(block, SpvDecorationBlock);
 		uint32 member[4] = { block, 0, SpvDecorationBuiltIn, SpvBuiltInPosition };
 		spv_inst(w, SPV_SEC_DECORATION, SpvOpMemberDecorate, member, 4);
+		if (pointSize)
+		{
+			uint32 sizeMember[4] = { block, 1, SpvDecorationBuiltIn, SpvBuiltInPointSize };
+			spv_inst(w, SPV_SEC_DECORATION, SpvOpMemberDecorate, sizeMember, 4);
+		}
 		perVertexVar = spv_global_variable(w, spv_type_pointer(w, SpvStorageClassOutput, block), SpvStorageClassOutput);
 		interfaceIds[interfaceCount++] = perVertexVar;
 		LatteShaderPSInputTable* psInputTable = LatteSHRC_GetPSInputTable();
@@ -3620,8 +3647,26 @@ namespace
 			uint32 c[4];
 			for (uint32 k = 0; k < 4; k++)
 				c[k] = ExportComponent(cf, 0, k).id;
+			uint32 pos = Construct(tV4F, c, 4);
+			if (windowMember >= 0)
+			{
+				// vec4 finalPos = ...; finalPos.xy = finalPos.xy *
+				// uf_windowSpaceToClipSpaceTransform - vec2(1.0,1.0);
+				const uint32 tV2F = spv_type_vector(w, tF, 2);
+				uint32 finalPos = Local(tV4F, 0);
+				Store(finalPos, pos);
+				uint32 cur = Load(tV4F, finalPos);
+				uint32 v2 = Op(SpvOpVectorShuffle, tV2F, { cur, cur, 0, 1 });
+				uint32 tPtr = Op(SpvOpAccessChain, spv_type_pointer(w, SpvStorageClassUniform, tV2F), { ufBlockVar, ConstI(windowMember) });
+				uint32 scaled = Op(SpvOpFMul, tV2F, { v2, Load(tV2F, tPtr) });
+				uint32 ones[2] = { ConstF(1.0f), ConstF(1.0f) };
+				uint32 moved = Op(SpvOpFSub, tV2F, { scaled, spv_const_composite(w, tV2F, ones, 2) });
+				uint32 old = Load(tV4F, finalPos);
+				Store(finalPos, Op(SpvOpVectorShuffle, tV4F, { old, moved, 4, 5, 2, 3 }));
+				pos = Load(tV4F, finalPos);
+			}
 			uint32 posPtr = Op(SpvOpAccessChain, spv_type_pointer(w, SpvStorageClassOutput, tV4F), { perVertexVar, ConstI(0) });
-			Store(posPtr, Construct(tV4F, c, 4));
+			Store(posPtr, pos);
 			if (!ctx->contextRegistersNew->PA_CL_CLIP_CNTL.get_DX_CLIP_SPACE_DEF())
 			{
 				// gl_Position.z = (gl_Position.z + gl_Position.w) / 2.0
@@ -3670,6 +3715,18 @@ namespace
 					Store(paramVar[semanticId], reg);
 				}
 			}
+			return Ok();
+		}
+		if (cf.exportType == 1 && cf.exportArrayBase == GPU7_DECOMPILER_CF_EXPORT_POINT_SIZE)
+		{
+			// gl_PointSize = (vec4(...)).x, where the primitives are points
+			if (!ctx->analyzer.outputPointSize)
+				return Ok();
+			uint32 c[4];
+			for (uint32 k = 0; k < 4; k++)
+				c[k] = ExportComponent(cf, 0, k).id;
+			uint32 v = Op(SpvOpCompositeExtract, tF, { Construct(tV4F, c, 4), 0 });
+			Store(Op(SpvOpAccessChain, spv_type_pointer(w, SpvStorageClassOutput, tF), { perVertexVar, ConstI(1) }), v);
 			return Ok();
 		}
 		return Decline("vertex export");
@@ -3955,6 +4012,12 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 	}
 	if (s.loopDepth != 0)
 		return decline("loop without an end");
+	if (s.curBlock && s.pointSizeMember >= 0)
+	{
+		// gl_PointSize = uf_pointSize; at the end
+		uint32 ref = s.Op(SpvOpAccessChain, spv_type_pointer(w, SpvStorageClassUniform, s.tF), { s.ufBlockVar, s.ConstI(s.pointSizeMember) });
+		s.Store(s.Op(SpvOpAccessChain, spv_type_pointer(w, SpvStorageClassOutput, s.tF), { s.perVertexVar, s.ConstI(1) }), s.Load(s.tF, ref));
+	}
 	if (s.curBlock)
 		s.OpVoid(SpvOpReturn, {});
 	s.OpVoid(SpvOpFunctionEnd, {});

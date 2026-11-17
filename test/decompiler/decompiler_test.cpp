@@ -976,6 +976,7 @@ struct Context
 	uint8* uboData = nullptr;
 	VkShaderModule vs = VK_NULL_HANDLE;
 	bool rte = false;
+	bool largePoints = false; // points of sizes other than 1
 	// a texture of each kind, with mips, its view and sampler
 	struct Texture
 	{
@@ -1236,6 +1237,11 @@ static bool CreateContext(Context& c)
 	// cube map arrays, the decompiler's cube maps
 	VkPhysicalDeviceFeatures features{};
 	features.imageCubeArray = VK_TRUE;
+	// points of the size a vertex shader gives
+	VkPhysicalDeviceFeatures2 has{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+	vkGetPhysicalDeviceFeatures2(c.gpu, &has);
+	c.largePoints = has.features.largePoints != VK_FALSE;
+	features.largePoints = has.features.largePoints;
 	// uniforms read past the array (an AR index out of it) read zeros
 	features.robustBufferAccess = VK_TRUE;
 	dci.pEnabledFeatures = &features;
@@ -2451,6 +2457,9 @@ struct VSCase
 	uint8 psSemantic[8];
 	int psCount;
 	bool dxClip, viewportScale, strictMul, rte, preventLoops;
+	// drawn as points: of uf_pointSize's size, or the exported one
+	bool points;
+	float pointSize;
 	uint32 cfile[256 * 4];
 	std::vector<uint8> vertexData; // 16 bytes a vertex, each attribute in turn
 };
@@ -2521,6 +2530,8 @@ static void SetVertexState(const VSCase& k)
 	lcr.PA_CL_VTE_CNTL.set_VPORT_X_SCALE_ENA(k.viewportScale);
 	lcr.PA_CL_VTE_CNTL.set_VPORT_Y_SCALE_ENA(true);
 	lcr.PA_CL_VTE_CNTL.set_VPORT_Z_SCALE_ENA(true);
+	lcr.VGT_PRIMITIVE_TYPE.set_PRIMITIVE_MODE(k.points ? Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::POINTS :
+		Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::TRIANGLES);
 	g_testPSInputTable.count = k.psCount;
 	for (int i = 0; i < k.psCount; i++)
 	{
@@ -2709,7 +2720,7 @@ static std::vector<uint32> DrawVertex(const Context& c, const Decompiled& d, con
 	vin.vertexAttributeDescriptionCount = nAttr;
 	vin.pVertexAttributeDescriptions = va;
 	VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-	ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	ia.topology = k.points ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 	VkViewport vp{0, 0, (float)W, (float)H, 0, 1};
 	VkRect2D sc{{0, 0}, {W, H}};
 	VkPipelineViewportStateCreateInfo vps{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
@@ -2801,6 +2812,17 @@ static std::vector<uint32> DrawVertex(const Context& c, const Decompiled& d, con
 	return pixels;
 }
 
+// a register written relative to AR somewhere in the program
+static bool WritesRelative(const Program& p)
+{
+	for (auto& clause : p.clauses)
+		for (auto& g : clause)
+			for (auto& op : g.ops)
+				if (op.destRel)
+					return true;
+	return false;
+}
+
 static VSCase MakeVertexCase(Gen& gen, bool allowDeclined)
 {
 	VSCase k{};
@@ -2879,6 +2901,21 @@ static VSCase MakeVertexCase(Gen& gen, bool allowDeclined)
 	for (int i = 0; i < 4; i++)
 		e.sel[i] = (uint8)i;
 	p.vsExports.push_back(e);
+	// points now and then, of the render state's size or, half the time,
+	// one exported from the position's register (in window space, up to
+	// the target's size)
+	k.points = gen.Chance(15);
+	k.pointSize = (float)(1 + gen.R(4));
+	if (k.points && gen.Chance(50))
+	{
+		Program::VsExport ps{};
+		ps.type = 1;
+		ps.base = GPU7_DECOMPILER_CF_EXPORT_POINT_SIZE;
+		ps.gpr = kPosGpr;
+		for (int c = 0; c < 4; c++)
+			ps.sel[c] = (uint8)(gen.Chance(80) ? gen.R(4) : 4 + gen.R(2));
+		p.vsExports.push_back(ps);
+	}
 	for (uint32 i = 0; i < params; i++)
 	{
 		Program::VsExport x{};
@@ -2898,9 +2935,11 @@ static VSCase MakeVertexCase(Gen& gen, bool allowDeclined)
 		p.vsExports.push_back(x);
 	}
 	k.dxClip = gen.Chance(50);
-	k.viewportScale = !(allowDeclined && gen.Chance(10));
+	k.viewportScale = !gen.Chance(15);
 	// the vertex data: the position's a triangle over each pixel's centre,
-	// at a depth inside the volume either way; the rest random
+	// at a depth inside the volume either way; the rest random. Without
+	// the viewport scale the position is in window space, the shader
+	// taking it to clip space by uf_windowSpaceToClipSpaceTransform
 	k.vertexData.assign(k.attribs.size() * kVerts * 16, 0);
 	for (int v = 0; v < kVerts; v++)
 	{
@@ -2910,6 +2949,11 @@ static VSCase MakeVertexCase(Gen& gen, bool allowDeclined)
 		float cy = ((pixel / W) + 0.5f) * 2.0f / H - 1.0f;
 		float xyzw[4] = { cx - d + (corner == 1 ? 3 * d : 0.0f), cy - d + (corner == 2 ? 3 * d : 0.0f),
 			0.05f + 0.9f * (float)gen.R(1000) / 1000.0f, 1.0f };
+		if (!k.viewportScale)
+		{
+			xyzw[0] = (xyzw[0] + 1.0f) * (float)W / 2.0f;
+			xyzw[1] = (xyzw[1] + 1.0f) * (float)H / 2.0f;
+		}
 		std::memcpy(k.vertexData.data() + v * 16, xyzw, 16);
 	}
 	for (size_t a = 1; a < k.attribs.size(); a++)
@@ -3195,6 +3239,15 @@ int main(int argc, char** argv)
 			}
 			else if (viaGlsl.uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_FULL_CFILE)
 				std::memcpy(uniforms + viaGlsl.offsets.offset_uniformRegister / 4, k.cfile, viaGlsl.offsets.count_uniformRegister * 16);
+			if (viaGlsl.offsets.offset_windowSpaceToClipSpaceTransform >= 0)
+			{
+				const float transform[2] = { 2.0f / (float)W, 2.0f / (float)H };
+				std::memcpy(uniforms + viaGlsl.offsets.offset_windowSpaceToClipSpaceTransform / 4, transform, 8);
+			}
+			if (viaGlsl.offsets.offset_pointSize >= 0)
+				std::memcpy(uniforms + viaGlsl.offsets.offset_pointSize / 4, &k.pointSize, 4);
+			if (k.points && !c.largePoints)
+				continue;
 			vDrawn++;
 			bool same = true;
 			for (int l = -1; l < k.psCount; l++)
@@ -3202,9 +3255,11 @@ int main(int argc, char** argv)
 				VkShaderModule fs = l < 0 ? c.fsDepth : c.fsParam[l];
 				std::vector<uint32> a = DrawVertex(c, viaGlsl, k, fs, uniforms);
 				std::vector<uint32> b = DrawVertex(c, viaSpirv, k, fs, uniforms);
-				if (l < 0)
+				if (l < 0 && !k.points && !WritesRelative(k.p))
 				{
 					// every pixel's triangle drawn: the depth there, not the clear
+					// (but for points, and where a write relative to AR may land
+					// on the position's register)
 					int covered = 0;
 					const float clearX = -7.0f;
 					uint32 clearBits;
