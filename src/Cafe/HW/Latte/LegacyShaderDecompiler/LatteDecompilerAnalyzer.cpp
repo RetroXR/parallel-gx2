@@ -379,9 +379,10 @@ void LatteDecompiler_analyzeTEXClause(LatteDecompilerShaderContext* shaderContex
 		else
 			debugBreakpoint();
 		// mark read and written registers as used
-		if(texInstruction.dstGpr < LATTE_NUM_GPR)
+		// SET_GRADIENTS_H/V write none: dstGpr -1
+		if(texInstruction.dstGpr >= 0 && texInstruction.dstGpr < LATTE_NUM_GPR)
 			shaderContext->analyzer.gprUseMask[texInstruction.dstGpr/8] |= (1<<(texInstruction.dstGpr%8));
-		if(texInstruction.srcGpr < LATTE_NUM_GPR)
+		if(texInstruction.srcGpr >= 0 && texInstruction.srcGpr < LATTE_NUM_GPR)
 			shaderContext->analyzer.gprUseMask[texInstruction.srcGpr/8] |= (1<<(texInstruction.srcGpr%8));
 	}
 }

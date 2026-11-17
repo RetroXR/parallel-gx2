@@ -130,7 +130,9 @@ namespace
 		// uf_texScale's member in the uniform block, -1 for none; whether
 		// the image queries' capability is taken
 		sint32 texScaleMember[LATTE_NUM_MAX_TEX_UNITS];
-		bool imageQuery{};
+		bool imageQuery{}, sampled1D{};
+		// gradH and gradV: SET_GRADIENTS_H/V's, SAMPLE_G's
+		uint32 gradVar[2]{};
 		// the loops open: rslc's blocks for each, its loopActive and counter
 		struct Loop
 		{
@@ -952,6 +954,10 @@ namespace
 		bool EmitTexelFetch(LatteDecompilerTEXInstruction& t);
 		bool EmitResInfo(LatteDecompilerTEXInstruction& t);
 		bool EmitCompTexLod(LatteDecompilerTEXInstruction& t);
+		bool EmitGradSample(LatteDecompilerTEXInstruction& t);
+		bool EmitGetGradients(LatteDecompilerTEXInstruction& t);
+		bool EmitSetGradients(LatteDecompilerTEXInstruction& t);
+		uint32 TexGPRAccess1(LatteDecompilerTEXInstruction& t, sint32 component);
 		Val TexCoord(LatteDecompilerTEXInstruction& t, sint32 component);
 		Val TexCoordAs(LatteDecompilerTEXInstruction& t, sint32 component, sint32 type);
 		uint32 TexGPRAccess(LatteDecompilerTEXInstruction& t, const uint8* sel, uint32 n);
@@ -2053,12 +2059,17 @@ namespace
 			const Latte::E_DIM dim = shader->textureUnitDim[i];
 			const bool isInt = shader->textureIsIntegerFormat[i];
 			const bool shadow = shader->textureUsesDepthCompare[i];
-			if (shadow && (isInt || (dim != Latte::E_DIM::DIM_2D && dim != Latte::E_DIM::DIM_2D_ARRAY)))
+			if (shadow && (isInt || (dim != Latte::E_DIM::DIM_2D && dim != Latte::E_DIM::DIM_2D_ARRAY && dim != Latte::E_DIM::DIM_1D)))
 				return Decline("shadow sampler");
 			uint32 spvDim;
 			bool arrayed = false;
 			if (dim == Latte::E_DIM::DIM_2D)
 				spvDim = SpvDimension2D;
+			else if (dim == Latte::E_DIM::DIM_1D)
+			{
+				spvDim = SpvDimension1D;
+				sampled1D = true;
+			}
 			else if (dim == Latte::E_DIM::DIM_2D_ARRAY && !isInt)
 			{
 				spvDim = SpvDimension2D;
@@ -2076,6 +2087,12 @@ namespace
 			texVar[i] = spv_global_variable(w, ptr, SpvStorageClassUniformConstant);
 			Decorate(texVar[i], SpvDecorationDescriptorSet, { (uint32)ctx->output->resourceMappingVK.setIndex });
 			Decorate(texVar[i], SpvDecorationBinding, { (uint32)ctx->output->resourceMappingVK.textureUnitToBindingPoint[i] });
+		}
+		// vec4 gradH, gradV: declared, not set
+		if (ctx->analyzer.hasGradientLookup)
+		{
+			gradVar[0] = Local(tV4F, 0);
+			gradVar[1] = Local(tV4F, 0);
 		}
 		return true;
 	}
@@ -2167,6 +2184,8 @@ namespace
 	// the offset's ivec2, ivec3 for a 3D texture: halves of the fields
 	uint32 SpvShader::TexOffset(LatteDecompilerTEXInstruction& t, Latte::E_DIM dim)
 	{
+		if (dim == Latte::E_DIM::DIM_1D)
+			return ConstI(t.textureFetch.offsetX / 2);
 		const uint32 m = dim == Latte::E_DIM::DIM_3D ? 3 : 2;
 		uint32 parts[3] = { ConstI(t.textureFetch.offsetX / 2), ConstI(t.textureFetch.offsetY / 2), ConstI(t.textureFetch.offsetZ / 2) };
 		return spv_const_composite(w, spv_type_vector(w, tI, m), parts, m);
@@ -2245,15 +2264,22 @@ namespace
 			return false;
 		const bool hasOffset = t.textureFetch.offsetX != 0 || t.textureFetch.offsetY != 0 || t.textureFetch.offsetZ != 0;
 		const bool three = dim == Latte::E_DIM::DIM_3D || dim == Latte::E_DIM::DIM_2D_ARRAY;
-		if (!three && ActiveSettings::ForceSamplerRoundToPrecision())
+		const bool one = dim == Latte::E_DIM::DIM_1D;
+		if (!three && !one && ActiveSettings::ForceSamplerRoundToPrecision())
 			return Decline("sampler round to precision");
 		// sampler, coordinates, then the level or bias, as the call reads them
 		uint32 sampler = Load(texType[unit], texVar[unit]);
-		Val c[3];
-		const uint32 n = three ? 3 : 2;
-		for (uint32 i = 0; i < n; i++)
-			c[i] = TexCoord(t, (sint32)i);
-		uint32 coord = CoordVector(c, n);
+		uint32 coord;
+		if (one)
+			coord = TexGPRAccess1(t, 0); // a 1D's: the register's channel as it is
+		else
+		{
+			Val c[3];
+			const uint32 n = three ? 3 : 2;
+			for (uint32 i = 0; i < n; i++)
+				c[i] = TexCoord(t, (sint32)i);
+			coord = CoordVector(c, n);
+		}
 		uint32 mask = 0;
 		uint32 operands[2];
 		uint32 nOperands = 0;
@@ -2316,6 +2342,7 @@ namespace
 			return false;
 		const bool hasOffset = t.textureFetch.offsetX != 0 || t.textureFetch.offsetY != 0 || t.textureFetch.offsetZ != 0;
 		const bool isArray = dim == Latte::E_DIM::DIM_2D_ARRAY;
+		const bool one = dim == Latte::E_DIM::DIM_1D;
 		// no textureLod() of an array's shadow sampler, no textureLodOffset()
 		// written for SAMPLE_C_L, nor an offset of an array's
 		if (isArray && (op != GPU7_TEX_INST_SAMPLE_C || hasOffset))
@@ -2333,7 +2360,13 @@ namespace
 		}
 		uint32 sampler = Load(texType[unit], texVar[unit]);
 		uint32 coord;
-		if (isArray)
+		if (one)
+		{
+			// vec3(x, 0.0, the reference): w the reference for every kind
+			uint32 parts[3] = { TexGPRAccess1(t, 0), ConstF(0.0f), TexGPRAccess1(t, 3) };
+			coord = Construct(spv_type_vector(w, tF, 3), parts, 3);
+		}
+		else if (isArray)
 		{
 			Val c[3];
 			for (uint32 i = 0; i < 3; i++)
@@ -2396,6 +2429,15 @@ namespace
 		const bool isInt = shader->textureIsIntegerFormat[unit];
 		if (shader->textureUsesDepthCompare[unit])
 			return Decline("gather of a shadow sampler");
+		if (dim == Latte::E_DIM::DIM_1D && !isInt)
+		{
+			// no FETCH4 of a 1D: vecN(0.0), as the GLSL writes it
+			uint32 written[4];
+			const uint32 count = TexWritten(t, written);
+			if (!count)
+				return false;
+			return StoreTexResult(t, count == 1 ? ConstF(0.0f) : SplatF(0.0f, count), DT_F, count, written);
+		}
 		if (dim != Latte::E_DIM::DIM_2D && dim != Latte::E_DIM::DIM_2D_ARRAY)
 			return Decline("gather dimension");
 		if (t.textureFetch.offsetX != 0 || t.textureFetch.offsetY != 0 || t.textureFetch.offsetZ != 0)
@@ -2435,7 +2477,8 @@ namespace
 		const bool isLD = t.opcode == GPU7_TEX_INST_LD;
 		if (shader->textureUsesDepthCompare[unit])
 			return Decline("texel fetch of a shadow sampler");
-		if (dim != Latte::E_DIM::DIM_2D)
+		const bool one = dim == Latte::E_DIM::DIM_1D;
+		if (dim != Latte::E_DIM::DIM_2D && !one)
 			return Decline("texel fetch dimension");
 		if (t.textureFetch.offsetX != 0 || t.textureFetch.offsetY != 0 || t.textureFetch.offsetZ != 0)
 			return Decline("texel fetch offset");
@@ -2446,8 +2489,24 @@ namespace
 		if (!count)
 			return false;
 		uint32 sampler = Load(texType[unit], texVar[unit]);
-		// ivec2(vec2(x, y)*uf_tex<n>Scale): by component
 		const sint32 type = isLD ? DT_I : DT_F;
+		uint32 scalePtr = 0;
+		if (one)
+		{
+			// int(float(x)*uf_tex<n>Scale.x)
+			Val x = TexCoordAs(t, 0, type);
+			uint32 xf = isLD ? Op(SpvOpConvertSToF, tF, { x.id }) : x.id;
+			scalePtr = Op(SpvOpAccessChain, spv_type_pointer(w, SpvStorageClassUniform, tV2F), { ufBlockVar, ConstI(texScaleMember[unit]) });
+			uint32 sx = Op(SpvOpCompositeExtract, tF, { Load(tV2F, scalePtr), 0 });
+			uint32 coord1 = Op(SpvOpConvertFToS, tI, { Op(SpvOpFMul, tF, { xf, sx }) });
+			uint32 lod1 = isLD ? TexCoordAs(t, 3, DT_I).id : ConstI(0);
+			if (!Ok())
+				return false;
+			uint32 image1 = Op(SpvOpImage, texImage[unit], { sampler });
+			uint32 v1 = ImageOp(SpvOpImageFetch, isInt ? tV4U : tV4F, image1, coord1, 0, SpvImageOperandsLodMask, &lod1, 1);
+			return StoreTexResult(t, TexSwizzle(t, v1, isInt ? tU : tF, count, written, nullptr), isInt ? DT_U : DT_F, count, written);
+		}
+		// ivec2(vec2(x, y)*uf_tex<n>Scale): by component
 		Val c[2] = { TexCoordAs(t, 0, type), TexCoordAs(t, 1, type) };
 		uint32 xy;
 		if (isLD)
@@ -2457,7 +2516,7 @@ namespace
 		}
 		else
 			xy = CoordVector(c, 2);
-		uint32 scalePtr = Op(SpvOpAccessChain, spv_type_pointer(w, SpvStorageClassUniform, tV2F), { ufBlockVar, ConstI(texScaleMember[unit]) });
+		scalePtr = Op(SpvOpAccessChain, spv_type_pointer(w, SpvStorageClassUniform, tV2F), { ufBlockVar, ConstI(texScaleMember[unit]) });
 		uint32 scaled = Op(SpvOpFMul, tV2F, { xy, Load(tV2F, scalePtr) });
 		uint32 tV2I = spv_type_vector(w, tI, 2);
 		uint32 ip[2] = { Op(SpvOpConvertFToS, tI, { Op(SpvOpCompositeExtract, tF, { scaled, 0 }) }),
@@ -2489,9 +2548,19 @@ namespace
 		uint32 mip = Ext(GLSLstd450SClamp, tI, { mipIn, ConstI(0), Op(SpvOpISub, tI, { levels, ConstI(1) }) });
 		image = Op(SpvOpImage, texImage[unit], { Load(texType[unit], texVar[unit]) });
 		const bool two = dim == Latte::E_DIM::DIM_2D;
-		uint32 size = Op(SpvOpImageQuerySizeLod, spv_type_vector(w, tI, two ? 2 : 3), { image, mip });
-		uint32 parts[3] = { size, two ? ConstI(0) : levels, levels };
-		uint32 info = Construct(tV4I, parts, two ? 3 : 2);
+		const bool one = dim == Latte::E_DIM::DIM_1D;
+		uint32 size = Op(SpvOpImageQuerySizeLod, one ? tI : spv_type_vector(w, tI, two ? 2 : 3), { image, mip });
+		uint32 info;
+		if (one)
+		{
+			uint32 parts[4] = { size, ConstI(0), ConstI(0), levels };
+			info = Construct(tV4I, parts, 4);
+		}
+		else
+		{
+			uint32 parts[3] = { size, two ? ConstI(0) : levels, levels };
+			info = Construct(tV4I, parts, two ? 3 : 2);
+		}
 		for (uint32 f = 0; f < 4; f++)
 		{
 			const uint8 sel = t.dstSel[f];
@@ -2513,11 +2582,11 @@ namespace
 			return Decline("texture level query in a vertex shader");
 		imageQuery = true;
 		uint32 sampler = Load(texType[unit], texVar[unit]);
-		const uint32 n = dim == Latte::E_DIM::DIM_3D ? 3 : 2;
+		const uint32 n = dim == Latte::E_DIM::DIM_3D ? 3 : dim == Latte::E_DIM::DIM_1D ? 1 : 2;
 		Val c[3];
 		for (uint32 i = 0; i < n; i++)
 			c[i] = TexCoord(t, (sint32)i);
-		uint32 coord = CoordVector(c, n);
+		uint32 coord = n == 1 ? c[0].id : CoordVector(c, n);
 		uint32 lod = Op(SpvOpCompositeExtract, tF, { Op(SpvOpImageQueryLod, tV2F, { sampler, coord }), 1 });
 		uint32 rounded = Ext(GLSLstd450Floor, tF, { Op(SpvOpFAdd, tF, { lod, ConstF(0.5f) }) });
 		uint32 image = Op(SpvOpImage, texImage[unit], { Load(texType[unit], texVar[unit]) });
@@ -2534,6 +2603,91 @@ namespace
 		return Ok();
 	}
 
+	// _getTexGPRAccess of one channel: a 1D's coordinate, a reference
+	uint32 SpvShader::TexGPRAccess1(LatteDecompilerTEXInstruction& t, sint32 component)
+	{
+		uint8 sel = (uint8)t.textureFetch.srcSel[component];
+		return TexGPRAccess(t, &sel, 1);
+	}
+
+	// SAMPLE_G: textureGrad() of a 1D or 2D with gradH and gradV's x or xy
+	bool SpvShader::EmitGradSample(LatteDecompilerTEXInstruction& t)
+	{
+		const sint32 unit = t.textureFetch.textureIndex;
+		const Latte::E_DIM dim = shader->textureUnitDim[unit];
+		const bool isInt = shader->textureIsIntegerFormat[unit];
+		const bool one = dim == Latte::E_DIM::DIM_1D;
+		if (shader->textureUsesDepthCompare[unit])
+			return Decline("gradients of a shadow sampler");
+		if (dim != Latte::E_DIM::DIM_2D && !one)
+			return Decline("gradient dimension");
+		if (!gradVar[0])
+			return Decline("gradients never set");
+		if (!one && ActiveSettings::ForceSamplerRoundToPrecision())
+			return Decline("sampler round to precision");
+		uint32 written[4];
+		const uint32 count = TexWritten(t, written);
+		if (!count)
+			return false;
+		const bool hasOffset = t.textureFetch.offsetX != 0 || t.textureFetch.offsetY != 0 || t.textureFetch.offsetZ != 0;
+		uint32 sampler = Load(texType[unit], texVar[unit]);
+		uint32 coord;
+		if (one)
+			coord = TexGPRAccess1(t, 0);
+		else
+		{
+			Val c[2] = { TexCoord(t, 0), TexCoord(t, 1) };
+			coord = CoordVector(c, 2);
+		}
+		uint32 operands[3];
+		uint32 nOperands = 0;
+		static const uint8 xy[2] = { 0, 1 };
+		for (uint32 g = 0; g < 2; g++)
+			operands[nOperands++] = Swizzle(Load(tV4F, gradVar[g]), tF, xy, one ? 1 : 2);
+		uint32 mask = SpvImageOperandsGradMask;
+		if (hasOffset)
+		{
+			mask |= SpvImageOperandsConstOffsetMask;
+			operands[nOperands++] = TexOffset(t, dim);
+		}
+		if (!Ok())
+			return false;
+		uint32 sample = ImageOp(SpvOpImageSampleExplicitLod, isInt ? tV4U : tV4F, sampler, coord, 0, mask, operands, nOperands);
+		return StoreTexResult(t, TexSwizzle(t, sample, isInt ? tU : tF, count, written, nullptr), isInt ? DT_U : DT_F, count, written);
+	}
+
+	// _emitTEXGetGradientsHV: dFdx() or dFdy() of the coordinates' vec4
+	bool SpvShader::EmitGetGradients(LatteDecompilerTEXInstruction& t)
+	{
+		if (isVertex)
+			return Decline("gradients in a vertex shader");
+		Val c[4];
+		for (uint32 i = 0; i < 4; i++)
+			c[i] = TexCoord(t, (sint32)i);
+		if (c[0].k && c[1].k && c[2].k && c[3].k)
+			return Decline("gradient of constants"); // folded
+		uint32 g = Op(t.opcode == GPU7_TEX_INST_GET_GRADIENTS_H ? SpvOpDPdx : SpvOpDPdy, tV4F, { CoordVector(c, 4) });
+		for (uint32 f = 0; f < 4; f++)
+		{
+			const uint8 sel = t.dstSel[f];
+			if (sel == 7)
+				continue;
+			Val v = sel < 4 ? Run(Op(SpvOpCompositeExtract, tF, { g, sel }), DT_F) : KF(sel == 5 ? 1.0 : 0.0);
+			StoreTexChannel(t, f, v);
+		}
+		return Ok();
+	}
+
+	// _emitTEXSetGradientsHV: gradH or gradV = vec4(the coordinates)
+	bool SpvShader::EmitSetGradients(LatteDecompilerTEXInstruction& t)
+	{
+		Val c[4];
+		for (uint32 i = 0; i < 4; i++)
+			c[i] = TexCoord(t, (sint32)i);
+		Store(gradVar[t.opcode == GPU7_TEX_INST_SET_GRADIENTS_H ? 0 : 1], CoordVector(c, 4));
+		return Ok();
+	}
+
 	// _emitTEXClauseCode: each instruction by its kind
 	bool SpvShader::EmitTEXClause(LatteDecompilerCFInstruction& cf)
 	{
@@ -2545,6 +2699,18 @@ namespace
 				op == GPU7_TEX_INST_SAMPLE_LZ || op == GPU7_TEX_INST_SAMPLE_C || op == GPU7_TEX_INST_SAMPLE_C_L ||
 				op == GPU7_TEX_INST_SAMPLE_C_LZ || op == GPU7_TEX_INST_FETCH4 || op == GPU7_TEX_INST_SAMPLE_G || op == GPU7_TEX_INST_LD;
 			const bool query = op == GPU7_TEX_INST_GET_TEXTURE_RESINFO || op == GPU7_TEX_INST_GET_COMP_TEX_LOD;
+			if (op == GPU7_TEX_INST_GET_GRADIENTS_H || op == GPU7_TEX_INST_GET_GRADIENTS_V)
+			{
+				if (!EmitGetGradients(t))
+					return false;
+				continue;
+			}
+			if (op == GPU7_TEX_INST_SET_GRADIENTS_H || op == GPU7_TEX_INST_SET_GRADIENTS_V)
+			{
+				if (!EmitSetGradients(t))
+					return false;
+				continue;
+			}
 			if (!sample && !query)
 				return Decline("texture instruction kind");
 			if (unit < 0 || unit >= LATTE_NUM_MAX_TEX_UNITS)
@@ -2569,7 +2735,7 @@ namespace
 			else if (op == GPU7_TEX_INST_GET_COMP_TEX_LOD)
 				ok = EmitCompTexLod(t);
 			else if (op == GPU7_TEX_INST_SAMPLE_G)
-				ok = Decline("texture gradients");
+				ok = EmitGradSample(t);
 			else
 				ok = EmitSample(t);
 			if (!ok)
@@ -3381,6 +3547,11 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 	{
 		uint32 mode[2] = { mainId, SpvExecutionModeOriginUpperLeft };
 		spv_inst(w, SPV_SEC_EXEC_MODE, SpvOpExecutionMode, mode, 2);
+	}
+	if (s.sampled1D)
+	{
+		uint32 cap = SpvCapabilitySampled1D;
+		spv_inst(w, SPV_SEC_CAPABILITY, SpvOpCapability, &cap, 1);
 	}
 	if (s.imageQuery)
 	{

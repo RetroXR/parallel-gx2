@@ -79,7 +79,7 @@ struct CFEntry
 };
 
 // the texture units' kinds, as the test makes their textures
-enum TexKind : uint8 { TEX_NONE, TEX_2D, TEX_2D_ARRAY, TEX_3D, TEX_2D_UINT, TEX_CUBE, TEX_KINDS };
+enum TexKind : uint8 { TEX_NONE, TEX_2D, TEX_2D_ARRAY, TEX_3D, TEX_2D_UINT, TEX_1D, TEX_1D_UINT, TEX_CUBE, TEX_KINDS };
 
 struct Program
 {
@@ -127,10 +127,12 @@ static void SetTextureRegisters(uint32* regs, const Program& p)
 		case TEX_2D_ARRAY: dim = Latte::E_DIM::DIM_2D_ARRAY; break;
 		case TEX_3D: dim = Latte::E_DIM::DIM_3D; break;
 		case TEX_CUBE: dim = Latte::E_DIM::DIM_CUBEMAP; break;
+		case TEX_1D:
+		case TEX_1D_UINT: dim = Latte::E_DIM::DIM_1D; break;
 		default: break;
 		}
 		units[u].word0.set_DIM(dim);
-		units[u].word4.set_NUM_FORM_ALL(p.texKind[u] == TEX_2D_UINT ?
+		units[u].word4.set_NUM_FORM_ALL(p.texKind[u] == TEX_2D_UINT || p.texKind[u] == TEX_1D_UINT ?
 			Latte::LATTE_SQ_TEX_RESOURCE_WORD4_N::E_NUM_FORMAT_ALL::NUM_FORMAT_INT :
 			Latte::LATTE_SQ_TEX_RESOURCE_WORD4_N::E_NUM_FORMAT_ALL::NUM_FORMAT_NORM);
 	}
@@ -596,11 +598,13 @@ struct Gen
 				GPU7_TEX_INST_SAMPLE_LZ, GPU7_TEX_INST_SAMPLE_LB };
 			static const uint8 compares[] = { GPU7_TEX_INST_SAMPLE_C, GPU7_TEX_INST_SAMPLE_C, GPU7_TEX_INST_SAMPLE_C_L, GPU7_TEX_INST_SAMPLE_C_LZ };
 			static const uint8 any[] = { GPU7_TEX_INST_SAMPLE, GPU7_TEX_INST_SAMPLE_C, GPU7_TEX_INST_SAMPLE_C_L, GPU7_TEX_INST_SAMPLE_C_LZ,
-				GPU7_TEX_INST_FETCH4, GPU7_TEX_INST_LD, GPU7_TEX_INST_GET_TEXTURE_RESINFO, GPU7_TEX_INST_GET_COMP_TEX_LOD, GPU7_TEX_INST_SAMPLE_G };
+				GPU7_TEX_INST_FETCH4, GPU7_TEX_INST_LD, GPU7_TEX_INST_GET_TEXTURE_RESINFO, GPU7_TEX_INST_GET_COMP_TEX_LOD, GPU7_TEX_INST_SAMPLE_G,
+				GPU7_TEX_INST_GET_GRADIENTS_H };
 			const bool flat2D = kind == TEX_2D || kind == TEX_2D_UINT;
+			const bool line = kind == TEX_1D || kind == TEX_1D_UINT;
 			uint32 k = R(100);
 			if (allowDeclined && Chance(15))
-				t.opcode = any[R(9)];
+				t.opcode = any[R(10)];
 			else if (shadowUnit[t.unit])
 			{
 				// an array's: no level, but in a vertex shader's zero
@@ -609,14 +613,22 @@ struct Gen
 				if (kind == TEX_2D_ARRAY && (t.opcode == GPU7_TEX_INST_SAMPLE_C_L || (t.opcode == GPU7_TEX_INST_SAMPLE_C_LZ && !vertexMode)))
 					t.opcode = GPU7_TEX_INST_SAMPLE_C;
 			}
-			else if (k < 10 && kind != TEX_3D)
-				t.opcode = GPU7_TEX_INST_FETCH4;
-			else if (k < 18 && flat2D && !vertexMode)
+			// no compare at a level in a vertex shader: lavapipe (Mesa 25.2)
+			// crashes on some, rslc's module as well as the direct one
+			if (vertexMode && t.opcode == GPU7_TEX_INST_SAMPLE_C_L)
+				t.opcode = GPU7_TEX_INST_SAMPLE_C;
+			else if (k < 10 && kind != TEX_3D && kind != TEX_1D_UINT)
+				t.opcode = GPU7_TEX_INST_FETCH4; // a 1D's: zeros
+			else if (k < 18 && (flat2D || line) && !vertexMode)
 				t.opcode = GPU7_TEX_INST_LD;
 			else if (k < 24)
 				t.opcode = GPU7_TEX_INST_GET_TEXTURE_RESINFO;
 			else if (k < 30 && !vertexMode)
 				t.opcode = GPU7_TEX_INST_GET_COMP_TEX_LOD;
+			else if (k < 37 && (flat2D || line))
+				t.opcode = GPU7_TEX_INST_SAMPLE_G;
+			else if (k < 42 && !vertexMode)
+				t.opcode = Chance(50) ? GPU7_TEX_INST_GET_GRADIENTS_H : GPU7_TEX_INST_GET_GRADIENTS_V;
 			else
 				t.opcode = samples[R(6)];
 			static const uint8 varying[] = { 0, 1, 3 };
@@ -624,8 +636,13 @@ struct Gen
 			const bool compare = t.opcode == GPU7_TEX_INST_SAMPLE_C || t.opcode == GPU7_TEX_INST_SAMPLE_C_L || t.opcode == GPU7_TEX_INST_SAMPLE_C_LZ;
 			for (int c = 0; c < 4; c++)
 			{
-				// a compare reads its register's channels as they are
-				const bool asRead = compare && (kind == TEX_2D ? c != (t.opcode == GPU7_TEX_INST_SAMPLE_C_L ? 3 : 2) : c == 3);
+				// a compare reads its register's channels as they are, a 1D
+				// sample its coordinate
+				const bool lineSample = line && !compare && t.opcode != GPU7_TEX_INST_FETCH4 && t.opcode != GPU7_TEX_INST_LD &&
+					t.opcode != GPU7_TEX_INST_GET_TEXTURE_RESINFO && t.opcode != GPU7_TEX_INST_GET_COMP_TEX_LOD &&
+					t.opcode != GPU7_TEX_INST_GET_GRADIENTS_H && t.opcode != GPU7_TEX_INST_GET_GRADIENTS_V && !t.unnormalized;
+				const bool asRead = (compare && (kind == TEX_2D ? c != (t.opcode == GPU7_TEX_INST_SAMPLE_C_L ? 3 : 2) :
+					kind == TEX_1D ? c == 0 || c == 3 : c == 3)) || (lineSample && c == 0);
 				t.srcSel[c] = Chance(asRead && !allowDeclined ? 100 : 85) ? (uint8)R(4) : (uint8)(4 + R(2));
 			}
 			bool anyWritten = false;
@@ -640,16 +657,36 @@ struct Gen
 			t.dstGpr = Dest();
 			// offsets of the samples, the gathers' and fetches' now and then
 			const bool sampleKind = t.opcode != GPU7_TEX_INST_FETCH4 && t.opcode != GPU7_TEX_INST_LD &&
+				t.opcode != GPU7_TEX_INST_GET_GRADIENTS_H && t.opcode != GPU7_TEX_INST_GET_GRADIENTS_V &&
 				!(compare && (kind == TEX_2D_ARRAY || t.opcode == GPU7_TEX_INST_SAMPLE_C_L));
 			if (Chance(sampleKind ? 30 : 3))
 			{
 				for (auto& o : t.offset)
 					o = (sint8)((int)R(32) - 16);
 			}
-			t.unnormalized = t.opcode == GPU7_TEX_INST_SAMPLE && ((flat2D && !vertexMode && !shadowUnit[t.unit] && Chance(10)) ||
+			t.unnormalized = t.opcode == GPU7_TEX_INST_SAMPLE && (((flat2D || line) && !vertexMode && !shadowUnit[t.unit] && Chance(10)) ||
 				(allowDeclined && Chance(5)));
 			if (t.unnormalized && !allowDeclined)
 				t.offset[0] = t.offset[1] = t.offset[2] = 0;
+			if (t.opcode == GPU7_TEX_INST_GET_GRADIENTS_H || t.opcode == GPU7_TEX_INST_GET_GRADIENTS_V)
+				t.offset[0] = t.offset[1] = t.offset[2] = 0;
+			if (t.opcode == GPU7_TEX_INST_SAMPLE_G)
+			{
+				// gradH and gradV set first, in the clause: none read unset
+				for (uint8 g : { (uint8)GPU7_TEX_INST_SET_GRADIENTS_H, (uint8)GPU7_TEX_INST_SET_GRADIENTS_V })
+				{
+					TexOp set{};
+					set.opcode = g;
+					set.unit = t.unit;
+					set.srcGpr = Chance(60) ? varying[R(3)] : (uint8)R(kGPRs);
+					for (int c = 0; c < 4; c++)
+					{
+						set.srcSel[c] = Chance(85) ? (uint8)R(4) : (uint8)(4 + R(2));
+						set.dstSel[c] = 7;
+					}
+					clause.push_back(set);
+				}
+			}
 			clause.push_back(t);
 		}
 		p.texClauses.push_back(std::move(clause));
@@ -773,11 +810,11 @@ struct Gen
 		for (auto& kind : p.texKind)
 		{
 			uint32 k = R(100);
-			kind = k < 40 ? TEX_2D : k < 58 ? TEX_2D_ARRAY : k < 76 ? TEX_3D : k < 95 ? TEX_2D_UINT : TEX_CUBE;
+			kind = k < 34 ? TEX_2D : k < 48 ? TEX_2D_ARRAY : k < 62 ? TEX_3D : k < 76 ? TEX_2D_UINT : k < 88 ? TEX_1D : k < 95 ? TEX_1D_UINT : TEX_CUBE;
 		}
 		// a 2D or 2D array compared with, now and then
 		for (int u = 0; u < 4; u++)
-			shadowUnit[u] = (p.texKind[u] == TEX_2D || p.texKind[u] == TEX_2D_ARRAY) && Chance(30);
+			shadowUnit[u] = (p.texKind[u] == TEX_2D || p.texKind[u] == TEX_2D_ARRAY || p.texKind[u] == TEX_1D) && Chance(30);
 		if (Chance(55))
 		{
 			// control flow; the counters' register written by them only
@@ -971,22 +1008,24 @@ static VkShaderModule Module(const Context& c, const std::vector<uint32>& words)
 	return m;
 }
 
-// 8x8 with 4 levels: a 2D, a 2D array of 4 layers, an 8 deep 3D (floats,
-// filtered linearly, repeating) and a 2D of uints (nearest); random texels
-// from a fixed seed, uploaded through a staging buffer. depth: a 2D's or a
-// 2D array's depths, 0 to 1, for a sampler comparing with LESS
+// 8x8 with 4 levels: a 2D, a 2D array of 4 layers, an 8 deep 3D, an 8 wide
+// 1D (floats, filtered linearly, repeating), a 2D and a 1D of uints
+// (nearest); random texels from a fixed seed, uploaded through a staging
+// buffer. depth: a 2D's, a 2D array's or a 1D's depths, 0 to 1, for a
+// sampler comparing with LESS
 static void CreateTexture(Context& c, TexKind kind, bool depth = false)
 {
 	Context::Texture& t = depth ? c.depth[kind] : c.tex[kind];
-	const bool isUint = kind == TEX_2D_UINT;
+	const bool isUint = kind == TEX_2D_UINT || kind == TEX_1D_UINT;
+	const bool line = kind == TEX_1D || kind == TEX_1D_UINT;
 	const uint32 layers = kind == TEX_2D_ARRAY ? 4 : 1;
 	const uint32 levels = 4;
 	const uint32 texelBytes = depth ? 4 : 16;
 	const VkImageAspectFlags aspect = depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
 	VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-	ii.imageType = kind == TEX_3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
+	ii.imageType = kind == TEX_3D ? VK_IMAGE_TYPE_3D : line ? VK_IMAGE_TYPE_1D : VK_IMAGE_TYPE_2D;
 	ii.format = depth ? VK_FORMAT_D32_SFLOAT : isUint ? VK_FORMAT_R32G32B32A32_UINT : VK_FORMAT_R32G32B32A32_SFLOAT;
-	ii.extent = {8, 8, kind == TEX_3D ? 8u : 1u};
+	ii.extent = {8, line ? 1u : 8u, kind == TEX_3D ? 8u : 1u};
 	ii.mipLevels = levels;
 	ii.arrayLayers = layers;
 	ii.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -1006,9 +1045,9 @@ static void CreateTexture(Context& c, TexKind kind, bool depth = false)
 		VkBufferImageCopy r{};
 		r.bufferOffset = bytes;
 		r.imageSubresource = {aspect, l, 0, layers};
-		r.imageExtent = {e, e, kind == TEX_3D ? e : 1u};
+		r.imageExtent = {e, line ? 1u : e, kind == TEX_3D ? e : 1u};
 		regions.push_back(r);
-		bytes += (size_t)e * e * (kind == TEX_3D ? e : 1u) * layers * texelBytes;
+		bytes += (size_t)e * (line ? 1u : e) * (kind == TEX_3D ? e : 1u) * layers * texelBytes;
 	}
 	VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
 	bi.size = bytes;
@@ -1077,7 +1116,8 @@ static void CreateTexture(Context& c, TexKind kind, bool depth = false)
 	vkFreeMemory(c.device, stagingMem, nullptr);
 	VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
 	vi.image = t.image;
-	vi.viewType = kind == TEX_3D ? VK_IMAGE_VIEW_TYPE_3D : (kind == TEX_2D_ARRAY ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D);
+	vi.viewType = kind == TEX_3D ? VK_IMAGE_VIEW_TYPE_3D : kind == TEX_2D_ARRAY ? VK_IMAGE_VIEW_TYPE_2D_ARRAY :
+		line ? VK_IMAGE_VIEW_TYPE_1D : VK_IMAGE_VIEW_TYPE_2D;
 	vi.format = ii.format;
 	vi.subresourceRange = {aspect, 0, levels, 0, layers};
 	VKCHECK(vkCreateImageView(c.device, &vi, nullptr, &t.view));
@@ -1251,10 +1291,11 @@ static bool CreateContext(Context& c)
 	}
 	c.vs = Module(c, std::vector<uint32>(res.spirv, res.spirv + res.spirv_len));
 	rslc_result_free(&res, &opts);
-	for (int k = TEX_2D; k <= TEX_2D_UINT; k++)
+	for (int k = TEX_2D; k <= TEX_1D_UINT; k++)
 		CreateTexture(c, (TexKind)k);
 	CreateTexture(c, TEX_2D, true);
 	CreateTexture(c, TEX_2D_ARRAY, true);
+	CreateTexture(c, TEX_1D, true);
 	// the vertex tests' fragment shaders and vertex buffer
 	auto fragment = [&](const std::string& src) {
 		rslc_result r{};
@@ -2053,6 +2094,61 @@ static std::vector<Program> DirectedPrograms()
 			p.exportSel[i] = (uint8)i;
 		out.push_back(p);
 	}
+	// a 1D at known coordinates (unit 1): a sample a texel over, the
+	// level 1 texel 3, its level count, and a gradient lookup of gradients
+	// (0.25, 1.0) and (0.5, 0.125) - level 2 by the x components
+	{
+		Program p{};
+		const uint32 regs[4][4] = {
+			{ 0x3E99999Au /* 0.3 */, 0, 0, 0 },
+			{ 0x3E800000u /* 0.25 */, 0x3F800000u /* 1.0 */, 0, 0 },
+			{ 3, 0, 0, 1 },
+			{ 0x3F000000u /* 0.5 */, 0x3E000000u /* 0.125 */, 0, 0 } };
+		std::vector<AluGroup> groups;
+		for (uint8 r = 0; r < 4; r++)
+		{
+			AluGroup g{};
+			for (uint8 c = 0; c < 4; c++)
+			{
+				AluOp mov{};
+				mov.opcode = ALU_OP2_INST_MOV;
+				mov.src[0] = 253;
+				mov.chan[0] = c;
+				mov.destGpr = (uint8)(4 + r);
+				mov.destElem = c;
+				mov.writeMask = 1;
+				g.ops.push_back(mov);
+				g.literals[c] = regs[r][c];
+			}
+			groups.push_back(g);
+		}
+		p.clauses.push_back(groups);
+		auto op = [](uint8 opcode, uint8 src, uint8 dstChan, uint8 dstSel) {
+			TexOp t{};
+			t.opcode = opcode;
+			t.unit = 1;
+			t.srcGpr = src;
+			t.dstGpr = 0;
+			for (uint8 c = 0; c < 4; c++)
+			{
+				t.srcSel[c] = c;
+				t.dstSel[c] = c == dstChan ? dstSel : 7;
+			}
+			return t;
+		};
+		TexOp sample = op(GPU7_TEX_INST_SAMPLE, 4, 0, 0);
+		sample.offset[0] = 2;
+		TexOp setH = op(GPU7_TEX_INST_SET_GRADIENTS_H, 5, 0, 7), setV = op(GPU7_TEX_INST_SET_GRADIENTS_V, 7, 0, 7);
+		setH.dstSel[0] = setV.dstSel[0] = 7;
+		p.texClauses.push_back({ sample, op(GPU7_TEX_INST_LD, 6, 1, 0), op(GPU7_TEX_INST_GET_TEXTURE_RESINFO, 6, 2, 3),
+			setH, setV, op(GPU7_TEX_INST_SAMPLE_G, 4, 3, 0) });
+		p.cf = { { GPU7_CF_INST_ALU, 0, 0 }, { GPU7_CF_INST_TEX, 0, 0 } };
+		p.texKind[1] = TEX_1D;
+		p.exportGpr = 0;
+		for (int i = 0; i < 4; i++)
+			p.exportSel[i] = (uint8)i;
+		out.push_back(p);
+	}
 	const uint32 ld4[4] = { 3, 5, 0, 0 }, ld5[4] = { 1, 2, 0, 1 };
 	out.push_back(fetch(GPU7_TEX_INST_LD, ld4, ld5));
 	const uint32 s4[4] = { 0x40000000u, 0x40C00000u, 0, 0 }, s5[4] = { 0x40E00000u, 0x3F800000u, 0, 0 }; // (2, 6), (7, 1)
@@ -2579,7 +2675,7 @@ int main(int argc, char** argv)
 	int direct = 0, declined = 0, drawn = 0, differing = 0, glslFailed = 0, offsetsDiffer = 0, shapeDiffers = 0;
 	std::map<std::string, int> reasons;
 	const std::vector<Program> directed = DirectedPrograms();
-	CHECK(directed.size() == 9);
+	CHECK(directed.size() == 10);
 	for (int i = 0; i < count + (int)directed.size(); i++)
 	{
 		const bool allowDeclined = (i % 5) == 0;
@@ -2698,7 +2794,11 @@ int main(int argc, char** argv)
 			sc[0] = (float)(1 + gen.R(32)) / 8.0f;
 			sc[1] = (float)(1 + gen.R(32)) / 8.0f;
 			if (i < (int)directed.size())
-				sc[0] = sc[1] = 1.0f;
+			{
+				// unit 0's 1.0, the others' x 1.0 and y 0.25
+				sc[0] = 1.0f;
+				sc[1] = &sc - k.texScale == 0 ? 1.0f : 0.25f;
+			}
 		}
 		for (auto& f : k.inputs)
 		{

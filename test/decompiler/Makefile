@@ -14,6 +14,11 @@ CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include -I$(DEP)/glm \
 ifneq ($(SANITIZER),)
    FLAGS += -fsanitize=$(SANITIZER) -fno-omit-frame-pointer
 endif
+# a shift out of range stops the run: a TEX instruction writing no register
+# (SET_GRADIENTS_H/V, dstGpr -1) once shifted by -1 in the analyzer
+ifneq (,$(findstring undefined,$(SANITIZER)))
+   FLAGS += -fno-sanitize-recover=shift
+endif
 LIBS := -ldl -lpthread -lm
 ifneq (,$(findstring mingw,$(CXX)))
    LIBS := -static
