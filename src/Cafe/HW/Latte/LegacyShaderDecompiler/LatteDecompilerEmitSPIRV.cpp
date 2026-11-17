@@ -161,6 +161,11 @@ namespace
 		// the uniform block, -1 where it has none
 		sint32 windowMember{-1}, pointSizeMember{-1};
 		uint32 paramVar[LATTE_ANALYZER_IMPORT_INDEX_PARAM_MAX + 1]{};
+		// a geometry shader's draw: the vertex shader's out Vertex { ivec4
+		// passV2GParameter<n>; } v2g, the ring it writes, and the pixel
+		// shader's inputs at their semantics' locations
+		bool usesGS{};
+		uint32 v2gVar{}, v2gCount{};
 		uint32 vertexIndexVar{}, instanceIndexVar{};
 		uint32 interfaceIds[LATTE_NUM_MAX_ATTRIBUTE_LOCATIONS + 32 + 8];
 		uint32 interfaceCount{};
@@ -946,6 +951,7 @@ namespace
 		bool EmitAttributeImport(LatteParsedFetchShaderAttribute& attrib);
 		bool EmitAttributeDecode(LatteParsedFetchShaderAttribute& attrib);
 		bool EmitVertexExport(LatteDecompilerCFInstruction& cf);
+		bool EmitRingWrite(LatteDecompilerCFInstruction& cf);
 		uint32 BuiltinInput(uint32 builtin);
 		uint32 VertexOutSemantic(uint32 index);
 		// attrDecoder's statements, as rslc makes them
@@ -1337,8 +1343,16 @@ namespace
 		{
 			if (psInputTable->import[i].semanticId > LATTE_ANALYZER_IMPORT_INDEX_PARAM_MAX)
 				continue;
+			// passG2PParameter<n> at the semantic's location after a geometry
+			// shader, passParameterSem<n> at the input's index otherwise
+			const uint32 location = usesGS ? (psInputTable->import[i].semanticId & 0x7F) : (uint32)i;
+			for (sint32 j = 0; usesGS && j < i; j++)
+			{
+				if (inputVar[j] && (psInputTable->import[j].semanticId & 0x7F) == location)
+					return Decline("parameter declared twice");
+			}
 			uint32 v = spv_global_variable(w, ptrIn, SpvStorageClassInput);
-			Decorate(v, SpvDecorationLocation, { (uint32)i });
+			Decorate(v, SpvDecorationLocation, { location });
 			if (psInputTable->import[i].isFlat)
 				Decorate(v, SpvDecorationFlat);
 			if (psInputTable->import[i].isNoPerspective)
@@ -3186,6 +3200,25 @@ namespace
 			Decorate(attrVar[i], SpvDecorationLocation, { (uint32)ctx->output->resourceMappingVK.attributeMapping[i] });
 			interfaceIds[interfaceCount++] = attrVar[i];
 		}
+		if (usesGS)
+		{
+			// V2G_LAYOUT out Vertex { ivec4 passV2GParameter0; ... } v2g; and
+			// nothing else: the geometry shader makes the vertices
+			v2gCount = shader->ringParameterCount;
+			if (v2gCount == 0)
+				return Ok();
+			if (v2gCount > 32)
+				return Decline("ring parameter count");
+			uint32 members[32];
+			for (uint32 i = 0; i < v2gCount; i++)
+				members[i] = tV4I;
+			uint32 vblock = spv_type_struct(w, members, v2gCount);
+			Decorate(vblock, SpvDecorationBlock);
+			v2gVar = spv_global_variable(w, spv_type_pointer(w, SpvStorageClassOutput, vblock), SpvStorageClassOutput);
+			Decorate(v2gVar, SpvDecorationLocation, { 0 });
+			interfaceIds[interfaceCount++] = v2gVar;
+			return Ok();
+		}
 		// out gl_PerVertex { vec4 gl_Position; float gl_PointSize; }, the
 		// point size where the primitives are points
 		const uint32 members[2] = { tV4F, tF };
@@ -3642,6 +3675,8 @@ namespace
 	// writes it, and the parameters
 	bool SpvShader::EmitVertexExport(LatteDecompilerCFInstruction& cf)
 	{
+		if (usesGS)
+			return Decline("vertex export with a geometry shader");
 		if (cf.exportType == 1 && cf.exportArrayBase == GPU7_DECOMPILER_CF_EXPORT_BASE_POSITION)
 		{
 			uint32 c[4];
@@ -3730,6 +3765,48 @@ namespace
 			return Ok();
 		}
 		return Decline("vertex export");
+	}
+
+	// _emitCFRingWriteCode of a vertex shader: v2g.passV2GParameter<n>.<mask>
+	// = ivecN(the register's masked channels), for each of the burst
+	bool SpvShader::EmitRingWrite(LatteDecompilerCFInstruction& cf)
+	{
+		if (!isVertex || !usesGS)
+			return Decline("ring write");
+		if (cf.memWriteElemSize != 3 || (cf.exportArrayBase & 3) != 0)
+			return Decline("ring write layout");
+		uint8 sel[4];
+		uint32 count = 0;
+		for (uint32 k = 0; k < 4; k++)
+		{
+			if (cf.memWriteCompMask & (1u << k))
+				sel[count++] = (uint8)k;
+		}
+		if (count == 0)
+			return Decline("ring write of no channel");
+		const uint32 tV4Ip = spv_type_pointer(w, SpvStorageClassOutput, tV4I);
+		for (uint32 burst = 0; burst < cf.exportBurstCount + 1; burst++)
+		{
+			const uint32 index = cf.exportArrayBase / 4 + burst;
+			if (index >= v2gCount || !v2gVar)
+				return Decline("ring parameter not declared");
+			uint32 c[4];
+			for (uint32 i = 0; i < count; i++)
+				c[i] = Convert({ ReadChannel(GPR(cf.exportSourceGPR + burst), sel[i]), dt }, DT_I).id;
+			uint32 member = Op(SpvOpAccessChain, tV4Ip, { v2gVar, ConstI((sint32)index) });
+			if (count == 4)
+			{
+				Store(member, Construct(tV4I, c, 4));
+				continue;
+			}
+			// the masked channels into the vector, the rest kept
+			uint32 part = count == 1 ? c[0] : Construct(spv_type_vector(w, tI, count), c, count);
+			uint32 reg = Load(tV4I, member);
+			for (uint32 i = 0; i < count; i++)
+				reg = Op(SpvOpCompositeInsert, tV4I, { count == 1 ? part : Op(SpvOpCompositeExtract, tI, { part, i }), reg, sel[i] });
+			Store(member, reg);
+		}
+		return Ok();
 	}
 
 	// LatteDecompiler_emitClauseCode's ALU clause: in an if on the active
@@ -3849,6 +3926,8 @@ namespace
 		case GPU7_CF_INST_EXPORT:
 		case GPU7_CF_INST_EXPORT_DONE:
 			return isVertex ? EmitVertexExport(cf) : EmitExport(cf);
+		case GPU7_CF_INST_MEM_RING_WRITE:
+			return EmitRingWrite(cf);
 		case GPU7_CF_INST_TEX:
 			if (hasActiveMask)
 			{
@@ -3908,9 +3987,8 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 	// what this emitter covers so far
 	if (shader->shaderType != LatteConst::ShaderType::Pixel && shader->shaderType != LatteConst::ShaderType::Vertex)
 		return decline("geometry shader");
-	if (shaderContext->options->usesGeometryShader)
-		return decline("geometry shader");
 	s.isVertex = shader->shaderType == LatteConst::ShaderType::Vertex;
+	s.usesGS = shaderContext->options->usesGeometryShader;
 #ifdef __ANDROID__
 	// the unused output locations the GLSL emitter writes there
 	if (s.isVertex)
