@@ -448,10 +448,10 @@ struct Gen
 			l = Literal();
 		bool usedElem[4] = {};
 		bool written[5] = {};
-		// a DOT4 now and then: four ops, x to w
-		if (Chance(8))
+		// a DOT4 or a CUBE now and then: four ops, x to w
+		if (Chance(10))
 		{
-			uint32 opc = Chance(50) ? ALU_OP2_INST_DOT4 : ALU_OP2_INST_DOT4_IEEE;
+			uint32 opc = Chance(30) ? ALU_OP2_INST_CUBE : Chance(50) ? ALU_OP2_INST_DOT4 : ALU_OP2_INST_DOT4_IEEE;
 			uint8 dst = Dest();
 			for (uint8 e = 0; e < 4; e++)
 			{
@@ -602,6 +602,7 @@ struct Gen
 				GPU7_TEX_INST_GET_GRADIENTS_H };
 			const bool flat2D = kind == TEX_2D || kind == TEX_2D_UINT;
 			const bool line = kind == TEX_1D || kind == TEX_1D_UINT;
+			const bool cube = kind == TEX_CUBE;
 			uint32 k = R(100);
 			if (allowDeclined && Chance(15))
 				t.opcode = any[R(10)];
@@ -641,8 +642,10 @@ struct Gen
 				const bool lineSample = line && !compare && t.opcode != GPU7_TEX_INST_FETCH4 && t.opcode != GPU7_TEX_INST_LD &&
 					t.opcode != GPU7_TEX_INST_GET_TEXTURE_RESINFO && t.opcode != GPU7_TEX_INST_GET_COMP_TEX_LOD &&
 					t.opcode != GPU7_TEX_INST_GET_GRADIENTS_H && t.opcode != GPU7_TEX_INST_GET_GRADIENTS_V && !t.unnormalized;
+				const bool cubeSample = cube && t.opcode != GPU7_TEX_INST_GET_TEXTURE_RESINFO && t.opcode != GPU7_TEX_INST_GET_COMP_TEX_LOD &&
+					t.opcode != GPU7_TEX_INST_GET_GRADIENTS_H && t.opcode != GPU7_TEX_INST_GET_GRADIENTS_V;
 				const bool asRead = (compare && (kind == TEX_2D ? c != (t.opcode == GPU7_TEX_INST_SAMPLE_C_L ? 3 : 2) :
-					kind == TEX_1D ? c == 0 || c == 3 : c == 3)) || (lineSample && c == 0);
+					kind == TEX_1D ? c == 0 || c == 3 : c == 3)) || (lineSample && c == 0) || (cubeSample && c < 2);
 				t.srcSel[c] = Chance(asRead && !allowDeclined ? 100 : 85) ? (uint8)R(4) : (uint8)(4 + R(2));
 			}
 			bool anyWritten = false;
@@ -668,8 +671,22 @@ struct Gen
 				(allowDeclined && Chance(5)));
 			if (t.unnormalized && !allowDeclined)
 				t.offset[0] = t.offset[1] = t.offset[2] = 0;
-			if (t.opcode == GPU7_TEX_INST_GET_GRADIENTS_H || t.opcode == GPU7_TEX_INST_GET_GRADIENTS_V)
+			if (t.opcode == GPU7_TEX_INST_GET_GRADIENTS_H || t.opcode == GPU7_TEX_INST_GET_GRADIENTS_V || (cube && !allowDeclined))
 				t.offset[0] = t.offset[1] = t.offset[2] = 0;
+			if (cube && Chance(40))
+			{
+				// the cube array's layer first, now and then
+				TexOp set{};
+				set.opcode = GPU7_TEX_INST_SET_CUBEMAP_INDEX;
+				set.unit = t.unit;
+				set.srcGpr = Chance(60) ? varying[R(3)] : (uint8)R(kGPRs);
+				for (int c = 0; c < 4; c++)
+				{
+					set.srcSel[c] = Chance(85) ? (uint8)R(4) : (uint8)(4 + R(2)); // constants too
+					set.dstSel[c] = 7;
+				}
+				clause.push_back(set);
+			}
 			if (t.opcode == GPU7_TEX_INST_SAMPLE_G)
 			{
 				// gradH and gradV set first, in the clause: none read unset
@@ -810,7 +827,7 @@ struct Gen
 		for (auto& kind : p.texKind)
 		{
 			uint32 k = R(100);
-			kind = k < 34 ? TEX_2D : k < 48 ? TEX_2D_ARRAY : k < 62 ? TEX_3D : k < 76 ? TEX_2D_UINT : k < 88 ? TEX_1D : k < 95 ? TEX_1D_UINT : TEX_CUBE;
+			kind = k < 32 ? TEX_2D : k < 45 ? TEX_2D_ARRAY : k < 57 ? TEX_3D : k < 70 ? TEX_2D_UINT : k < 81 ? TEX_1D : k < 88 ? TEX_1D_UINT : TEX_CUBE;
 		}
 		// a 2D or 2D array compared with, now and then
 		for (int u = 0; u < 4; u++)
@@ -1009,7 +1026,8 @@ static VkShaderModule Module(const Context& c, const std::vector<uint32>& words)
 }
 
 // 8x8 with 4 levels: a 2D, a 2D array of 4 layers, an 8 deep 3D, an 8 wide
-// 1D (floats, filtered linearly, repeating), a 2D and a 1D of uints
+// 1D, an array of two cubes (floats, filtered linearly, repeating), a 2D
+// and a 1D of uints
 // (nearest); random texels from a fixed seed, uploaded through a staging
 // buffer. depth: a 2D's, a 2D array's or a 1D's depths, 0 to 1, for a
 // sampler comparing with LESS
@@ -1018,7 +1036,7 @@ static void CreateTexture(Context& c, TexKind kind, bool depth = false)
 	Context::Texture& t = depth ? c.depth[kind] : c.tex[kind];
 	const bool isUint = kind == TEX_2D_UINT || kind == TEX_1D_UINT;
 	const bool line = kind == TEX_1D || kind == TEX_1D_UINT;
-	const uint32 layers = kind == TEX_2D_ARRAY ? 4 : 1;
+	const uint32 layers = kind == TEX_2D_ARRAY ? 4 : kind == TEX_CUBE ? 12 : 1; // a cube array: two cubes
 	const uint32 levels = 4;
 	const uint32 texelBytes = depth ? 4 : 16;
 	const VkImageAspectFlags aspect = depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
@@ -1031,6 +1049,8 @@ static void CreateTexture(Context& c, TexKind kind, bool depth = false)
 	ii.samples = VK_SAMPLE_COUNT_1_BIT;
 	ii.tiling = VK_IMAGE_TILING_OPTIMAL;
 	ii.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	if (kind == TEX_CUBE)
+		ii.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
 	VKCHECK(vkCreateImage(c.device, &ii, nullptr, &t.image));
 	VkMemoryRequirements req;
 	vkGetImageMemoryRequirements(c.device, t.image, &req);
@@ -1117,6 +1137,7 @@ static void CreateTexture(Context& c, TexKind kind, bool depth = false)
 	VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
 	vi.image = t.image;
 	vi.viewType = kind == TEX_3D ? VK_IMAGE_VIEW_TYPE_3D : kind == TEX_2D_ARRAY ? VK_IMAGE_VIEW_TYPE_2D_ARRAY :
+		kind == TEX_CUBE ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY :
 		line ? VK_IMAGE_VIEW_TYPE_1D : VK_IMAGE_VIEW_TYPE_2D;
 	vi.format = ii.format;
 	vi.subresourceRange = {aspect, 0, levels, 0, layers};
@@ -1196,6 +1217,10 @@ static bool CreateContext(Context& c)
 		robust.robustImageAccess = VK_TRUE;
 		dci.pNext = &robust;
 	}
+	// cube map arrays, the decompiler's cube maps
+	VkPhysicalDeviceFeatures features{};
+	features.imageCubeArray = VK_TRUE;
+	dci.pEnabledFeatures = &features;
 	dci.queueCreateInfoCount = 1;
 	dci.pQueueCreateInfos = &qi;
 	dci.enabledExtensionCount = nExts;
@@ -1291,7 +1316,7 @@ static bool CreateContext(Context& c)
 	}
 	c.vs = Module(c, std::vector<uint32>(res.spirv, res.spirv + res.spirv_len));
 	rslc_result_free(&res, &opts);
-	for (int k = TEX_2D; k <= TEX_1D_UINT; k++)
+	for (int k = TEX_2D; k <= TEX_CUBE; k++)
 		CreateTexture(c, (TexKind)k);
 	CreateTexture(c, TEX_2D, true);
 	CreateTexture(c, TEX_2D_ARRAY, true);
@@ -1387,7 +1412,7 @@ static std::vector<uint32> Draw(const Context& c, const Decompiled& d, const uin
 	{
 		if (d.texBinding[i] < 0)
 			continue;
-		if (i >= 4 || texKind[i] == TEX_NONE || texKind[i] >= TEX_CUBE || (d.shadow[i] && !c.depth[texKind[i]].image))
+		if (i >= 4 || texKind[i] == TEX_NONE || texKind[i] >= TEX_KINDS || (d.shadow[i] && !c.depth[texKind[i]].image))
 		{
 			std::printf("FAIL: texture unit %d drawn with no texture\n", i);
 			s_failures++;
@@ -2094,6 +2119,106 @@ static std::vector<Program> DirectedPrograms()
 			p.exportSel[i] = (uint8)i;
 		out.push_back(p);
 	}
+	// CUBE of known (x, y, z), each major axis negative in turn (z, y, x):
+	// the S and T of each and their faces summed into R0
+	{
+		Program p{};
+		std::vector<AluGroup> groups;
+		const float xyz[3][3] = { { 0.25f, 0.5f, -2.0f }, { 0.25f, -2.0f, 0.5f }, { -2.0f, 0.5f, 0.25f } };
+		for (uint8 r = 0; r < 3; r++)
+		{
+			AluGroup g{};
+			std::memcpy(&g.literals[0], &xyz[r][2], 4); // z: src0.x
+			std::memcpy(&g.literals[1], &xyz[r][1], 4); // y: src1.x
+			std::memcpy(&g.literals[2], &xyz[r][0], 4); // x: src1.y
+			for (uint8 e = 0; e < 4; e++)
+			{
+				AluOp op{};
+				op.opcode = ALU_OP2_INST_CUBE;
+				op.src[0] = e == 0 ? 253 : 248;
+				op.chan[0] = 0;
+				op.src[1] = e < 2 ? 253 : 248;
+				op.chan[1] = e == 0 ? 1 : 2;
+				op.destGpr = (uint8)(1 + r);
+				op.destElem = e;
+				op.writeMask = 1;
+				g.ops.push_back(op);
+			}
+			groups.push_back(g);
+		}
+		AluGroup sum{};
+		auto add = [&](uint8 elem, uint8 a, uint8 ac, uint8 b, uint8 bc) {
+			AluOp op{};
+			op.opcode = ALU_OP2_INST_ADD;
+			op.src[0] = a;
+			op.chan[0] = ac;
+			op.src[1] = b;
+			op.chan[1] = bc;
+			op.destGpr = 0;
+			op.destElem = elem;
+			op.writeMask = 1;
+			sum.ops.push_back(op);
+		};
+		add(0, 1, 0, 1, 1); // z: S + T
+		add(1, 1, 3, 2, 3); // the z and y faces
+		add(2, 2, 0, 2, 1); // y: S + T
+		add(3, 3, 1, 3, 3); // x: T and its face
+		groups.push_back(sum);
+		p.clauses.push_back(groups);
+		p.cf = { { GPU7_CF_INST_ALU, 0, 0 } };
+		p.exportGpr = 0;
+		for (int i = 0; i < 4; i++)
+			p.exportSel[i] = (uint8)i;
+		out.push_back(p);
+	}
+	// a cube array's layer by a constant select (1.0: the second cube), then
+	// a sample of it at known st and face; the GLSL emitter once indexed
+	// its select table by the select, 5, out of the table. Then the layer
+	// from w (0.0: the first cube) and a sample again
+	{
+		Program p{};
+		AluGroup g{};
+		const uint32 r4[4] = { 0x3F99999Au /* 1.2 */, 0x3FD9999Au /* 1.7 */, 0x40000000u /* 2.0 */, 0 };
+		for (uint8 c = 0; c < 4; c++)
+		{
+			AluOp mov{};
+			mov.opcode = ALU_OP2_INST_MOV;
+			mov.src[0] = 253;
+			mov.chan[0] = c;
+			mov.destGpr = 4;
+			mov.destElem = c;
+			mov.writeMask = 1;
+			g.ops.push_back(mov);
+			g.literals[c] = r4[c];
+		}
+		p.clauses.push_back({ g });
+		TexOp set{}, sample{};
+		set.opcode = GPU7_TEX_INST_SET_CUBEMAP_INDEX;
+		set.srcGpr = 4;
+		set.srcSel[0] = 5;
+		sample.opcode = GPU7_TEX_INST_SAMPLE_LZ;
+		sample.srcGpr = 4;
+		for (uint8 c = 0; c < 4; c++)
+		{
+			set.dstSel[c] = 7;
+			sample.srcSel[c] = c;
+			sample.dstSel[c] = c;
+		}
+		set.srcSel[1] = set.srcSel[2] = set.srcSel[3] = 0;
+		for (uint8 c = 0; c < 4; c++)
+			sample.dstSel[c] = c < 2 ? c : 7;
+		TexOp set2 = set, sample2 = sample;
+		set2.srcSel[0] = 3;
+		for (uint8 c = 0; c < 4; c++)
+			sample2.dstSel[c] = c < 2 ? 7 : c;
+		p.texClauses.push_back({ set, sample, set2, sample2 });
+		p.cf = { { GPU7_CF_INST_ALU, 0, 0 }, { GPU7_CF_INST_TEX, 0, 0 } };
+		p.texKind[0] = TEX_CUBE;
+		p.exportGpr = 0;
+		for (int i = 0; i < 4; i++)
+			p.exportSel[i] = (uint8)i;
+		out.push_back(p);
+	}
 	// a 1D at known coordinates (unit 1): a sample a texel over, the
 	// level 1 texel 3, its level count, and a gradient lookup of gradients
 	// (0.25, 1.0) and (0.5, 0.125) - level 2 by the x components
@@ -2340,7 +2465,7 @@ static std::vector<uint32> DrawVertex(const Context& c, const Decompiled& d, con
 	{
 		if (d.texBinding[i] < 0)
 			continue;
-		if (i >= 4 || k.p.texKind[i] == TEX_NONE || k.p.texKind[i] >= TEX_CUBE || (d.shadow[i] && !c.depth[k.p.texKind[i]].image))
+		if (i >= 4 || k.p.texKind[i] == TEX_NONE || k.p.texKind[i] >= TEX_KINDS || (d.shadow[i] && !c.depth[k.p.texKind[i]].image))
 		{
 			std::printf("FAIL: texture unit %d drawn with no texture\n", i);
 			s_failures++;
@@ -2675,7 +2800,7 @@ int main(int argc, char** argv)
 	int direct = 0, declined = 0, drawn = 0, differing = 0, glslFailed = 0, offsetsDiffer = 0, shapeDiffers = 0;
 	std::map<std::string, int> reasons;
 	const std::vector<Program> directed = DirectedPrograms();
-	CHECK(directed.size() == 10);
+	CHECK(directed.size() == 12);
 	for (int i = 0; i < count + (int)directed.size(); i++)
 	{
 		const bool allowDeclined = (i % 5) == 0;

@@ -2749,7 +2749,11 @@ static void _emitTEXSetCubemapIndexCode(LatteDecompilerShaderContext* shaderCont
 	src->addFmt("cubeMapArrayIndex{}", texInstruction->textureFetch.textureIndex);
 	const char* resultElemTable[4] = {"x","y","z","w"};
 
-	if (shaderContext->typeTracker.defaultDataType == LATTE_DECOMPILER_DTYPE_SIGNED_INT)
+	// a constant select: 1.0 for 5, 0.0 otherwise (no channel to index by)
+	const uint8 selector = texInstruction->textureFetch.srcSel[0];
+	if (selector >= 4)
+		src->add(selector == 5 ? " = 1.0;" _CRLF : " = 0.0;" _CRLF);
+	else if (shaderContext->typeTracker.defaultDataType == LATTE_DECOMPILER_DTYPE_SIGNED_INT)
 		src->addFmt(" = as_type<float>(R{}i.{});" _CRLF, texInstruction->srcGpr, resultElemTable[texInstruction->textureFetch.srcSel[0]]);
 	else if (shaderContext->typeTracker.defaultDataType == LATTE_DECOMPILER_DTYPE_FLOAT)
 		src->addFmt(" = R{}f.{};" _CRLF, texInstruction->srcGpr, resultElemTable[texInstruction->textureFetch.srcSel[0]]);

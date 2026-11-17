@@ -156,6 +156,7 @@ enum
    SpvCapabilitySampleRateShading = 35,
    SpvCapabilitySampled1D = 43,
    SpvCapabilityImage1D = 44,
+   SpvCapabilitySampledCubeArray = 45,
    SpvCapabilitySampledBuffer = 46,
    SpvCapabilityImageQuery = 50,
    SpvCapabilityDerivativeControl = 51,

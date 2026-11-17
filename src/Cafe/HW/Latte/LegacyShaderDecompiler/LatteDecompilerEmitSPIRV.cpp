@@ -140,7 +140,10 @@ namespace
 		};
 		Loop loops[16];
 		uint32 loopDepth{};
-		uint32 fnMulNonIEEE{}, fnClampFI32{};
+		uint32 fnMulNonIEEE{}, fnClampFI32{}, fnRedcCUBE{}, fnCubeReverse{};
+		// cubeMapSTM, cubeMapFaceId and cubeMapArrayIndex<n>
+		uint32 cubeSTMVar{}, cubeFaceVar{}, cubeIndexVar[LATTE_NUM_MAX_TEX_UNITS]{};
+		bool sampledCubeArray{};
 		uint32 tempResultFVar{};
 		uint32 ufMember[8 + LATTE_NUM_MAX_TEX_UNITS]{};
 		uint32 inputVar[GPU7_PS_MAX_INPUTS]{};
@@ -501,6 +504,177 @@ namespace
 			HOpVoid(SpvOpReturnValue, { HOp(SpvOpBitcast, tI, { c }) });
 			HOpVoid(SpvOpFunctionEnd, {});
 			return fnClampFI32;
+		}
+		// a helper of parameters of their own types, all pointers
+		uint32 HelperBeginTyped(uint32 ret, const uint32* paramPtrs, uint32 paramCount, uint32* params)
+		{
+			uint32 fnType = spv_type_function(w, ret, paramPtrs, paramCount);
+			uint32 fn = spv_id(w);
+			HOpVoid(SpvOpFunction, { ret, fn, SpvFunctionControlMaskNone, fnType });
+			for (uint32 i = 0; i < paramCount; i++)
+			{
+				params[i] = spv_id(w);
+				HOpVoid(SpvOpFunctionParameter, { paramPtrs[i], params[i] });
+			}
+			HOpVoid(SpvOpLabel, { spv_id(w) });
+			return fn;
+		}
+		uint32 HConstruct(uint32 type, std::initializer_list<uint32> parts)
+		{
+			uint32 words[8];
+			size_t n = 0;
+			uint32 id = spv_id(w);
+			words[n++] = type;
+			words[n++] = id;
+			for (uint32 a : parts)
+				words[n++] = a;
+			spv_inst(w, SPV_SEC_HELPERS, SpvOpCompositeConstruct, words, n);
+			return id;
+		}
+		// c ? a : b of a side not a leaf: a branch each way, a phi; the
+		// sides' values made by make(true/false) in their blocks
+		template<typename F>
+		uint32 HTernary(uint32 type, uint32 cond, F make)
+		{
+			uint32 thenL = spv_id(w), elseL = spv_id(w), merge = spv_id(w);
+			HOpVoid(SpvOpSelectionMerge, { merge, SpvSelectionControlMaskNone });
+			HOpVoid(SpvOpBranchConditional, { cond, thenL, elseL });
+			HOpVoid(SpvOpLabel, { thenL });
+			uint32 a = make(true);
+			HOpVoid(SpvOpBranch, { merge });
+			HOpVoid(SpvOpLabel, { elseL });
+			uint32 b = make(false);
+			HOpVoid(SpvOpBranch, { merge });
+			HOpVoid(SpvOpLabel, { merge });
+			return HOp(SpvOpPhi, type, { a, thenL, b, elseL });
+		}
+		// void redcCUBE(vec4 src0, vec4 src1, out vec3 stm, out int faceId),
+		// as the GLSL emitter writes it and rslc lowers it
+		uint32 RedcCUBEFunction()
+		{
+			if (fnRedcCUBE)
+				return fnRedcCUBE;
+			const uint32 tV3F = spv_type_vector(w, tF, 3);
+			const uint32 ptrs[4] = { spv_type_pointer(w, SpvStorageClassFunction, tV4F), spv_type_pointer(w, SpvStorageClassFunction, tV4F),
+				spv_type_pointer(w, SpvStorageClassFunction, tV3F), spv_type_pointer(w, SpvStorageClassFunction, tI) };
+			uint32 p[4];
+			fnRedcCUBE = HelperBeginTyped(tVoid, ptrs, 4, p);
+			// float x = src1.y, y = src1.x, z = src0.x;
+			uint32 x = HOp(SpvOpCompositeExtract, tF, { HOp(SpvOpLoad, tV4F, { p[1] }), 1 });
+			uint32 y = HOp(SpvOpCompositeExtract, tF, { HOp(SpvOpLoad, tV4F, { p[1] }), 0 });
+			uint32 z = HOp(SpvOpCompositeExtract, tF, { HOp(SpvOpLoad, tV4F, { p[0] }), 0 });
+			uint32 ax = HOp(SpvOpExtInst, tF, { glsl, GLSLstd450FAbs, x });
+			uint32 ay = HOp(SpvOpExtInst, tF, { glsl, GLSLstd450FAbs, y });
+			uint32 az = HOp(SpvOpExtInst, tF, { glsl, GLSLstd450FAbs, z });
+			auto neg = [&](uint32 v) { return HOp(SpvOpFNegate, tF, { v }); };
+			auto below0 = [&](uint32 v) { return HOp(SpvOpFOrdLessThan, tBool, { v, ConstF(0.0f) }); };
+			auto twice = [&](uint32 v) { return HOp(SpvOpFMul, tF, { v, ConstF(2.0f) }); };
+			auto face = [&](uint32 v, sint32 a, sint32 b) {
+				HOpVoid(SpvOpStore, { p[3], HOp(SpvOpSelect, tI, { below0(v), ConstI(a), ConstI(b) }) });
+			};
+			// if (az >= ax && az >= ay)
+			uint32 c = HOp(SpvOpLogicalAnd, tBool, { HOp(SpvOpFOrdGreaterThanEqual, tBool, { az, ax }),
+				HOp(SpvOpFOrdGreaterThanEqual, tBool, { az, ay }) });
+			uint32 t1 = spv_id(w), e1 = spv_id(w), m1 = spv_id(w);
+			HOpVoid(SpvOpSelectionMerge, { m1, SpvSelectionControlMaskNone });
+			HOpVoid(SpvOpBranchConditional, { c, t1, e1 });
+			HOpVoid(SpvOpLabel, { t1 });
+			{
+				// stm = vec3(-y, z < 0.0 ? -x : x, z * 2.0); faceId = z < 0.0 ? 5 : 4;
+				uint32 a = neg(y);
+				uint32 b = HTernary(tF, below0(z), [&](bool t) { return t ? neg(x) : x; });
+				HOpVoid(SpvOpStore, { p[2], HConstruct(tV3F, { a, b, twice(z) }) });
+				face(z, 5, 4);
+			}
+			HOpVoid(SpvOpBranch, { m1 });
+			HOpVoid(SpvOpLabel, { e1 });
+			// else if (ay >= ax)
+			uint32 t2 = spv_id(w), e2 = spv_id(w), m2 = spv_id(w);
+			uint32 c2 = HOp(SpvOpFOrdGreaterThanEqual, tBool, { ay, ax });
+			HOpVoid(SpvOpSelectionMerge, { m2, SpvSelectionControlMaskNone });
+			HOpVoid(SpvOpBranchConditional, { c2, t2, e2 });
+			HOpVoid(SpvOpLabel, { t2 });
+			{
+				// stm = vec3(y < 0.0 ? -z : z, x, y * 2.0); faceId = y < 0.0 ? 3 : 2;
+				uint32 a = HTernary(tF, below0(y), [&](bool t) { return t ? neg(z) : z; });
+				HOpVoid(SpvOpStore, { p[2], HConstruct(tV3F, { a, x, twice(y) }) });
+				face(y, 3, 2);
+			}
+			HOpVoid(SpvOpBranch, { m2 });
+			HOpVoid(SpvOpLabel, { e2 });
+			{
+				// stm = vec3(-y, x < 0.0 ? z : -z, x * 2.0); faceId = x < 0.0 ? 1 : 0;
+				uint32 a = neg(y);
+				uint32 b = HTernary(tF, below0(x), [&](bool t) { return t ? z : neg(z); });
+				HOpVoid(SpvOpStore, { p[2], HConstruct(tV3F, { a, b, twice(x) }) });
+				face(x, 1, 0);
+			}
+			HOpVoid(SpvOpBranch, { m2 });
+			HOpVoid(SpvOpLabel, { m2 });
+			HOpVoid(SpvOpBranch, { m1 });
+			HOpVoid(SpvOpLabel, { m1 });
+			HOpVoid(SpvOpReturn, {});
+			HOpVoid(SpvOpFunctionEnd, {});
+			return fnRedcCUBE;
+		}
+		// vec3 redcCUBEReverse(vec2 st, int faceId)
+		uint32 CubeReverseFunction()
+		{
+			if (fnCubeReverse)
+				return fnCubeReverse;
+			const uint32 tV2F = spv_type_vector(w, tF, 2), tV3F = spv_type_vector(w, tF, 3);
+			const uint32 ptrs[2] = { spv_type_pointer(w, SpvStorageClassFunction, tV2F), spv_type_pointer(w, SpvStorageClassFunction, tI) };
+			uint32 p[2];
+			fnCubeReverse = HelperBeginTyped(tV3F, ptrs, 2, p);
+			// vec2 tc = (st - vec2(1.5)) * 2.0;
+			uint32 k15[2] = { ConstF(1.5f), ConstF(1.5f) };
+			uint32 d = HOp(SpvOpFSub, tV2F, { HOp(SpvOpLoad, tV2F, { p[0] }), spv_const_composite(w, tV2F, k15, 2) });
+			uint32 tc = HOp(SpvOpVectorTimesScalar, tV2F, { d, ConstF(2.0f) });
+			auto tx = [&](bool negate) { uint32 v = HOp(SpvOpCompositeExtract, tF, { tc, 0 }); return negate ? HOp(SpvOpFNegate, tF, { v }) : v; };
+			auto ty = [&](bool negate) { uint32 v = HOp(SpvOpCompositeExtract, tF, { tc, 1 }); return negate ? HOp(SpvOpFNegate, tF, { v }) : v; };
+			for (sint32 f = 0; f < 5; f++)
+			{
+				uint32 c = HOp(SpvOpIEqual, tBool, { HOp(SpvOpLoad, tI, { p[1] }), ConstI(f) });
+				uint32 t = spv_id(w), m = spv_id(w);
+				HOpVoid(SpvOpSelectionMerge, { m, SpvSelectionControlMaskNone });
+				HOpVoid(SpvOpBranchConditional, { c, t, m });
+				HOpVoid(SpvOpLabel, { t });
+				uint32 r;
+				switch (f)
+				{
+				case 0: { uint32 a = ty(true); r = HConstruct(tV3F, { ConstF(1.0f), a, tx(true) }); break; }
+				case 1: { uint32 a = ty(true); r = HConstruct(tV3F, { ConstF(-1.0f), a, tx(false) }); break; }
+				case 2: { uint32 a = tx(false); r = HConstruct(tV3F, { a, ConstF(1.0f), ty(false) }); break; }
+				case 3: { uint32 a = tx(false); r = HConstruct(tV3F, { a, ConstF(-1.0f), ty(true) }); break; }
+				default: { uint32 a = tx(false); r = HConstruct(tV3F, { a, ty(true), ConstF(1.0f) }); break; }
+				}
+				HOpVoid(SpvOpReturnValue, { r });
+				HOpVoid(SpvOpLabel, { m });
+			}
+			uint32 a = tx(true);
+			uint32 b = ty(true);
+			HOpVoid(SpvOpReturnValue, { HConstruct(tV3F, { a, b, ConstF(-1.0f) }) });
+			HOpVoid(SpvOpFunctionEnd, {});
+			return fnCubeReverse;
+		}
+		// a call with arguments of their own types: each in a variable of
+		// its own, an out argument's left unset
+		uint32 CallTyped(uint32 fn, uint32 ret, const uint32* argTypes, const uint32* args, uint32 n, uint32* temps)
+		{
+			uint32 words[3 + 4];
+			words[0] = ret;
+			words[1] = spv_id(w);
+			words[2] = fn;
+			for (uint32 i = 0; i < n; i++)
+			{
+				temps[i] = Local(argTypes[i], 0);
+				if (args[i])
+					Store(temps[i], args[i]);
+				words[3 + i] = temps[i];
+			}
+			EnsureBlock();
+			spv_inst(w, SPV_SEC_BODY, SpvOpFunctionCall, words, 3 + n);
+			return words[1];
 		}
 		// a call as rslc makes one: each argument into a variable of its own
 		Val Call(uint32 fn, uint32 ret, sint32 retType, uint32 argType, std::initializer_list<uint32> args)
@@ -987,6 +1161,9 @@ namespace
 		bool EmitOP2(LatteDecompilerCFInstruction& cf, LatteDecompilerALUInstruction& inst);
 		bool EmitOP3(LatteDecompilerALUInstruction& inst);
 		bool EmitReduction(LatteDecompilerALUInstruction* redc[4]);
+		bool EmitCube(LatteDecompilerALUInstruction* redc[4]);
+		bool EmitSetCubeIndex(LatteDecompilerTEXInstruction& t);
+		uint32 CubeCoord(LatteDecompilerTEXInstruction& t);
 		void TrackGroupOutputPVPS(LatteDecompilerALUInstruction* group, size_t count);
 		bool CreateGPRTemporaries(LatteDecompilerALUInstruction* group, size_t count);
 		sint32 TemporaryFor(uint8 gpr, uint8 chan) const;
@@ -1863,10 +2040,36 @@ namespace
 		return Ok();
 	}
 
+	// CUBE: redcCUBE(vec4(src0s), vec4(src1s), cubeMapSTM, cubeMapFaceId);
+	// then S, T, the major axis and float(faceId) into the four outputs
+	bool SpvShader::EmitCube(LatteDecompilerALUInstruction* redc[4])
+	{
+		if (!cubeSTMVar)
+			return Decline("CUBE without its variables");
+		Val a[4], b[4];
+		for (int i = 0; i < 4; i++)
+			a[i] = Operand(*redc[i], 0, DT_F);
+		for (int i = 0; i < 4; i++)
+			b[i] = Operand(*redc[i], 1, DT_F);
+		if (!Ok())
+			return false;
+		const uint32 tV3F = spv_type_vector(w, tF, 3);
+		uint32 args[4] = { CoordVector(a, 4), CoordVector(b, 4), 0, 0 };
+		const uint32 types[4] = { tV4F, tV4F, tV3F, tI };
+		uint32 temps[4];
+		CallTyped(RedcCUBEFunction(), tVoid, types, args, 4, temps);
+		Store(cubeSTMVar, Load(tV3F, temps[2]));
+		Store(cubeFaceVar, Load(tI, temps[3]));
+		for (uint32 i = 0; i < 3; i++)
+			Assign(*redc[i], Run(Op(SpvOpCompositeExtract, tF, { Load(tV3F, cubeSTMVar), i }), DT_F));
+		Assign(*redc[3], Run(Op(SpvOpConvertSToF, tF, { Load(tI, cubeFaceVar) }), DT_F));
+		return Ok();
+	}
+
 	bool SpvShader::EmitReduction(LatteDecompilerALUInstruction* redc[4])
 	{
 		if (redc[0]->opcode == ALU_OP2_INST_CUBE)
-			return Decline("CUBE");
+			return EmitCube(redc);
 		Val a[4], b[4];
 		for (int i = 0; i < 4; i++)
 			a[i] = Operand(*redc[i], 0, DT_F);
@@ -1968,7 +2171,16 @@ namespace
 					r = Call(ClampFI32Function(), tI, DT_I, tI, { v }).id;
 				Store(OutputPtr(last), r);
 			}
-			if (isReduction)
+			if (isReduction && redc[0]->opcode == ALU_OP2_INST_CUBE)
+			{
+				// CUBE: a PV written for itself, from itself
+				for (int f = 0; f < 4; f++)
+				{
+					if (redc[f]->writeMask == 0)
+						Store(PVPSOutputPtr(*redc[f]), ReadOutput(*redc[f]));
+				}
+			}
+			else if (isReduction)
 			{
 				// DOT4: the result into the other three outputs and PVs, read
 				// again for each as the GLSL emitter does
@@ -2069,6 +2281,13 @@ namespace
 			{
 				spvDim = SpvDimension1D;
 				sampled1D = true;
+			}
+			else if (dim == Latte::E_DIM::DIM_CUBEMAP && !isInt && !shadow)
+			{
+				// samplerCubeArray, its layer cubeMapArrayIndex<n>
+				spvDim = SpvDimensionCube;
+				arrayed = true;
+				sampledCubeArray = true;
 			}
 			else if (dim == Latte::E_DIM::DIM_2D_ARRAY && !isInt)
 			{
@@ -2265,12 +2484,17 @@ namespace
 		const bool hasOffset = t.textureFetch.offsetX != 0 || t.textureFetch.offsetY != 0 || t.textureFetch.offsetZ != 0;
 		const bool three = dim == Latte::E_DIM::DIM_3D || dim == Latte::E_DIM::DIM_2D_ARRAY;
 		const bool one = dim == Latte::E_DIM::DIM_1D;
-		if (!three && !one && ActiveSettings::ForceSamplerRoundToPrecision())
+		const bool cube = dim == Latte::E_DIM::DIM_CUBEMAP;
+		if (!three && !one && !cube && ActiveSettings::ForceSamplerRoundToPrecision())
 			return Decline("sampler round to precision");
+		if (cube && hasOffset)
+			return Decline("cube map offset"); // no offset argument written
 		// sampler, coordinates, then the level or bias, as the call reads them
 		uint32 sampler = Load(texType[unit], texVar[unit]);
 		uint32 coord;
-		if (one)
+		if (cube)
+			coord = CubeCoord(t);
+		else if (one)
 			coord = TexGPRAccess1(t, 0); // a 1D's: the register's channel as it is
 		else
 		{
@@ -2438,11 +2662,12 @@ namespace
 				return false;
 			return StoreTexResult(t, count == 1 ? ConstF(0.0f) : SplatF(0.0f, count), DT_F, count, written);
 		}
-		if (dim != Latte::E_DIM::DIM_2D && dim != Latte::E_DIM::DIM_2D_ARRAY)
+		const bool cube = dim == Latte::E_DIM::DIM_CUBEMAP;
+		if (dim != Latte::E_DIM::DIM_2D && dim != Latte::E_DIM::DIM_2D_ARRAY && !cube)
 			return Decline("gather dimension");
 		if (t.textureFetch.offsetX != 0 || t.textureFetch.offsetY != 0 || t.textureFetch.offsetZ != 0)
 			return Decline("gather offset");
-		const bool isArray = dim == Latte::E_DIM::DIM_2D_ARRAY;
+		const bool isArray = dim == Latte::E_DIM::DIM_2D_ARRAY || cube;
 		if (!isArray && ActiveSettings::ForceSamplerRoundToPrecision())
 			return Decline("sampler round to precision");
 		uint32 written[4];
@@ -2450,13 +2675,19 @@ namespace
 		if (!count)
 			return false;
 		uint32 sampler = Load(texType[unit], texVar[unit]);
-		Val c[3];
-		const uint32 n = isArray ? 3 : 2;
-		for (uint32 i = 0; i < n; i++)
-			c[i] = TexCoord(t, (sint32)i);
-		if (!isArray && c[0].k && c[1].k)
-			return Decline("constant gather coordinate"); // the sum folds
-		uint32 coord = CoordVector(c, n);
+		uint32 coord;
+		if (cube)
+			coord = CubeCoord(t);
+		else
+		{
+			Val c[3];
+			const uint32 n = isArray ? 3 : 2;
+			for (uint32 i = 0; i < n; i++)
+				c[i] = TexCoord(t, (sint32)i);
+			if (!isArray && c[0].k && c[1].k)
+				return Decline("constant gather coordinate"); // the sum folds
+			coord = CoordVector(c, n);
+		}
 		if (!isArray)
 			coord = Op(SpvOpFAdd, tV2F, { SplatF(0.0001f, 2), coord });
 		if (!Ok())
@@ -2547,9 +2778,16 @@ namespace
 		uint32 mipIn = TexCoordAs(t, 3, DT_I).id;
 		uint32 mip = Ext(GLSLstd450SClamp, tI, { mipIn, ConstI(0), Op(SpvOpISub, tI, { levels, ConstI(1) }) });
 		image = Op(SpvOpImage, texImage[unit], { Load(texType[unit], texVar[unit]) });
-		const bool two = dim == Latte::E_DIM::DIM_2D;
+		const bool cube = dim == Latte::E_DIM::DIM_CUBEMAP;
+		const bool two = dim == Latte::E_DIM::DIM_2D || cube;
 		const bool one = dim == Latte::E_DIM::DIM_1D;
-		uint32 size = Op(SpvOpImageQuerySizeLod, one ? tI : spv_type_vector(w, tI, two ? 2 : 3), { image, mip });
+		uint32 size = Op(SpvOpImageQuerySizeLod, one ? tI : spv_type_vector(w, tI, two && !cube ? 2 : 3), { image, mip });
+		if (cube)
+		{
+			// textureSize(...).xy
+			static const uint8 xy[2] = { 0, 1 };
+			size = Swizzle(size, tI, xy, 2);
+		}
 		uint32 info;
 		if (one)
 		{
@@ -2582,7 +2820,7 @@ namespace
 			return Decline("texture level query in a vertex shader");
 		imageQuery = true;
 		uint32 sampler = Load(texType[unit], texVar[unit]);
-		const uint32 n = dim == Latte::E_DIM::DIM_3D ? 3 : dim == Latte::E_DIM::DIM_1D ? 1 : 2;
+		const uint32 n = dim == Latte::E_DIM::DIM_3D || dim == Latte::E_DIM::DIM_CUBEMAP ? 3 : dim == Latte::E_DIM::DIM_1D ? 1 : 2;
 		Val c[3];
 		for (uint32 i = 0; i < n; i++)
 			c[i] = TexCoord(t, (sint32)i);
@@ -2688,6 +2926,37 @@ namespace
 		return Ok();
 	}
 
+	// vec4(redcCUBEReverse(the register's xy, int(z)), cubeMapArrayIndex<n>)
+	uint32 SpvShader::CubeCoord(LatteDecompilerTEXInstruction& t)
+	{
+		const sint32 unit = t.textureFetch.textureIndex;
+		uint8 xy[2] = { (uint8)t.textureFetch.srcSel[0], (uint8)t.textureFetch.srcSel[1] };
+		uint32 st = TexGPRAccess(t, xy, 2);
+		Val z = TexCoord(t, 2);
+		// int() of a constant folds
+		uint32 face = z.k ? ConstI((sint32)z.d) : Op(SpvOpConvertFToS, tI, { z.id });
+		const uint32 types[2] = { spv_type_vector(w, tF, 2), tI };
+		const uint32 args[2] = { st, face };
+		uint32 temps[2];
+		uint32 dir = CallTyped(CubeReverseFunction(), spv_type_vector(w, tF, 3), types, args, 2, temps);
+		uint32 parts[2] = { dir, Load(tF, cubeIndexVar[unit]) };
+		return Construct(tV4F, parts, 2);
+	}
+
+	// _emitTEXSetCubemapIndexCode: cubeMapArrayIndex<n> = the register's x
+	bool SpvShader::EmitSetCubeIndex(LatteDecompilerTEXInstruction& t)
+	{
+		const sint32 unit = t.textureFetch.textureIndex;
+		if (unit < 0 || unit >= LATTE_NUM_MAX_TEX_UNITS || !cubeIndexVar[unit])
+			return Decline("cube map index of no cube map");
+		uint8 sel = (uint8)t.textureFetch.srcSel[0];
+		if (sel >= 4)
+			Store(cubeIndexVar[unit], ConstF(sel == 5 ? 1.0f : 0.0f)); // a constant select
+		else
+			Store(cubeIndexVar[unit], TexGPRAccess(t, &sel, 1));
+		return Ok();
+	}
+
 	// _emitTEXClauseCode: each instruction by its kind
 	bool SpvShader::EmitTEXClause(LatteDecompilerCFInstruction& cf)
 	{
@@ -2702,6 +2971,12 @@ namespace
 			if (op == GPU7_TEX_INST_GET_GRADIENTS_H || op == GPU7_TEX_INST_GET_GRADIENTS_V)
 			{
 				if (!EmitGetGradients(t))
+					return false;
+				continue;
+			}
+			if (op == GPU7_TEX_INST_SET_CUBEMAP_INDEX)
+			{
+				if (!EmitSetCubeIndex(t))
 					return false;
 				continue;
 			}
@@ -3512,6 +3787,17 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 	// bool predResult = true; and the active mask stacks
 	s.predVar = s.Local(s.tBool, 0);
 	s.Store(s.predVar, spv_const_bool(w, 1));
+	// vec3 cubeMapSTM; int cubeMapFaceId; float cubeMapArrayIndex<n> = 0.0;
+	if (shaderContext->analyzer.hasRedcCUBE)
+	{
+		s.cubeSTMVar = s.Local(spv_type_vector(w, s.tF, 3), 0);
+		s.cubeFaceVar = s.Local(s.tI, 0);
+	}
+	for (sint32 i = 0; i < LATTE_NUM_MAX_TEX_UNITS; i++)
+	{
+		if (s.texVar[i] && shader->textureUnitDim[i] == Latte::E_DIM::DIM_CUBEMAP)
+			s.cubeIndexVar[i] = s.Local(s.tF, s.ConstF(0.0f));
+	}
 	if (shaderContext->analyzer.modifiesPixelActiveState)
 	{
 		const sint32 depth = shaderContext->analyzer.activeStackMaxDepth;
@@ -3547,6 +3833,11 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 	{
 		uint32 mode[2] = { mainId, SpvExecutionModeOriginUpperLeft };
 		spv_inst(w, SPV_SEC_EXEC_MODE, SpvOpExecutionMode, mode, 2);
+	}
+	if (s.sampledCubeArray)
+	{
+		uint32 cap = SpvCapabilitySampledCubeArray;
+		spv_inst(w, SPV_SEC_CAPABILITY, SpvOpCapability, &cap, 1);
 	}
 	if (s.sampled1D)
 	{
