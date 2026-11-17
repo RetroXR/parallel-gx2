@@ -106,6 +106,13 @@ struct Program
 		uint16 base;
 		uint8 sel[4];
 	};
+	// each ALU clause's kcache: the banks' uniform buffers and their bases
+	// (in 16 vec4 units); none: banks 0 at 0
+	struct Kcache
+	{
+		uint8 bank[2], base[2];
+	};
+	std::vector<Kcache> kcache;
 	bool vertex = false;
 	bool geometry = false; // a geometry shader's (with vertex set)
 	std::vector<VsExport> vsExports;
@@ -113,14 +120,21 @@ struct Program
 	// the index here), to sit between clauses as EMIT_VERTEX entries do
 	std::vector<VsExport> cfRing;
 	std::vector<float> inputs; // a directed program's, in place of random ones
+	// a directed program's pixel 0 x and y: uniform register c3.x and
+	// bank 0's (buffer 0's) vec4 3's y, checked as drawn
+	bool expectRemap = false;
+	// a directed program's pixel 0: buffer 1's vec4 5's z, then buffer 2's
+	// vec4 9's w, x and y (uniform buffer VFETCHes), checked as drawn
+	bool expectFetch = false;
 };
 
 static void EncodeTex(const TexOp& t, uint32 w[4])
 {
 	if (t.vfetch)
 	{
-		// VTX_WORD0-2: fetch type 2, the buffer, source R<srcGpr>.x
-		w[0] = (uint32)GPU7_TEX_INST_VFETCH | (2u << 5) | ((uint32)t.unit << 8) | ((uint32)t.srcGpr << 16);
+		// VTX_WORD0-2: fetch type 2, the buffer, source R<srcGpr>.<srcSel[0]>
+		w[0] = (uint32)GPU7_TEX_INST_VFETCH | (2u << 5) | ((uint32)t.unit << 8) | ((uint32)t.srcGpr << 16) |
+			(((uint32)t.srcSel[0] & 3) << 24);
 		w[1] = (uint32)t.dstGpr | ((uint32)t.dstSel[0] << 9) | ((uint32)t.dstSel[1] << 12) | ((uint32)t.dstSel[2] << 15) |
 			((uint32)t.dstSel[3] << 18);
 		w[2] = t.vtxOffset;
@@ -265,9 +279,13 @@ static std::vector<uint32> Assemble(const Program& p)
 		}
 		else if (e.type & GPU7_CF_INST_ALU_MASK)
 		{
-			// CF_ALU_*: addr, count-1, the kind
-			cf.push_back(clauseStart[e.clause]);
-			cf.push_back(((clauseWords[e.clause] - 1) << 18) | ((e.type & 0xF) << 26) | (1u << 31));
+			// CF_ALU_*: addr, the kcache banks, count-1, their bases, the kind
+			Program::Kcache kc{};
+			if ((size_t)e.clause < p.kcache.size())
+				kc = p.kcache[e.clause];
+			cf.push_back(clauseStart[e.clause] | ((uint32)kc.bank[0] << 22) | ((uint32)kc.bank[1] << 26));
+			cf.push_back(((uint32)kc.base[0] << 2) | ((uint32)kc.base[1] << 10) | ((clauseWords[e.clause] - 1) << 18) |
+				((e.type & 0xF) << 26) | (1u << 31));
 		}
 		else if (e.type == GPU7_CF_INST_MEM_RING_WRITE)
 		{
@@ -421,6 +439,10 @@ struct Gen
 	// programs keep a loop in a loop known to draw). A vertex shader: no
 	// kill
 	bool vertexMode = false;
+	// the uniforms from uniform buffers (the clauses' kcache banks), not
+	// the uniform registers; dynamic reads of them (relative to AR, or
+	// VFETCH) make the whole buffers the shader's
+	bool bufferMode = false;
 	bool loopMade = false;
 	bool shadowUnit[4]{}; // the units compared with: a 2D's or a 2D array's
 	// the register exported, written more often where control flow decides
@@ -459,7 +481,7 @@ struct Gen
 		else if (kind < 68)
 			op.src[s] = 253;
 		else if (kind < 85)
-			op.src[s] = 256 + R(kUniforms);
+			op.src[s] = bufferMode ? (Chance(50) ? 128 : 160) + R(32) : 256 + R(kUniforms);
 		else
 		{
 			uint8 units[5];
@@ -645,6 +667,14 @@ struct Gen
 			groups.push_back(g);
 		}
 		p.clauses.push_back(std::move(groups));
+		// the clause's kcache: two banks, each at 0, 16 or 32
+		Program::Kcache kc{};
+		kc.bank[0] = (uint8)R(3);
+		kc.bank[1] = (uint8)R(4);
+		kc.base[0] = (uint8)R(3);
+		kc.base[1] = (uint8)R(3);
+		p.kcache.resize(p.clauses.size());
+		p.kcache.back() = kc;
 		return (int)p.clauses.size() - 1;
 	}
 	// a TEX clause: samples of every unit, register, select, written
@@ -658,6 +688,22 @@ struct Gen
 		for (uint32 i = 0; i < n; i++)
 		{
 			TexOp t{};
+			if (bufferMode && Chance(15))
+			{
+				// a uniform buffer's vec4 at a register's index
+				t.vfetch = true;
+				t.opcode = GPU7_TEX_INST_VFETCH;
+				t.unit = (uint8)(0x80 + R(3));
+				t.srcGpr = (uint8)R(kGPRs);
+				t.srcSel[0] = (uint8)R(4);
+				for (int c = 0; c < 4; c++)
+					t.dstSel[c] = (uint8)(Chance(85) ? R(4) : 7);
+				if (t.dstSel[0] == 7 && t.dstSel[1] == 7 && t.dstSel[2] == 7 && t.dstSel[3] == 7)
+					t.dstSel[R(4)] = (uint8)R(4);
+				t.dstGpr = Dest();
+				clause.push_back(t);
+				continue;
+			}
 			t.unit = (uint8)R(4);
 			const uint8 kind = p.texKind[t.unit];
 			static const uint8 samples[] = { GPU7_TEX_INST_SAMPLE, GPU7_TEX_INST_SAMPLE, GPU7_TEX_INST_SAMPLE, GPU7_TEX_INST_SAMPLE_L,
@@ -888,6 +934,7 @@ struct Gen
 	Program Make(bool allowDeclined)
 	{
 		Program p{};
+		bufferMode = Chance(30);
 		destGPRs = kGPRs;
 		noKills = vertexMode; // a vertex shader has no discard
 		loopMade = false;
@@ -952,6 +999,7 @@ struct Decompiled
 	bool shadow[LATTE_NUM_MAX_TEX_UNITS]; // a shadow sampler: the depth texture
 	sint8 attrLoc[LATTE_NUM_MAX_ATTRIBUTE_LOCATIONS]; // a vertex shader's
 	sint32 tfBinding = -1; // the streamout storage buffer's, where written
+	sint32 ubBinding[LATTE_NUM_MAX_UNIFORM_BUFFERS]; // uniform buffer mode's, -1 for none
 	std::string glsl;
 };
 
@@ -1005,6 +1053,8 @@ static Decompiled Decompile(const std::vector<uint32>& program, bool direct, boo
 	d.uniformMode = shader->uniformMode;
 	d.setIndex = out.resourceMappingVK.setIndex;
 	d.binding = out.resourceMappingVK.uniformVarsBufferBindingPoint;
+	for (int b = 0; b < LATTE_NUM_MAX_UNIFORM_BUFFERS; b++)
+		d.ubBinding[b] = out.resourceMappingVK.uniformBuffersBindingPoint[b];
 	for (int i = 0; i < LATTE_NUM_MAX_TEX_UNITS; i++)
 	{
 		d.texBinding[i] = out.textureUnitMask[i] ? out.resourceMappingVK.textureUnitToBindingPoint[i] : -1;
@@ -1034,6 +1084,40 @@ static Decompiled Decompile(const std::vector<uint32>& program, bool direct, boo
 
 static const uint32 W = 4, H = 4;
 
+// the uniform buffers' contents, the same for every program: buffer b's
+// vec4s (4096, a whole bound range), floats of either sign mostly and raw
+// bits now and then
+static uint32 s_cbuf[LATTE_NUM_MAX_UNIFORM_BUFFERS][4096 * 4];
+
+static void FillUniformBuffers()
+{
+	uint32 h = 0x9E3779B9u;
+	for (auto& buffer : s_cbuf)
+	{
+		for (auto& word : buffer)
+		{
+			h ^= h << 13;
+			h ^= h >> 17;
+			h ^= h << 5;
+			if (h % 4 != 0)
+			{
+				const float f = (float)((int)(h >> 8) % 2000 - 1000) / 64.0f;
+				std::memcpy(&word, &f, 4);
+			}
+			else
+				word = h;
+		}
+	}
+}
+
+// a remapped uniform's vec4: the register file's, or a uniform buffer's
+static const uint32* RemappedSource(const LatteDecompilerRemappedUniformEntry_t& e, const uint32* cfile)
+{
+	if (e.isRegister)
+		return cfile + e.index * 4;
+	return s_cbuf[e.kcacheBankId % LATTE_NUM_MAX_UNIFORM_BUFFERS] + (e.index % 4096) * 4;
+}
+
 struct Context
 {
 	VkInstance instance = VK_NULL_HANDLE;
@@ -1054,6 +1138,10 @@ struct Context
 	// and geometry shaders where the device lets them store
 	VkBuffer sbuf = VK_NULL_HANDLE;
 	VkDeviceMemory sbufMem = VK_NULL_HANDLE;
+	// the uniform buffers (s_cbuf), 64 KiB each, bound where a shader reads
+	// them whole
+	VkBuffer cbuf = VK_NULL_HANDLE;
+	VkDeviceMemory cbufMem = VK_NULL_HANDLE;
 	uint8* sbufData = nullptr;
 	bool vertexStores = false;
 	VkShaderModule vs = VK_NULL_HANDLE;
@@ -1419,6 +1507,15 @@ static bool CreateContext(Context& c)
 	void* map;
 	VKCHECK(vkMapMemory(c.device, c.uboMem, 0, 8192, 0, &map));
 	c.uboData = (uint8*)map;
+	bi.size = sizeof(s_cbuf);
+	bi.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+	VKCHECK(vkCreateBuffer(c.device, &bi, nullptr, &c.cbuf));
+	vkGetBufferMemoryRequirements(c.device, c.cbuf, &breq);
+	c.cbufMem = Bind(c, breq, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	VKCHECK(vkBindBufferMemory(c.device, c.cbuf, c.cbufMem, 0));
+	VKCHECK(vkMapMemory(c.device, c.cbufMem, 0, sizeof(s_cbuf), 0, &map));
+	std::memcpy(map, s_cbuf, sizeof(s_cbuf));
+	vkUnmapMemory(c.device, c.cbufMem);
 	bi.size = Context::kStreamoutBytes;
 	bi.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 	VKCHECK(vkCreateBuffer(c.device, &bi, nullptr, &c.sbuf));
@@ -1506,6 +1603,8 @@ static void DestroyContext(Context& c)
 	vkUnmapMemory(c.device, c.sbufMem);
 	vkDestroyBuffer(c.device, c.sbuf, nullptr);
 	vkFreeMemory(c.device, c.sbufMem, nullptr);
+	vkDestroyBuffer(c.device, c.cbuf, nullptr);
+	vkFreeMemory(c.device, c.cbufMem, nullptr);
 	vkDestroyBuffer(c.device, c.readback, nullptr);
 	vkFreeMemory(c.device, c.uboMem, nullptr);
 	vkFreeMemory(c.device, c.readMem, nullptr);
@@ -1520,11 +1619,49 @@ static void DestroyContext(Context& c)
 }
 
 // the shader drawn over the target: what each pixel holds, as bits
+// uniform buffer mode's buffers: each a binding of the stage's
+static void UniformBufferBindings(const Decompiled& d, VkShaderStageFlags stage, VkDescriptorSetLayoutBinding* b, uint32& nb)
+{
+	for (int i = 0; i < LATTE_NUM_MAX_UNIFORM_BUFFERS; i++)
+	{
+		if (d.ubBinding[i] < 0)
+			continue;
+		b[nb].binding = (uint32)d.ubBinding[i];
+		b[nb].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		b[nb].descriptorCount = 1;
+		b[nb].stageFlags = stage;
+		nb++;
+	}
+}
+
+// and their writes: buffer i at i * 64 KiB of the test's, 64 KiB long
+static void WriteUniformBuffers(const Context& c, const Decompiled& d, VkDescriptorSet ds)
+{
+	VkDescriptorBufferInfo infos[LATTE_NUM_MAX_UNIFORM_BUFFERS];
+	VkWriteDescriptorSet writes[LATTE_NUM_MAX_UNIFORM_BUFFERS]{};
+	uint32 n = 0;
+	for (int i = 0; i < LATTE_NUM_MAX_UNIFORM_BUFFERS; i++)
+	{
+		if (d.ubBinding[i] < 0)
+			continue;
+		infos[n] = { c.cbuf, (VkDeviceSize)i * sizeof(s_cbuf[0]), sizeof(s_cbuf[0]) };
+		writes[n].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[n].dstSet = ds;
+		writes[n].dstBinding = (uint32)d.ubBinding[i];
+		writes[n].descriptorCount = 1;
+		writes[n].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		writes[n].pBufferInfo = &infos[n];
+		n++;
+	}
+	if (n)
+		vkUpdateDescriptorSets(c.device, n, writes, 0, nullptr);
+}
+
 static std::vector<uint32> Draw(const Context& c, const Decompiled& d, const uint8 texKind[4], const float inputs[16], const uint32* uniforms, size_t uniformBytes)
 {
 	// the uniform block and the texture units at the shader's set and
 	// bindings (set 0 empty, as the renderer's vertex set)
-	VkDescriptorSetLayoutBinding b[1 + LATTE_NUM_MAX_TEX_UNITS]{};
+	VkDescriptorSetLayoutBinding b[2 + LATTE_NUM_MAX_TEX_UNITS + LATTE_NUM_MAX_UNIFORM_BUFFERS]{};
 	VkWriteDescriptorSet texWrites[LATTE_NUM_MAX_TEX_UNITS]{};
 	VkDescriptorImageInfo texInfos[LATTE_NUM_MAX_TEX_UNITS]{};
 	uint32 nb = 0, nTex = 0;
@@ -1563,6 +1700,7 @@ static std::vector<uint32> Draw(const Context& c, const Decompiled& d, const uin
 	VkDescriptorSetLayoutCreateInfo dli{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
 	VkDescriptorSetLayout empty, set;
 	VKCHECK(vkCreateDescriptorSetLayout(c.device, &dli, nullptr, &empty));
+	UniformBufferBindings(d, VK_SHADER_STAGE_FRAGMENT_BIT, b, nb);
 	dli.bindingCount = nb;
 	dli.pBindings = b;
 	VKCHECK(vkCreateDescriptorSetLayout(c.device, &dli, nullptr, &set));
@@ -1575,7 +1713,7 @@ static std::vector<uint32> Draw(const Context& c, const Decompiled& d, const uin
 	pli.pPushConstantRanges = &pcr;
 	VkPipelineLayout layout;
 	VKCHECK(vkCreatePipelineLayout(c.device, &pli, nullptr, &layout));
-	VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, LATTE_NUM_MAX_TEX_UNITS}};
+	VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 + LATTE_NUM_MAX_UNIFORM_BUFFERS}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, LATTE_NUM_MAX_TEX_UNITS}};
 	VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
 	dpi.maxSets = 1;
 	dpi.poolSizeCount = 2;
@@ -1588,6 +1726,7 @@ static std::vector<uint32> Draw(const Context& c, const Decompiled& d, const uin
 	dai.pSetLayouts = &set;
 	VkDescriptorSet ds;
 	VKCHECK(vkAllocateDescriptorSets(c.device, &dai, &ds));
+	WriteUniformBuffers(c, d, ds);
 	std::memset(c.uboData, 0, 8192);
 	std::memcpy(c.uboData, uniforms, uniformBytes);
 	if (d.binding >= 0)
@@ -1820,7 +1959,7 @@ static int Differs(const Context& c, const Case& k, std::vector<uint32>* outA = 
 	if (viaGlsl.uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_REMAPPED)
 	{
 		for (auto& e : viaGlsl.remapped)
-			std::memcpy(uniforms + viaGlsl.offsets.offset_remapped / 4 + e.mappedIndex * 4, k.cfile + e.index * 4, 16);
+			std::memcpy(uniforms + viaGlsl.offsets.offset_remapped / 4 + e.mappedIndex * 4, RemappedSource(e, k.cfile), 16);
 	}
 	else if (viaGlsl.uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_FULL_CFILE)
 		std::memcpy(uniforms + viaGlsl.offsets.offset_uniformRegister / 4, k.cfile, viaGlsl.offsets.count_uniformRegister * 16);
@@ -1833,6 +1972,38 @@ static int Differs(const Context& c, const Case& k, std::vector<uint32>* outA = 
 	}
 	std::vector<uint32> a = Draw(c, viaGlsl, k.p.texKind, k.inputs, uniforms, sizeof(uniforms));
 	std::vector<uint32> b = Draw(c, viaSpirv, k.p.texKind, k.inputs, uniforms, sizeof(uniforms));
+	if (k.p.expectFetch)
+	{
+		// pixel 0: buffer 1's vec4 5's z; buffer 2's vec4 9's w, x and y
+		const uint32 want[4] = { s_cbuf[1][5 * 4 + 2], s_cbuf[2][9 * 4 + 3], s_cbuf[2][9 * 4 + 0], s_cbuf[2][9 * 4 + 1] };
+		for (int ch = 0; ch < 4; ch++)
+		{
+			for (const std::vector<uint32>* px : { &a, &b })
+			{
+				if ((*px)[ch] != want[ch] && !(IsNaN((*px)[ch]) && IsNaN(want[ch])))
+				{
+					std::printf("FAIL: the uniform buffer fetches' channel %d read %08x, not %08x\n", ch, (*px)[ch], want[ch]);
+					s_failures++;
+				}
+			}
+		}
+	}
+	if (k.p.expectRemap)
+	{
+		// pixel 0: c3.x and buffer 0's vec4 3's y, both ways
+		const uint32 want[2] = { k.cfile[3 * 4 + 0], s_cbuf[0][3 * 4 + 1] };
+		for (int ch = 0; ch < 2; ch++)
+		{
+			for (const std::vector<uint32>* px : { &a, &b })
+			{
+				if ((*px)[ch] != want[ch] && !(IsNaN((*px)[ch]) && IsNaN(want[ch])))
+				{
+					std::printf("FAIL: the remapped uniforms' channel %d read %08x, not %08x\n", ch, (*px)[ch], want[ch]);
+					s_failures++;
+				}
+			}
+		}
+	}
 	if (outA)
 		*outA = viaGlsl.spirv;
 	if (outB)
@@ -2304,6 +2475,77 @@ static std::vector<Program> DirectedPrograms()
 			p.exportSel[i] = (uint8)i;
 		out.push_back(p);
 	}
+	// uniform register c3 and buffer 0's vec4 3, remapped: each read from
+	// its own entry, where both decompilers once took the register's for
+	// the buffer's (the entries' indices alike, a register's bank 0)
+	{
+		Program p{};
+		AluGroup g{};
+		AluOp reg{};
+		reg.opcode = ALU_OP2_INST_MOV;
+		reg.src[0] = 256 + 3;
+		reg.chan[0] = 0;
+		reg.destGpr = 0;
+		reg.destElem = 0;
+		reg.writeMask = 1;
+		AluOp buf = reg;
+		buf.src[0] = 128 + 3;
+		buf.chan[0] = 1;
+		buf.destElem = 1;
+		g.ops = { reg, buf };
+		p.clauses.push_back({ g });
+		p.kcache.push_back(Program::Kcache{});
+		p.exportGpr = 0;
+		for (int i = 0; i < 4; i++)
+			p.exportSel[i] = (uint8)i;
+		p.expectRemap = true;
+		out.push_back(p);
+	}
+	// uniform buffer VFETCHes at known indices (R1.y 5, R1.x 9): one
+	// channel of another (z into x), then three swizzled (wxy into yzw)
+	{
+		Program p{};
+		AluGroup g{};
+		AluOp idx{};
+		idx.opcode = ALU_OP2_INST_MOV;
+		idx.src[0] = 253;
+		idx.chan[0] = 0;
+		idx.destGpr = 1;
+		idx.destElem = 1;
+		idx.writeMask = 1;
+		AluOp idx2 = idx;
+		idx2.chan[0] = 1;
+		idx2.destElem = 0;
+		g.ops = { idx, idx2 };
+		g.literals[0] = 5;
+		g.literals[1] = 9;
+		p.clauses.push_back({ g });
+		TexOp a{}, b{};
+		a.vfetch = b.vfetch = true;
+		a.opcode = b.opcode = GPU7_TEX_INST_VFETCH;
+		a.unit = 0x81;
+		a.srcGpr = 1;
+		a.srcSel[0] = 1;
+		a.dstGpr = 0;
+		const uint8 selA[4] = { 2, 7, 7, 7 };
+		b.unit = 0x82;
+		b.srcGpr = 1;
+		b.srcSel[0] = 0;
+		b.dstGpr = 0;
+		const uint8 selB[4] = { 7, 3, 0, 1 };
+		for (int c = 0; c < 4; c++)
+		{
+			a.dstSel[c] = selA[c];
+			b.dstSel[c] = selB[c];
+		}
+		p.texClauses.push_back({ a, b });
+		p.cf = { { GPU7_CF_INST_ALU, 0, 0 }, { GPU7_CF_INST_TEX, 0, 0 } };
+		p.exportGpr = 0;
+		for (int i = 0; i < 4; i++)
+			p.exportSel[i] = (uint8)i;
+		p.expectFetch = true;
+		out.push_back(p);
+	}
 	// a cube array's layer by a constant select (1.0: the second cube), then
 	// a sample of it at known st and face; the GLSL emitter once indexed
 	// its select table by the select, 5, out of the table. Then the layer
@@ -2710,6 +2952,8 @@ static Decompiled DecompileVertex(const std::vector<uint32>& program, bool direc
 	d.uniformMode = shader->uniformMode;
 	d.setIndex = out.resourceMappingVK.setIndex;
 	d.binding = out.resourceMappingVK.uniformVarsBufferBindingPoint;
+	for (int b = 0; b < LATTE_NUM_MAX_UNIFORM_BUFFERS; b++)
+		d.ubBinding[b] = out.resourceMappingVK.uniformBuffersBindingPoint[b];
 	for (int i = 0; i < LATTE_NUM_MAX_TEX_UNITS; i++)
 	{
 		d.texBinding[i] = out.textureUnitMask[i] ? out.resourceMappingVK.textureUnitToBindingPoint[i] : -1;
@@ -2755,7 +2999,7 @@ static VkShaderModule GeometryFeeder(const Context& c, const VSCase& k);
 
 static std::vector<uint32> DrawVertex(const Context& c, const Decompiled& d, const VSCase& k, VkShaderModule fs, const uint32* uniforms)
 {
-	VkDescriptorSetLayoutBinding b[1 + LATTE_NUM_MAX_TEX_UNITS]{};
+	VkDescriptorSetLayoutBinding b[2 + LATTE_NUM_MAX_TEX_UNITS + LATTE_NUM_MAX_UNIFORM_BUFFERS]{};
 	VkWriteDescriptorSet texWrites[LATTE_NUM_MAX_TEX_UNITS]{};
 	VkDescriptorImageInfo texInfos[LATTE_NUM_MAX_TEX_UNITS]{};
 	uint32 nb = 0, nTex = 0;
@@ -2811,6 +3055,7 @@ static std::vector<uint32> DrawVertex(const Context& c, const Decompiled& d, con
 	VkDescriptorSetLayoutCreateInfo dli{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
 	VkDescriptorSetLayout empty;
 	VKCHECK(vkCreateDescriptorSetLayout(c.device, &dli, nullptr, &empty));
+	UniformBufferBindings(d, k.gsCase ? VK_SHADER_STAGE_GEOMETRY_BIT : VK_SHADER_STAGE_VERTEX_BIT, b, nb);
 	dli.bindingCount = nb;
 	dli.pBindings = b;
 	VkDescriptorSetLayout set;
@@ -2822,7 +3067,7 @@ static std::vector<uint32> DrawVertex(const Context& c, const Decompiled& d, con
 	pli.pSetLayouts = setLayouts;
 	VkPipelineLayout layout;
 	VKCHECK(vkCreatePipelineLayout(c.device, &pli, nullptr, &layout));
-	VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, LATTE_NUM_MAX_TEX_UNITS},
+	VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 + LATTE_NUM_MAX_UNIFORM_BUFFERS}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, LATTE_NUM_MAX_TEX_UNITS},
 		{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}};
 	VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
 	dpi.maxSets = 1;
@@ -2836,6 +3081,7 @@ static std::vector<uint32> DrawVertex(const Context& c, const Decompiled& d, con
 	dai.pSetLayouts = &set;
 	VkDescriptorSet ds;
 	VKCHECK(vkAllocateDescriptorSets(c.device, &dai, &ds));
+	WriteUniformBuffers(c, d, ds);
 	std::memset(c.uboData, 0, 8192);
 	std::memcpy(c.uboData, uniforms, 8192);
 	if (d.binding >= 0)
@@ -3572,6 +3818,7 @@ int main(int argc, char** argv)
 {
 	const char* outDir = argc > 1 ? argv[1] : nullptr;
 	const int count = argc > 2 ? std::atoi(argv[2]) : 400;
+	FillUniformBuffers();
 	Context c;
 	bool device = CreateContext(c);
 	if (!device)
@@ -3589,9 +3836,10 @@ int main(int argc, char** argv)
 	gen.rng.seed(argc > 3 ? (uint32)std::strtoul(argv[3], nullptr, 10) : 20261116u);
 	int direct = 0, declined = 0, drawn = 0, differing = 0, glslFailed = 0, offsetsDiffer = 0, shapeDiffers = 0;
 	int gsDrawn = 0; // of the drawn, after a geometry shader
+	int cbankDrawn = 0; // of the drawn, reading uniform buffers whole
 	std::map<std::string, int> reasons;
 	const std::vector<Program> directed = DirectedPrograms();
-	CHECK(directed.size() == 15);
+	CHECK(directed.size() == 17);
 	for (int i = 0; i < count + (int)directed.size(); i++)
 	{
 		const bool allowDeclined = (i % 5) == 0;
@@ -3683,7 +3931,8 @@ int main(int argc, char** argv)
 				}
 			}
 		}
-		if (!SameOffsets(viaGlsl.offsets, viaSpirv.offsets) || viaGlsl.binding != viaSpirv.binding || viaGlsl.setIndex != viaSpirv.setIndex)
+		if (!SameOffsets(viaGlsl.offsets, viaSpirv.offsets) || viaGlsl.binding != viaSpirv.binding || viaGlsl.setIndex != viaSpirv.setIndex ||
+			std::memcmp(viaGlsl.ubBinding, viaSpirv.ubBinding, sizeof(viaGlsl.ubBinding)) != 0)
 		{
 			offsetsDiffer++;
 			std::printf("FAIL: program %d: uniform layout differs\n", i);
@@ -3730,6 +3979,7 @@ int main(int argc, char** argv)
 			std::memcpy(k.inputs, p.inputs.data(), sizeof(k.inputs));
 		drawn++;
 		gsDrawn += k.usesGS;
+		cbankDrawn += viaGlsl.uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_FULL_CBANK;
 		if (Differs(c, k) == 1)
 		{
 			differing++;
@@ -3740,8 +3990,11 @@ int main(int argc, char** argv)
 	}
 	std::printf("decompiler: %d random pixel shaders, %d written as SPIR-V directly (%d drawn both ways, %d after a geometry shader, %d differing), %d declined\n",
 		count, direct, drawn, gsDrawn, differing, declined);
-	// pixel shaders after a geometry shader are drawn, not declined
+	// pixel shaders after a geometry shader are drawn, not declined; and
+	// pixel shaders reading uniform buffers whole
 	CHECK(!device || count < 100 || gsDrawn * 10 > drawn);
+	std::printf("decompiler: %d pixel shaders drawn reading uniform buffers whole\n", cbankDrawn);
+	CHECK(!device || count < 100 || cbankDrawn * 20 > drawn);
 	for (auto& it : reasons)
 		std::printf("  declined: %s (%d)\n", it.first.c_str(), it.second);
 	if (differing)
@@ -3760,6 +4013,7 @@ int main(int argc, char** argv)
 		int vGsDrawn = 0; // of the drawn, writing the ring to a geometry shader
 		int gsCaseDrawn = 0; // of the drawn, geometry shaders
 		int soDrawn = 0; // of the drawn, writing the streamout buffer
+		int vCbankDrawn = 0; // of the drawn, reading uniform buffers whole
 		int soOffDrawn = 0; // of those, with streamout off (the writes dropped)
 		std::map<std::string, int> vReasons;
 		{
@@ -3830,7 +4084,7 @@ int main(int argc, char** argv)
 				}
 			}
 			if (!SameOffsets(viaGlsl.offsets, viaSpirv.offsets) || viaGlsl.binding != viaSpirv.binding || viaGlsl.setIndex != viaSpirv.setIndex ||
-				viaGlsl.tfBinding != viaSpirv.tfBinding ||
+				viaGlsl.tfBinding != viaSpirv.tfBinding || std::memcmp(viaGlsl.ubBinding, viaSpirv.ubBinding, sizeof(viaGlsl.ubBinding)) != 0 ||
 				std::memcmp(viaGlsl.attrLoc, viaSpirv.attrLoc, sizeof(viaGlsl.attrLoc)) != 0)
 			{
 				std::printf("FAIL: vertex program %d: resource layout differs\n", i);
@@ -3856,7 +4110,7 @@ int main(int argc, char** argv)
 			if (viaGlsl.uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_REMAPPED)
 			{
 				for (auto& e : viaGlsl.remapped)
-					std::memcpy(uniforms + viaGlsl.offsets.offset_remapped / 4 + e.mappedIndex * 4, k.cfile + e.index * 4, 16);
+					std::memcpy(uniforms + viaGlsl.offsets.offset_remapped / 4 + e.mappedIndex * 4, RemappedSource(e, k.cfile), 16);
 			}
 			else if (viaGlsl.uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_FULL_CFILE)
 				std::memcpy(uniforms + viaGlsl.offsets.offset_uniformRegister / 4, k.cfile, viaGlsl.offsets.count_uniformRegister * 16);
@@ -3889,6 +4143,7 @@ int main(int argc, char** argv)
 			vGsDrawn += k.usesGS;
 			gsCaseDrawn += k.gsCase;
 			soDrawn += k.streamout;
+			vCbankDrawn += viaGlsl.uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_FULL_CBANK;
 			soOffDrawn += k.streamout && k.streamoutOff;
 			bool same = true;
 			for (int l = -1; l < k.psCount; l++)
@@ -3966,6 +4221,8 @@ int main(int argc, char** argv)
 		// vertex shaders writing the ring are drawn, not declined
 		std::printf("decompiler: %d vertex shaders drawn writing the ring, %d geometry shaders drawn, %d writing the stream\n", vGsDrawn, gsCaseDrawn, soDrawn);
 		CHECK(!device || !c.vertexStores || vsCount < 100 || soDrawn * 10 > vDrawn);
+		std::printf("decompiler: %d vertex and geometry shaders drawn reading uniform buffers whole\n", vCbankDrawn);
+		CHECK(!device || vsCount < 100 || vCbankDrawn * 20 > vDrawn);
 		// stream writes with streamout off are drawn (dropped), not declined
 		CHECK(!device || !c.vertexStores || vsCount < 100 || soOffDrawn > 0);
 		// geometry shaders are drawn, not declined

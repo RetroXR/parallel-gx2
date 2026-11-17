@@ -122,6 +122,9 @@ namespace
 		uint32 gprArrayVar{};
 		uint32 pvVar[2][4]{}, psVar[2]{}, backupVar[5]{}, tempVar{}, tempResultF{}, tempResultI{}, ariVar{}, predVar{};
 		uint32 ufBlockVar{};
+		// uniform buffer mode's: uniform UniformBlock<stage><n> { vec4
+		// uf_block<stage><n>[size]; } for each buffer read
+		uint32 ubVar[LATTE_NUM_MAX_UNIFORM_BUFFERS]{};
 		// the active mask stacks (activeMaskStack, activeMaskStackC) and
 		// their lengths, when the shader has control flow
 		bool hasActiveMask{};
@@ -159,7 +162,7 @@ namespace
 		uint32 perVertexVar{};
 		// uf_windowSpaceToClipSpaceTransform's and uf_pointSize's members of
 		// the uniform block, -1 where it has none
-		sint32 windowMember{-1}, pointSizeMember{-1};
+		sint32 windowMember{-1}, pointSizeMember{-1}, alphaRefMember{-1};
 		// streamout through the storage buffer: uf_verticesPerInstance's and
 		// uf_streamoutBufferBase<n>'s members, int sb_buffer[], sbBase<n>
 		sint32 verticesPerInstanceMember{-1};
@@ -969,6 +972,8 @@ namespace
 		bool EmitGeometryRingWrite(LatteDecompilerCFInstruction& cf);
 		bool EmitEmitVertex(LatteDecompilerCFInstruction& cf);
 		bool DeclareStreamout();
+		bool DeclareUniformBuffers();
+		bool EmitUniformFetch(LatteDecompilerTEXInstruction& t);
 		bool EmitStreamoutBases();
 		void StreamStore(uint32 buffer, uint32 dword, uint32 value);
 		bool EmitStreamWrite(LatteDecompilerCFInstruction& cf);
@@ -1272,8 +1277,8 @@ namespace
 			uniformOffsets.count_uniformRegister = cfileSize;
 			uniformCurrentOffset += 16 * cfileSize;
 		}
-		else if (shader->uniformMode != LATTE_DECOMPILER_UNIFORM_MODE_NONE)
-			return Decline("uniform buffers");
+		else if (shader->uniformMode != LATTE_DECOMPILER_UNIFORM_MODE_NONE && shader->uniformMode != LATTE_DECOMPILER_UNIFORM_MODE_FULL_CBANK)
+			return Decline("uniform mode");
 		// special uniforms
 		const bool hasAnyViewportScaleDisabled =
 			!dc->contextRegistersNew->PA_CL_VTE_CNTL.get_VPORT_X_SCALE_ENA() ||
@@ -1293,6 +1298,7 @@ namespace
 		if (alphaTestEnable)
 		{
 			uniformCurrentOffset = (uniformCurrentOffset + 3) & ~3;
+			alphaRefMember = (sint32)memberCount;
 			memberTypes[memberCount] = tF;
 			memberOffsets[memberCount++] = uniformCurrentOffset;
 			uniformOffsets.offset_alphaTestRef = uniformCurrentOffset;
@@ -1569,7 +1575,8 @@ namespace
 	{
 		auto& op = inst.sourceOperand[index];
 		bool isRegister = GPU7_ALU_SRC_IS_CFILE(op.sel);
-		if (op.rel != 0 && !(isRegister && shader->uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_FULL_CFILE))
+		if (op.rel != 0 && !(isRegister && shader->uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_FULL_CFILE) &&
+			shader->uniformMode != LATTE_DECOMPILER_UNIFORM_MODE_FULL_CBANK)
 		{
 			Decline("relative uniform access");
 			return { ConstI(0), requiredType };
@@ -1588,6 +1595,26 @@ namespace
 			uniformOffset = GPU7_ALU_SRC_GET_CBANK1_INDEX(op.sel) + inst.cfInstruction->cBank1AddrBase;
 			bufferIndex = inst.cfInstruction->cBank1Index;
 		}
+		if (shader->uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_FULL_CBANK)
+		{
+			// uf_block<stage><bank's buffer>[offset or ARi.<c>+offset].<c>, a
+			// float, converted to the type wanted
+			if (isRegister)
+			{
+				Decline("uniform register in buffer mode");
+				return { ConstI(0), requiredType };
+			}
+			if (bufferIndex >= LATTE_NUM_MAX_UNIFORM_BUFFERS || !ubVar[bufferIndex])
+			{
+				Decline("uniform buffer not declared");
+				return { ConstI(0), requiredType };
+			}
+			uint32 at = op.rel != 0 ? Op(SpvOpIAdd, tI, { ARChannel(inst.indexMode), ConstI(uniformOffset) }) : ConstI(uniformOffset);
+			if (!Ok())
+				return { ConstI(0), requiredType };
+			uint32 vec = Load(tV4F, Op(SpvOpAccessChain, spv_type_pointer(w, SpvStorageClassUniform, tV4F), { ubVar[bufferIndex], ConstI(0), at }));
+			return Convert({ Op(SpvOpCompositeExtract, tF, { vec, (uint32)op.chan }), DT_F }, requiredType);
+		}
 		sint32 arrayIndex;
 		if (shader->uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_REMAPPED)
 		{
@@ -1602,7 +1629,7 @@ namespace
 						break;
 					}
 				}
-				else if (it.kcacheBankId == (uint32)bufferIndex && it.index == (uint32)uniformOffset)
+				else if (!it.isRegister && !isRegister && it.kcacheBankId == (uint32)bufferIndex && it.index == (uint32)uniformOffset)
 				{
 					entry = &it;
 					break;
@@ -2435,7 +2462,8 @@ namespace
 					c[k] = ExportComponent(cf, i, k).id;
 				uint32 alpha = c[3];
 				uint32 ptr = spv_type_pointer(w, SpvStorageClassUniform, tF);
-				uint32 refPtr = Op(SpvOpAccessChain, ptr, { ufBlockVar, ConstI(shader->uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_NONE ? 0 : 1) });
+				// uf_alphaTestRef, after the register array where there is one
+				uint32 refPtr = Op(SpvOpAccessChain, ptr, { ufBlockVar, ConstI(alphaRefMember) });
 				uint32 ref = Load(tF, refPtr);
 				uint32 cmp;
 				switch (alphaTestFunc)
@@ -3186,6 +3214,13 @@ namespace
 			}
 			if (op == GPU7_TEX_INST_VFETCH)
 			{
+				// a uniform buffer's vec4 at a register's index
+				if (unit >= 0x80 && unit <= 0x8F)
+				{
+					if (!EmitUniformFetch(t))
+						return false;
+					continue;
+				}
 				// a geometry shader's read of the ring; vertex fetches else
 				if (!isGeometry || unit != 0x9F)
 					return Decline("vertex fetch");
@@ -3918,6 +3953,87 @@ namespace
 		return Ok();
 	}
 
+	// _emitUniformBuffers: each buffer read, as the tracker sizes it, a block
+	// of a vec4 array (std140) at its binding
+	bool SpvShader::DeclareUniformBuffers()
+	{
+		if (shader->uniformMode != LATTE_DECOMPILER_UNIFORM_MODE_FULL_CBANK)
+			return Ok();
+		uint32 decorated[LATTE_NUM_MAX_UNIFORM_BUFFERS];
+		uint32 decoratedCount = 0;
+		for (uint32 i = 0; i < LATTE_NUM_MAX_UNIFORM_BUFFERS; i++)
+		{
+			if (!ctx->analyzer.uniformBufferAccessTracker[i].HasAccess())
+				continue;
+			const sint32 binding = ctx->output->resourceMappingVK.uniformBuffersBindingPoint[i];
+			if (binding < 0)
+				return Decline("uniform buffer binding");
+			const uint32 size = ctx->analyzer.uniformBufferAccessTracker[i].DetermineSize(ctx->shaderBaseHash, LATTE_GLSL_DYNAMIC_UNIFORM_BLOCK_SIZE);
+			const uint32 arr = spv_type_array(w, tV4F, ConstI((sint32)size));
+			// (an array type of a size another buffer has decorated once)
+			bool seen = false;
+			for (uint32 d = 0; d < decoratedCount; d++)
+				seen |= decorated[d] == arr;
+			if (!seen)
+			{
+				Decorate(arr, SpvDecorationArrayStride, { 16 });
+				decorated[decoratedCount++] = arr;
+			}
+			uint32 block = spv_type_struct(w, &arr, 1);
+			uint32 member[4] = { block, 0, SpvDecorationOffset, 0 };
+			spv_inst(w, SPV_SEC_DECORATION, SpvOpMemberDecorate, member, 4);
+			Decorate(block, SpvDecorationBlock);
+			ubVar[i] = spv_global_variable(w, spv_type_pointer(w, SpvStorageClassUniform, block), SpvStorageClassUniform);
+			Decorate(ubVar[i], SpvDecorationDescriptorSet, { (uint32)ctx->output->resourceMappingVK.setIndex });
+			Decorate(ubVar[i], SpvDecorationBinding, { (uint32)binding });
+		}
+		return Ok();
+	}
+
+	// _emitTEXVFetchCode of a uniform buffer: R<d>.<the written> =
+	// floatBitsToInt(uf_block<stage><n>[<the index register's channel, as an
+	// int>].<their selects>), the float vector where the registers are floats
+	bool SpvShader::EmitUniformFetch(LatteDecompilerTEXInstruction& t)
+	{
+		const uint32 buffer = (uint32)t.textureFetch.textureIndex - 0x80;
+		if (!ubVar[buffer])
+			return Decline("uniform buffer not declared");
+		if (t.textureFetch.srcSel[0] >= 4)
+			return Decline("uniform fetch index select");
+		uint32 dst[4], src[4];
+		uint32 count = 0;
+		for (uint32 f = 0; f < 4; f++)
+		{
+			if (t.dstSel[f] < 4)
+			{
+				dst[count] = f;
+				src[count++] = t.dstSel[f];
+			}
+			else if (t.dstSel[f] != 7)
+				return Decline("uniform fetch constant");
+		}
+		if (count == 0)
+			return Decline("uniform fetch of no channel");
+		uint32 index = Convert({ ReadChannel(GPR(t.srcGpr), t.textureFetch.srcSel[0]), dt }, DT_I).id;
+		uint32 vec = Load(tV4F, Op(SpvOpAccessChain, spv_type_pointer(w, SpvStorageClassUniform, tV4F), { ubVar[buffer], ConstI(0), index }));
+		const uint32 tVnF = count == 1 ? tF : spv_type_vector(w, tF, count);
+		uint32 v;
+		if (count == 1)
+			v = Op(SpvOpCompositeExtract, tF, { vec, src[0] });
+		else if (count == 2)
+			v = Op(SpvOpVectorShuffle, tVnF, { vec, vec, src[0], src[1] });
+		else if (count == 3)
+			v = Op(SpvOpVectorShuffle, tVnF, { vec, vec, src[0], src[1], src[2] });
+		else
+			v = Op(SpvOpVectorShuffle, tVnF, { vec, vec, src[0], src[1], src[2], src[3] });
+		if (dt == DT_I)
+			v = Op(SpvOpBitcast, count == 1 ? tI : spv_type_vector(w, tI, count), { v });
+		const uint32 elem = TypeOf(dt);
+		for (uint32 i = 0; i < count; i++)
+			Store(Channel(GPR(t.dstGpr), dt, dst[i]), count == 1 ? v : Op(SpvOpCompositeExtract, elem, { v, i }));
+		return Ok();
+	}
+
 	// layout(set, binding) buffer StreamoutBuffer { int sb_buffer[]; };, as
 	// rslc makes it (a BufferBlock in the Uniform storage class), where
 	// streamout is on and the shader writes it
@@ -4403,7 +4519,7 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 	if (!s.DeclareUniforms(offsetsVK, RendererAPI::Vulkan, true) || !s.DeclareUniforms(offsetsGL, RendererAPI::OpenGL, false))
 		return decline(s.decline);
 	if (!(s.isVertex ? s.DeclareVertexIO() : s.isGeometry ? s.DeclareGeometryIO() : s.DeclareIO()) || !s.DeclareTextures() ||
-		!s.DeclareStreamout())
+		!s.DeclareStreamout() || !s.DeclareUniformBuffers())
 		return decline(s.decline);
 	// main
 	uint32 fnType = spv_type_function(w, s.tVoid, nullptr, 0);

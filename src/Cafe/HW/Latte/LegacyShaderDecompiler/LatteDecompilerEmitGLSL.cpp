@@ -689,8 +689,10 @@ void _emitUniformAccessCode(LatteDecompilerShaderContext* shaderContext, LatteDe
 					break;
 				}
 			}
-			else
+			else if( !remappedUniformEntryItr->isRegister && !isUniformRegister )
 			{
+				// a buffer's uniform: a register's entry (whose bank is 0)
+				// of the same index is not it
 				if( remappedUniformEntryItr->kcacheBankId == uniformBufferIndex && remappedUniformEntryItr->index == uniformOffset )
 				{
 					remappedUniformEntry = remappedUniformEntryItr;

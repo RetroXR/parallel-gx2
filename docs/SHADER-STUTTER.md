@@ -32,7 +32,7 @@ thread:
    shadow compares, gathers, texel fetches, texture queries, 1D textures,
    gradients, cube maps, MOVA, relative reads and writes, attributes,
    window-space positions, point sizes, geometry shaders and the vertex
-   and pixel shaders of their draws, streamout
+   and pixel shaders of their draws, streamout, uniform buffers
    and exports so far, more as it grows) is
    written as SPIR-V by the decompiler and skips rslc; only its module is
    made. It mirrors what rslc makes of the GLSL - the same operations,
