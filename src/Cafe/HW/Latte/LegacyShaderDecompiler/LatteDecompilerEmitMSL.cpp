@@ -2420,6 +2420,8 @@ static void _emitTEXSampleTextureCode(LatteDecompilerShaderContext* shaderContex
 				src->add(")");
     				src->addFmt(")");
     				src->addFmt(", uint(cubeMapArrayIndex{})", texInstruction->textureFetch.textureIndex); // cubemap index
+    				// the compare value
+    				src->addFmt(", {}", _getTexGPRAccess(shaderContext, texInstruction->srcGpr, LATTE_DECOMPILER_DTYPE_FLOAT, texInstruction->textureFetch.srcSel[3], -1, -1, -1, tempBuffer0));
     			}
     			else if (texDim == Latte::E_DIM::DIM_1D)
     			{

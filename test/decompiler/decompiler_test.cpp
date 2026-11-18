@@ -817,16 +817,20 @@ struct Gen
 				t.opcode = any[R(10)];
 			else if (shadowUnit[t.unit])
 			{
-				// an array's: no level, but in a vertex shader's zero
+				// an array's or a cube array's: no level, but in a vertex
+				// shader's zero
 				t.opcode = k < 75 ? compares[R(4)] : k < 90 ? GPU7_TEX_INST_GET_TEXTURE_RESINFO :
 					vertexMode ? GPU7_TEX_INST_SAMPLE_C : GPU7_TEX_INST_GET_COMP_TEX_LOD;
-				if (kind == TEX_2D_ARRAY && (t.opcode == GPU7_TEX_INST_SAMPLE_C_L || (t.opcode == GPU7_TEX_INST_SAMPLE_C_LZ && !vertexMode)))
+				if ((kind == TEX_2D_ARRAY || kind == TEX_CUBE) &&
+					(t.opcode == GPU7_TEX_INST_SAMPLE_C_L || (t.opcode == GPU7_TEX_INST_SAMPLE_C_LZ && !vertexMode)))
+					t.opcode = GPU7_TEX_INST_SAMPLE_C;
+				// no compare at a level in a vertex shader: lavapipe (Mesa
+				// 25.2) crashes on some, rslc's module as well as the direct
+				// one. (Inside this branch: the kinds below are the other
+				// units', where a compare's unit kept none for a while)
+				if (vertexMode && t.opcode == GPU7_TEX_INST_SAMPLE_C_L)
 					t.opcode = GPU7_TEX_INST_SAMPLE_C;
 			}
-			// no compare at a level in a vertex shader: lavapipe (Mesa 25.2)
-			// crashes on some, rslc's module as well as the direct one
-			if (vertexMode && t.opcode == GPU7_TEX_INST_SAMPLE_C_L)
-				t.opcode = GPU7_TEX_INST_SAMPLE_C;
 			else if (k < 10 && kind != TEX_3D && kind != TEX_1D_UINT)
 				t.opcode = GPU7_TEX_INST_FETCH4; // a 1D's: zeros
 			else if (k < 18 && (flat2D || line) && !vertexMode)
@@ -1090,9 +1094,11 @@ struct Gen
 			uint32 k = R(100);
 			kind = k < 32 ? TEX_2D : k < 45 ? TEX_2D_ARRAY : k < 57 ? TEX_3D : k < 70 ? TEX_2D_UINT : k < 81 ? TEX_1D : k < 88 ? TEX_1D_UINT : TEX_CUBE;
 		}
-		// a 2D or 2D array compared with, now and then
+		// a 2D, a 2D array or a 1D compared with, now and then; a cube array
+		// (its choice from the system values' stream)
 		for (int u = 0; u < 4; u++)
-			shadowUnit[u] = (p.texKind[u] == TEX_2D || p.texKind[u] == TEX_2D_ARRAY || p.texKind[u] == TEX_1D) && Chance(30);
+			shadowUnit[u] = ((p.texKind[u] == TEX_2D || p.texKind[u] == TEX_2D_ARRAY || p.texKind[u] == TEX_1D) && Chance(30)) ||
+				(p.texKind[u] == TEX_CUBE && SysChance(30));
 		if (Chance(55))
 		{
 			// control flow; the counters' register written by them only
@@ -1407,8 +1413,8 @@ static VkShaderModule Module(const Context& c, const std::vector<uint32>& words)
 // 1D, an array of two cubes (floats, filtered linearly, repeating), a 2D
 // and a 1D of uints
 // (nearest); random texels from a fixed seed, uploaded through a staging
-// buffer. depth: a 2D's, a 2D array's or a 1D's depths, 0 to 1, for a
-// sampler comparing with LESS
+// buffer. depth: a 2D's, a 2D array's, a 1D's or a cube array's depths, 0
+// to 1, for a sampler comparing with LESS
 static void CreateTexture(Context& c, TexKind kind, bool depth = false)
 {
 	Context::Texture& t = depth ? c.depth[kind] : c.tex[kind];
@@ -1775,6 +1781,7 @@ static bool CreateContext(Context& c)
 	CreateTexture(c, TEX_2D, true);
 	CreateTexture(c, TEX_2D_ARRAY, true);
 	CreateTexture(c, TEX_1D, true);
+	CreateTexture(c, TEX_CUBE, true);
 	// the vertex tests' fragment shaders and vertex buffer
 	auto fragment = [&](const std::string& src) {
 		rslc_result r{};
@@ -3276,6 +3283,53 @@ static std::vector<Program> DirectedPrograms()
 		p.sysInputs = true;
 		out.push_back(p);
 	}
+	// a cube array compared with (the depths 0 to 1, LESS): a reference of
+	// -1.0 passes everywhere and one of 2.0 nowhere, R6.x 1.0 and R6.y 0.0
+	{
+		Program p{};
+		AluGroup g4{}, g5{};
+		const uint32 r4[4] = { 0x3F000000u, 0x3F000000u, 0, 0xBF800000u }; // (0.5, 0.5), face 0, -1.0
+		const uint32 r5[4] = { 0x3F000000u, 0x3F000000u, 0, 0x40000000u }; // 2.0
+		for (uint8 c = 0; c < 4; c++)
+		{
+			AluOp mov{};
+			mov.opcode = ALU_OP2_INST_MOV;
+			mov.src[0] = 253;
+			mov.chan[0] = c;
+			mov.destGpr = 4;
+			mov.destElem = c;
+			mov.writeMask = 1;
+			g4.ops.push_back(mov);
+			g4.literals[c] = r4[c];
+			mov.destGpr = 5;
+			g5.ops.push_back(mov);
+			g5.literals[c] = r5[c];
+		}
+		p.clauses.push_back({ g4, g5 });
+		TexOp t{};
+		t.opcode = GPU7_TEX_INST_SAMPLE_C;
+		t.srcGpr = 4;
+		t.dstGpr = 6;
+		for (uint8 c = 0; c < 4; c++)
+		{
+			t.srcSel[c] = c;
+			t.dstSel[c] = c == 0 ? 0 : 7;
+		}
+		TexOp u = t;
+		u.srcGpr = 5;
+		for (uint8 c = 0; c < 4; c++)
+			u.dstSel[c] = c == 1 ? 0 : 7;
+		p.texClauses.push_back({ t, u });
+		p.cf = { { GPU7_CF_INST_ALU, 0, 0 }, { GPU7_CF_INST_TEX, 0, 0 } };
+		p.texKind[0] = TEX_CUBE;
+		p.exportGpr = 6;
+		for (int i = 0; i < 4; i++)
+			p.exportSel[i] = (uint8)i;
+		p.expectPixel = true;
+		p.pixel0[0] = 0x3F800000u;
+		p.pixel0[1] = p.pixel0[2] = p.pixel0[3] = 0;
+		out.push_back(p);
+	}
 	// param gen: gl_PointCoord into R4 (past the four inputs, which are
 	// written after it), exported, of one point over the 4x4 target; pixel
 	// 0's centre is (0.5, 0.5) of 4, so 0.125 each
@@ -4444,9 +4498,10 @@ int main(int argc, char** argv)
 	int roundDrawn = 0; // of the drawn, sampling with the texel edge nudge
 	int pointCoordDrawn = 0; // of the drawn, as a point reading gl_PointCoord
 	int memDrawn = 0; // of the drawn, with a scatter buffer read
+	int cubeShadowDrawn = 0; // of the drawn, comparing with a cube array
 	std::map<std::string, int> reasons;
 	const std::vector<Program> directed = DirectedPrograms();
-	CHECK(directed.size() == 26);
+	CHECK(directed.size() == 27);
 	for (int i = 0; i < count + (int)directed.size(); i++)
 	{
 		const bool allowDeclined = (i % 5) == 0;
@@ -4631,6 +4686,7 @@ int main(int argc, char** argv)
 			for (auto& t : clause)
 				mem |= t.memFormat != 0;
 		memDrawn += mem;
+		cubeShadowDrawn += viaGlsl.glsl.find("samplerCubeArrayShadow") != std::string::npos;
 		roundDrawn += viaGlsl.glsl.find("/512.0") != std::string::npos;
 		if (Differs(c, k) == 1)
 		{
@@ -4658,6 +4714,8 @@ int main(int argc, char** argv)
 	CHECK(!device || !c.largePoints || count < 100 || pointCoordDrawn * 30 > drawn);
 	std::printf("decompiler: %d pixel shaders drawn with a scatter buffer read\n", memDrawn);
 	CHECK(!device || count < 100 || memDrawn * 60 > drawn);
+	std::printf("decompiler: %d pixel shaders drawn comparing with a cube array\n", cubeShadowDrawn);
+	CHECK(!device || count < 100 || cubeShadowDrawn * 100 > drawn);
 	for (auto& it : reasons)
 		std::printf("  declined: %s (%d)\n", it.first.c_str(), it.second);
 	if (differing)

@@ -2598,7 +2598,8 @@ namespace
 			const Latte::E_DIM dim = shader->textureUnitDim[i];
 			const bool isInt = shader->textureIsIntegerFormat[i];
 			const bool shadow = shader->textureUsesDepthCompare[i];
-			if (shadow && (isInt || (dim != Latte::E_DIM::DIM_2D && dim != Latte::E_DIM::DIM_2D_ARRAY && dim != Latte::E_DIM::DIM_1D)))
+			if (shadow && (isInt || (dim != Latte::E_DIM::DIM_2D && dim != Latte::E_DIM::DIM_2D_ARRAY && dim != Latte::E_DIM::DIM_1D &&
+				dim != Latte::E_DIM::DIM_CUBEMAP)))
 				return Decline("shadow sampler");
 			uint32 spvDim;
 			bool arrayed = false;
@@ -2609,9 +2610,9 @@ namespace
 				spvDim = SpvDimension1D;
 				sampled1D = true;
 			}
-			else if (dim == Latte::E_DIM::DIM_CUBEMAP && !isInt && !shadow)
+			else if (dim == Latte::E_DIM::DIM_CUBEMAP && !isInt)
 			{
-				// samplerCubeArray, its layer cubeMapArrayIndex<n>
+				// samplerCubeArray(Shadow), its layer cubeMapArrayIndex<n>
 				spvDim = SpvDimensionCube;
 				arrayed = true;
 				sampledCubeArray = true;
@@ -2882,8 +2883,8 @@ namespace
 	{
 		const sint32 unit = t.textureFetch.textureIndex;
 		uint32 op = t.opcode;
-		if (NotPixel() && op == GPU7_TEX_INST_SAMPLE_C_LZ)
-			op = GPU7_TEX_INST_SAMPLE_C; // the vertex shader's level is zero
+		if (isVertex && op == GPU7_TEX_INST_SAMPLE_C_LZ)
+			op = GPU7_TEX_INST_SAMPLE_C; // the vertex shader's level is zero (a geometry shader's textureLod stays)
 		if (!shader->textureUsesDepthCompare[unit])
 			return Decline("compare of a sampler without one");
 		const Latte::E_DIM dim = shader->textureUnitDim[unit];
@@ -2894,9 +2895,11 @@ namespace
 		const bool hasOffset = t.textureFetch.offsetX != 0 || t.textureFetch.offsetY != 0 || t.textureFetch.offsetZ != 0;
 		const bool isArray = dim == Latte::E_DIM::DIM_2D_ARRAY;
 		const bool one = dim == Latte::E_DIM::DIM_1D;
-		// no textureLod() of an array's shadow sampler, no textureLodOffset()
-		// written for SAMPLE_C_L, nor an offset of an array's
-		if (isArray && (op != GPU7_TEX_INST_SAMPLE_C || hasOffset))
+		const bool cube = dim == Latte::E_DIM::DIM_CUBEMAP;
+		// no textureLod() of an array's or a cube array's shadow sampler, no
+		// textureLodOffset() written for SAMPLE_C_L, nor an offset of an
+		// array's; a cube's offset the GLSL emitter leaves out
+		if ((isArray || cube) && (op != GPU7_TEX_INST_SAMPLE_C || hasOffset))
 			return Decline("shadow array level or offset");
 		if (op == GPU7_TEX_INST_SAMPLE_C_L && hasOffset)
 			return Decline("shadow level with an offset");
@@ -2911,7 +2914,16 @@ namespace
 		}
 		uint32 sampler = Load(texType[unit], texVar[unit]);
 		uint32 coord;
-		if (one)
+		uint32 cubeRef = 0;
+		if (cube)
+		{
+			// texture(samplerCubeArrayShadow, the cube coordinate, w): the
+			// reference an argument of its own
+			coord = CubeCoord(t);
+			uint8 refSel = (uint8)t.textureFetch.srcSel[3];
+			cubeRef = TexGPRAccess(t, &refSel, 1);
+		}
+		else if (one)
 		{
 			// vec3(x, 0.0, the reference): w the reference for every kind
 			uint32 parts[3] = { TexGPRAccess1(t, 0), ConstF(0.0f), TexGPRAccess1(t, 3) };
@@ -2960,7 +2972,7 @@ namespace
 		if (!Ok())
 			return false;
 		// the reference: the coordinate's last component, as rslc takes it
-		uint32 ref = Op(SpvOpCompositeExtract, tF, { coord, isArray ? 3u : 2u });
+		uint32 ref = cube ? cubeRef : Op(SpvOpCompositeExtract, tF, { coord, isArray ? 3u : 2u });
 		uint32 v = ImageOp(explicitLod ? SpvOpImageSampleDrefExplicitLod : SpvOpImageSampleDrefImplicitLod,
 			tF, sampler, coord, ref, mask, operands, nOperands);
 		if (count > 1)

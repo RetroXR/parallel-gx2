@@ -2515,6 +2515,8 @@ void _emitTEXSampleTextureCode(LatteDecompilerShaderContext* shaderContext, Latt
 				src->add(")");
 				src->addFmt(")");
 				src->addFmt(",cubeMapArrayIndex{})", texInstruction->textureFetch.textureIndex); // cubemap index
+				// the compare value: a samplerCubeArrayShadow's own argument
+				src->addFmt(",{}", _getTexGPRAccess(shaderContext, texInstruction->srcGpr, LATTE_DECOMPILER_DTYPE_FLOAT, texInstruction->textureFetch.srcSel[3], -1, -1, -1, tempBuffer1));
 			}
 			else if (texDim == Latte::E_DIM::DIM_1D)
 			{
