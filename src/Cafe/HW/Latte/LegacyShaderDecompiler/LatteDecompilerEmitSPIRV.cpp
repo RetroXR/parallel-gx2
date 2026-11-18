@@ -1682,13 +1682,13 @@ namespace
 		while (i < LATTE_NUM_GPR && (ctx->analyzer.gprUseMask[i / 8] & (1 << (i % 8))) == 0)
 			i++;
 		if (i >= LATTE_NUM_GPR)
-			return ConstI(0);
+			return dt == DT_F ? ConstF(0.0f) : ConstI(0);
 		uint32 cond = Op(SpvOpIEqual, tBool, { ARChannel(indexMode), ConstI((sint32)(i - base)) });
 		uint32 thenL = spv_id(w), elseL = spv_id(w), merge = spv_id(w);
 		OpVoid(SpvOpSelectionMerge, { merge, SpvSelectionControlMaskNone });
 		OpVoid(SpvOpBranchConditional, { cond, thenL, elseL });
 		Label(thenL);
-		uint32 a = Op(SpvOpCompositeExtract, tI, { Load(tV4I, GPR(i)), chan });
+		uint32 a = Op(SpvOpCompositeExtract, TypeOf(dt), { Load(Vec4Of(dt), GPR(i)), chan });
 		uint32 aEnd = curBlock;
 		Branch(merge);
 		Label(elseL);
@@ -1697,7 +1697,7 @@ namespace
 		uint32 bEnd = curBlock;
 		Branch(merge);
 		Label(merge);
-		return Op(SpvOpPhi, tI, { a, aEnd, b, bEnd });
+		return Op(SpvOpPhi, TypeOf(dt), { a, aEnd, b, bEnd });
 	}
 
 	// R[base+ARi.c]: the register array's element at the sum
@@ -1779,15 +1779,10 @@ namespace
 			}
 			else if (op.rel != 0)
 			{
-				// _emitCodeToReadRelativeGPR: (ARi.c==0)?R<base>i.c:(ARi.c==1)?...:0,
-				// of an int shader (a float one mixes float and int sides)
-				if (dt != DT_I)
-				{
-					Decline("relative GPR read of a float shader");
-					return KI(0);
-				}
+				// _emitCodeToReadRelativeGPR: (ARi.c==0)?R<base>.c:(ARi.c==1)?...:0, in
+				// the registers' type, converted to the type wanted
 				const uint32 base = GPU7_ALU_SRC_GET_GPR_INDEX(op.sel);
-				Val chain = Run(RelativeGPRChain(base, base, op.chan, inst.indexMode), DT_I);
+				Val chain = Run(RelativeGPRChain(base, base, op.chan, inst.indexMode), dt);
 				if (!Ok())
 					return KI(0);
 				v = Convert(chain, requiredType);
@@ -1811,21 +1806,19 @@ namespace
 			v = Convert(KF(0.5), requiredType);
 		else if (GPU7_ALU_SRC_IS_CONST_1I(op.sel))
 		{
+			// int(1), uint(1); a float's intBitsToFloat(0x00000001)
 			if (requiredType == DT_F)
-			{
-				Decline("integer one read as float");
-				return KF(0.0);
-			}
-			v = K(requiredType, 1);
+				v = Run(Op(SpvOpBitcast, tF, { ConstI(1) }), DT_F);
+			else
+				v = K(requiredType, 1);
 		}
 		else if (GPU7_ALU_SRC_IS_CONST_M1I(op.sel))
 		{
-			if (requiredType != DT_I)
-			{
-				Decline("integer minus one read as non-int");
-				return KI(0);
-			}
-			v = KI(-1);
+			// int(-1); a uint's uint(0xffffffff), a float's intBitsToFloat(0xffffffff)
+			if (requiredType == DT_F)
+				v = Run(Op(SpvOpBitcast, tF, { ConstI(-1) }), DT_F);
+			else
+				v = K(requiredType, 0xFFFFFFFFu);
 		}
 		else if (GPU7_ALU_SRC_IS_LITERAL(op.sel))
 		{
@@ -2891,8 +2884,7 @@ namespace
 		const bool cube = dim == Latte::E_DIM::DIM_CUBEMAP;
 		if (dim != Latte::E_DIM::DIM_2D && dim != Latte::E_DIM::DIM_2D_ARRAY && !cube)
 			return Decline("gather dimension");
-		if (t.textureFetch.offsetX != 0 || t.textureFetch.offsetY != 0 || t.textureFetch.offsetZ != 0)
-			return Decline("gather offset");
+		// (a texel offset ignored: the GLSL emitter's textureGather takes none)
 		const bool isArray = dim == Latte::E_DIM::DIM_2D_ARRAY || cube;
 		if (!isArray && ActiveSettings::ForceSamplerRoundToPrecision())
 			return Decline("sampler round to precision");
@@ -2937,8 +2929,10 @@ namespace
 		const bool one = dim == Latte::E_DIM::DIM_1D;
 		if (dim != Latte::E_DIM::DIM_2D && !one)
 			return Decline("texel fetch dimension");
-		if (t.textureFetch.offsetX != 0 || t.textureFetch.offsetY != 0 || t.textureFetch.offsetZ != 0)
-			return Decline("texel fetch offset");
+		// an LD's texel offset ignored (the GLSL emitter's texelFetch takes
+		// none); a SAMPLE's, appended to texelFetch, does not compile there
+		if (!isLD && (t.textureFetch.offsetX != 0 || t.textureFetch.offsetY != 0 || t.textureFetch.offsetZ != 0))
+			return Decline("texel coordinates' offset");
 		if (texScaleMember[unit] < 0)
 			return Decline("texel scale not declared");
 		uint32 written[4];

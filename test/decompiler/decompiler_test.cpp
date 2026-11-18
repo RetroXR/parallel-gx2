@@ -2726,6 +2726,86 @@ static std::vector<Program> DirectedPrograms()
 			p.exportSel[i] = (uint8)i;
 		out.push_back(p);
 	}
+	// a read relative to AR in a float shader (no MOVA, an integer one; AR
+	// 0) without the register array: R1.x to R4.x floats, R[2+AR.x].x (R2.x)
+	// into R0.x, a float sum into R0.y and R[20+AR.x].x (never written: the
+	// chain's last 0.0) into R0.z; the chain of floats, where the
+	// GLSL and MSL emitters once ended it with an int 0 and did not compile
+	{
+		Program p{};
+		auto mov = [](uint8 dst, uint8 elem, uint32 src, uint8 chan) {
+			AluOp op{};
+			op.opcode = ALU_OP2_INST_MOV;
+			op.src[0] = src;
+			op.chan[0] = chan;
+			op.destGpr = dst;
+			op.destElem = elem;
+			op.writeMask = 1;
+			return op;
+		};
+		AluGroup regs{};
+		for (uint8 r = 0; r < 4; r++)
+		{
+			regs.ops.push_back(mov((uint8)(1 + r), 0, 253, r));
+			const float f = 1.5f + (float)r;
+			std::memcpy(&regs.literals[r], &f, 4);
+		}
+		AluGroup rd{};
+		AluOp op = mov(0, 0, 2, 0);
+		op.rel[0] = 1;
+		op.indexMode = GPU7_INDEX_AR_X;
+		rd.ops.push_back(op);
+		AluOp sum = mov(0, 1, 2, 0); // R2.x + R4.x
+		sum.opcode = ALU_OP2_INST_ADD;
+		sum.src[1] = 4;
+		sum.chan[1] = 0;
+		rd.ops.push_back(sum);
+		AluOp none = mov(0, 2, 20, 0);
+		none.rel[0] = 1;
+		none.indexMode = GPU7_INDEX_AR_X;
+		rd.ops.push_back(none);
+		p.clauses.push_back({ regs, rd });
+		p.cf = { { GPU7_CF_INST_ALU, 0, 0 } };
+		p.exportGpr = 0;
+		for (int i = 0; i < 4; i++)
+			p.exportSel[i] = (uint8)i;
+		out.push_back(p);
+	}
+	// the integer -1 read as a uint (UINT_TO_FLOAT: 4294967296.0) and as a
+	// float (SETE of it with itself, a NaN: 0.0), and the integer 1 as a
+	// float (a denormal, times 2^126), where the
+	// GLSL and MSL emitters once wrote nothing for them and did not compile
+	{
+		Program p{};
+		AluGroup g{};
+		AluOp u{};
+		u.opcode = ALU_OP2_INST_UINT_TO_FLOAT;
+		u.src[0] = 251;
+		u.destGpr = 0;
+		u.destElem = 0;
+		u.writeMask = 1;
+		AluOp f{};
+		f.opcode = ALU_OP2_INST_SETE;
+		f.src[0] = 251;
+		f.src[1] = 251;
+		f.destGpr = 0;
+		f.destElem = 1;
+		f.writeMask = 1;
+		AluOp one = f;
+		one.opcode = ALU_OP2_INST_MUL_IEEE;
+		one.src[0] = 250; // the integer 1
+		one.src[1] = 253; // 2^126: 2^-23 where the denormal is kept
+		one.chan[1] = 0;
+		one.destElem = 2;
+		g.literals[0] = 0x7E800000u;
+		g.ops = { u, f, one };
+		p.clauses.push_back({ g });
+		p.cf = { { GPU7_CF_INST_ALU, 0, 0 } };
+		p.exportGpr = 0;
+		for (int i = 0; i < 4; i++)
+			p.exportSel[i] = (uint8)i;
+		out.push_back(p);
+	}
 	// a 1D at known coordinates (unit 1): a sample a texel over, the
 	// level 1 texel 3, its level count, and a gradient lookup of gradients
 	// (0.25, 1.0) and (0.5, 0.125) - level 2 by the x components
@@ -3839,7 +3919,7 @@ int main(int argc, char** argv)
 	int cbankDrawn = 0; // of the drawn, reading uniform buffers whole
 	std::map<std::string, int> reasons;
 	const std::vector<Program> directed = DirectedPrograms();
-	CHECK(directed.size() == 17);
+	CHECK(directed.size() == 19);
 	for (int i = 0; i < count + (int)directed.size(); i++)
 	{
 		const bool allowDeclined = (i % 5) == 0;

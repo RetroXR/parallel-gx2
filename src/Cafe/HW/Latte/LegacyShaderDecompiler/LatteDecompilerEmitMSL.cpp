@@ -709,8 +709,11 @@ static void _emitCodeToReadRelativeGPR(LatteDecompilerShaderContext* shaderConte
 	else
 		cemu_assert_unimplemented();
 
-	if( LATTE_DECOMPILER_DTYPE_SIGNED_INT != requiredType )
-		_emitTypeConversionPrefixMSL(shaderContext, LATTE_DECOMPILER_DTYPE_SIGNED_INT, requiredType);
+	// the registers are of the default type (floats in a float shader), the
+	// chain and its 0 too
+	const sint32 chainType = shaderContext->typeTracker.defaultDataType;
+	if( chainType != requiredType )
+		_emitTypeConversionPrefixMSL(shaderContext, chainType, requiredType);
 
 	// generated code looks like this:
 	// result = ((lookupIndex==0)?GPR5:(lookupIndex==1)?GPR6:(lookupIndex==2)?GPR7:...:(lookupIndex==122)?GPR127:0)
@@ -727,9 +730,9 @@ static void _emitCodeToReadRelativeGPR(LatteDecompilerShaderContext* shaderConte
 		_appendChannelAccess(src, aluInstruction->sourceOperand[operandIndex].chan);
 		src->add(":");
 	}
-	src->add("0)");
-	if( LATTE_DECOMPILER_DTYPE_SIGNED_INT != requiredType )
-		_emitTypeConversionSuffixMSL(shaderContext, LATTE_DECOMPILER_DTYPE_SIGNED_INT, requiredType);
+	src->add(chainType == LATTE_DECOMPILER_DTYPE_FLOAT ? "0.0)" : "0)");
+	if( chainType != requiredType )
+		_emitTypeConversionSuffixMSL(shaderContext, chainType, requiredType);
 }
 
 static void _emitOperandInputCode(LatteDecompilerShaderContext* shaderContext, LatteDecompilerALUInstruction* aluInstruction, sint32 operandIndex, sint32 requiredType)
@@ -845,14 +848,22 @@ static void _emitOperandInputCode(LatteDecompilerShaderContext* shaderContext, L
 		else if (requiredType == LATTE_DECOMPILER_DTYPE_UNSIGNED_INT)
 			src->add("uint(1)");
 		else
-			cemu_assert_suspicious();
+		{
+			// its bits as a float (a denormal), as a literal of them reads
+			src->add("as_type<float>(0x00000001)");
+		}
 	}
 	else if( GPU7_ALU_SRC_IS_CONST_M1I(aluInstruction->sourceOperand[operandIndex].sel) )
 	{
 		if( requiredType == LATTE_DECOMPILER_DTYPE_SIGNED_INT )
 			src->add("int(-1)");
+		else if( requiredType == LATTE_DECOMPILER_DTYPE_UNSIGNED_INT )
+			src->add("uint(0xffffffff)");
 		else
-			cemu_assert_suspicious();
+		{
+			// its bits as a float (a NaN), as a literal of them reads
+			src->add("as_type<float>(0xffffffff)");
+		}
 	}
 	else if( GPU7_ALU_SRC_IS_LITERAL(aluInstruction->sourceOperand[operandIndex].sel) )
 	{
