@@ -272,7 +272,9 @@ void LatteDecompiler_ParseCFSubroutine(LatteDecompilerShaderContext* shaderConte
 		if (cfInstruction.type == GPU7_CF_INST_RETURN)
 			return; // todo - should check if this return statement is conditional
 	}
-	cemu_assert_debug(false); // should not reach (subroutines have to end with RETURN)
+	// subroutines have to end with RETURN
+	cemuLog_logDebug(LogType::Force, "Shader {:016x}: subroutine at {:x} has no return", shaderContext->shaderBaseHash, subroutineInfo->cfAddr);
+	shaderObj->hasError = true;
 }
 
 void LatteDecompiler_ParseCF(LatteDecompilerShaderContext* shaderContext, uint8* programData, uint32 programSize)
@@ -288,10 +290,13 @@ void LatteDecompiler_ParseCF(LatteDecompilerShaderContext* shaderContext, uint8*
 		if (endOfProgram)
 			break;
 	}
-	// parse CF instructions for subroutines
-	for (auto& subroutineInfo : shaderContext->list_subroutines)
+	// parse CF instructions for subroutines (by index: a CALL inside one adds
+	// to the list, which the analyzer then rejects)
+	for (size_t i = 0; i < shaderContext->list_subroutines.size(); i++)
 	{
-		LatteDecompiler_ParseCFSubroutine(shaderContext, programData, programSize, &subroutineInfo);
+		LatteDecompiler_ParseCFSubroutine(shaderContext, programData, programSize, &shaderContext->list_subroutines[i]);
+		if (shaderObj->hasError)
+			return;
 	}
 }
 

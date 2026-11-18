@@ -440,51 +440,26 @@ void LatteDecompiler_analyzeExport(LatteDecompilerShaderContext* shaderContext, 
 	}
 }
 
-void LatteDecompiler_analyzeSubroutine(LatteDecompilerShaderContext* shaderContext, uint32 cfAddr)
+// a subroutine's CF instructions up to its RETURN, inlined at each CALL:
+// its ALU and TEX clauses analyzed as the main program's are. The inlining
+// has a mask stack of one level and no calls of its own, so flow control,
+// exports and calls inside one fail the shader rather than mis-emit it
+void LatteDecompiler_analyzeSubroutine(LatteDecompilerShaderContext* shaderContext, LatteDecompilerSubroutineInfo& subroutineInfo)
 {
-	// analyze CF and clauses up to RET statement
-
-	// todo - find cfInstruction index from cfAddr
-	cemu_assert_debug(false);
-
-	for(auto& cfInstruction : shaderContext->cfInstructions)
+	for (auto& cfInstruction : subroutineInfo.instructions)
 	{
-		if (cfInstruction.type == GPU7_CF_INST_ALU || cfInstruction.type == GPU7_CF_INST_ALU_PUSH_BEFORE || cfInstruction.type == GPU7_CF_INST_ALU_POP_AFTER || cfInstruction.type == GPU7_CF_INST_ALU_POP2_AFTER || cfInstruction.type == GPU7_CF_INST_ALU_BREAK || cfInstruction.type == GPU7_CF_INST_ALU_ELSE_AFTER)
-		{
+		cfInstruction.activeStackDepth = 0;
+		if (cfInstruction.type == GPU7_CF_INST_ALU)
 			LatteDecompiler_analyzeALUClause(shaderContext, &cfInstruction);
-		}
 		else if (cfInstruction.type == GPU7_CF_INST_TEX)
-		{
 			LatteDecompiler_analyzeTEXClause(shaderContext, &cfInstruction);
-		}
-		else if (cfInstruction.type == GPU7_CF_INST_EXPORT || cfInstruction.type == GPU7_CF_INST_EXPORT_DONE)
-		{
-			LatteDecompiler_analyzeExport(shaderContext, &cfInstruction);
-		}
-		else if (cfInstruction.type == GPU7_CF_INST_ELSE || cfInstruction.type == GPU7_CF_INST_POP)
-		{
-			shaderContext->analyzer.modifiesPixelActiveState = true;
-		}
-		else if (cfInstruction.type == GPU7_CF_INST_LOOP_START_DX10 || cfInstruction.type == GPU7_CF_INST_LOOP_END ||
-				 cfInstruction.type == GPU7_CF_INST_LOOP_START_NO_AL)
-		{
-			shaderContext->analyzer.modifiesPixelActiveState = true;
-		}
-		else if (cfInstruction.type == GPU7_CF_INST_LOOP_BREAK)
-		{
-			shaderContext->analyzer.modifiesPixelActiveState = true;
-		}
-		else if (cfInstruction.type == GPU7_CF_INST_EMIT_VERTEX)
-		{
-			// nothing to analyze
-		}
-		else if (cfInstruction.type == GPU7_CF_INST_CALL)
-		{
-			cemu_assert_debug(false); // CALLs inside subroutines are still todo
-		}
+		else if (cfInstruction.type == GPU7_CF_INST_RETURN)
+			break;
 		else
 		{
-			cemu_assert_unimplemented();
+			cemuLog_logDebug(LogType::Force, "Shader {:016x}: subroutine CF instruction {:02x} not supported", shaderContext->shaderBaseHash, cfInstruction.type);
+			shaderContext->shader->hasError = true;
+			return;
 		}
 	}
 }
@@ -743,7 +718,6 @@ void LatteDecompiler_analyze(LatteDecompilerShaderContext* shaderContext, LatteD
 		}
 	}
 	// list of subroutines (call destinations)
-	std::vector<uint32> list_subroutineAddrs;
 	// analyze CF and clauses
 	for(auto& cfInstruction : shaderContext->cfInstructions)
 	{
@@ -821,16 +795,19 @@ void LatteDecompiler_analyze(LatteDecompilerShaderContext* shaderContext, LatteD
 		}
 		else if (cfInstruction.type == GPU7_CF_INST_CALL)
 		{
-			// CALL instruction does not need analyzing
-			// and subroutines are analyzed separately
+			// the subroutine's analyzed below; the inlined call sets up its
+			// mask stack from this one
+			shaderContext->analyzer.modifiesPixelActiveState = true;
 		}
 		else
 			cemu_assert_unimplemented();
 	}
 	// analyze subroutines
-	for (auto subroutineAddr : list_subroutineAddrs)
+	for (auto& subroutineInfo : shaderContext->list_subroutines)
 	{
-		LatteDecompiler_analyzeSubroutine(shaderContext, subroutineAddr);
+		LatteDecompiler_analyzeSubroutine(shaderContext, subroutineInfo);
+		if (shaderContext->shader->hasError)
+			return;
 	}
 	// decide which uniform mode to use
 	bool hasAnyDynamicBufferAccess = false;
@@ -1165,8 +1142,6 @@ void LatteDecompiler_analyze(LatteDecompilerShaderContext* shaderContext, LatteD
 		debug_printf("cfCurrentStackDepth is not zero after all CF instructions. depth is %d\n", cfCurrentStackDepth);
 		cemu_assert_debug(false);
 	}
-	if(list_subroutineAddrs.empty() == false)
-		cemuLog_logDebug(LogType::Force, "Todo - analyze shader subroutine CF stack");
 	// TF mode
 	if (shaderContext->options->useTFViaSSBO && shaderContext->output->streamoutBufferWriteMask.any())
 	{

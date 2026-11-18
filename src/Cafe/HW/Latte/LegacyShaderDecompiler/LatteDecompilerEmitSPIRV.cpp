@@ -129,6 +129,11 @@ namespace
 		// their lengths, when the shader has control flow
 		bool hasActiveMask{};
 		uint32 maskVar{}, maskCVar{};
+		// each subroutine's activeMaskStackSub<addr>[1] and
+		// activeMaskStackCSub<addr>[2], by its index in list_subroutines; the
+		// one being inlined (its stacks then the mask's)
+		std::vector<uint32> subMaskVar, subMaskCVar;
+		bool inSubroutine{};
 		sint32 maskLen{}, maskCLen{};
 		uint32 aluBreakVar{}; // the ALU_BREAK clause's aluBreak
 		// the texture units' sampler variables and the sampled image types
@@ -971,6 +976,7 @@ namespace
 		bool EmitRingWrite(LatteDecompilerCFInstruction& cf);
 		bool EmitGeometryRingWrite(LatteDecompilerCFInstruction& cf);
 		bool EmitEmitVertex(LatteDecompilerCFInstruction& cf);
+		bool EmitCall(LatteDecompilerCFInstruction& cf);
 		bool DeclareStreamout();
 		bool DeclareUniformBuffers();
 		bool EmitUniformFetch(LatteDecompilerTEXInstruction& t);
@@ -4130,6 +4136,56 @@ namespace
 		return Ok();
 	}
 
+	// _emitCFCall: the subroutine inlined, its mask stacks from the caller's
+	// (activeMaskStackSub<addr>[0] = activeMaskStackC[depth+1], both of the
+	// C stack's first two from it), its clauses on them
+	bool SpvShader::EmitCall(LatteDecompilerCFInstruction& cf)
+	{
+		if (inSubroutine)
+			return Decline("call inside a subroutine");
+		size_t index = ctx->list_subroutines.size();
+		for (size_t i = 0; i < ctx->list_subroutines.size(); i++)
+		{
+			if (ctx->list_subroutines[i].cfAddr == cf.addr)
+			{
+				index = i;
+				break;
+			}
+		}
+		if (index >= subMaskVar.size() || !hasActiveMask)
+			return Decline("subroutine not found");
+		uint32 entry = Load(tBool, MaskPtr(true, cf.activeStackDepth + 1));
+		const uint32 ptrB = spv_type_pointer(w, SpvStorageClassFunction, tBool);
+		Store(Op(SpvOpAccessChain, ptrB, { subMaskVar[index], ConstI(0) }), entry);
+		uint32 sub0 = Load(tBool, Op(SpvOpAccessChain, ptrB, { subMaskVar[index], ConstI(0) }));
+		Store(Op(SpvOpAccessChain, ptrB, { subMaskCVar[index], ConstI(0) }), sub0);
+		uint32 sub0b = Load(tBool, Op(SpvOpAccessChain, ptrB, { subMaskVar[index], ConstI(0) }));
+		Store(Op(SpvOpAccessChain, ptrB, { subMaskCVar[index], ConstI(1) }), sub0b);
+		// the subroutine's stacks as the mask's while it is emitted
+		const uint32 savedMask = maskVar, savedMaskC = maskCVar;
+		const sint32 savedLen = maskLen, savedCLen = maskCLen;
+		maskVar = subMaskVar[index];
+		maskCVar = subMaskCVar[index];
+		maskLen = 1;
+		maskCLen = 2;
+		inSubroutine = true;
+		bool ok = true;
+		for (auto& sub : ctx->list_subroutines[index].instructions)
+		{
+			if (!EmitClause(sub))
+			{
+				ok = false;
+				break;
+			}
+		}
+		inSubroutine = false;
+		maskVar = savedMask;
+		maskCVar = savedMaskC;
+		maskLen = savedLen;
+		maskCLen = savedCLen;
+		return ok && Ok();
+	}
+
 	// SET_POSITION(pos): gl_Position = pos, and its z to 0..1 where the clip
 	// space is OpenGL's: gl_Position.z = (gl_Position.z + gl_Position.w) / 2.0
 	void SpvShader::SetPosition(uint32 pos)
@@ -4429,6 +4485,11 @@ namespace
 			return EmitRingWrite(cf);
 		case GPU7_CF_INST_EMIT_VERTEX:
 			return EmitEmitVertex(cf);
+		case GPU7_CF_INST_CALL:
+			return EmitCall(cf);
+		case GPU7_CF_INST_RETURN:
+			return Ok(); // a subroutine's end, inlined
+
 		case GPU7_CF_INST_MEM_STREAM0_WRITE:
 		case GPU7_CF_INST_MEM_STREAM1_WRITE:
 			return EmitStreamWrite(cf);
@@ -4500,8 +4561,6 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 	if (s.isVertex)
 		return decline("vertex shader on Android");
 #endif
-	if (!shaderContext->list_subroutines.empty())
-		return decline("subroutines");
 	if (shader->hasError)
 		return decline("shader error");
 	s.dt = shaderContext->typeTracker.defaultDataType;
@@ -4585,6 +4644,12 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 		s.MaskStore(false, 0, spv_const_bool(w, 1));
 		s.MaskStore(true, 0, spv_const_bool(w, 1));
 		s.MaskStore(true, 1, spv_const_bool(w, 1));
+		// each subroutine's stacks, as the GLSL emitter declares them
+		for (size_t i = 0; i < shaderContext->list_subroutines.size(); i++)
+		{
+			s.subMaskVar.push_back(s.Local(spv_type_array(w, s.tBool, s.ConstI(1)), 0));
+			s.subMaskCVar.push_back(s.Local(spv_type_array(w, s.tBool, s.ConstI(2)), 0));
+		}
 	}
 	// the streamout buffers' bases; the inputs (a geometry shader reads the
 	// ring where it fetches from it)

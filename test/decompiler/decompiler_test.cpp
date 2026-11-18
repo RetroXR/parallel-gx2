@@ -91,6 +91,9 @@ struct Program
 	std::vector<std::vector<AluGroup>> clauses; // ALU clauses
 	std::vector<std::vector<TexOp>> texClauses;
 	std::vector<CFEntry> cf; // the CF list; none: each clause a plain ALU, in order
+	// a subroutine: plain ALU and TEX entries placed after the program's
+	// end, then a RETURN; each CALL in the CF list calls it
+	std::vector<CFEntry> sub;
 	uint8 texKind[4]; // units 0 to 3
 	uint32 exportGpr;
 	uint8 exportSel[4];
@@ -126,6 +129,9 @@ struct Program
 	// a directed program's pixel 0: buffer 1's vec4 5's z, then buffer 2's
 	// vec4 9's w, x and y (uniform buffer VFETCHes), checked as drawn
 	bool expectFetch = false;
+	// a directed program's pixel 0, checked as drawn
+	bool expectPixel = false;
+	uint32 pixel0[4];
 };
 
 static void EncodeTex(const TexOp& t, uint32 w[4])
@@ -203,7 +209,8 @@ static std::vector<uint32> Assemble(const Program& p)
 		for (size_t i = 0; i < p.clauses.size(); i++)
 			list.push_back({ GPU7_CF_INST_ALU, (int)i, 0 });
 	}
-	const uint32 cfCount = (uint32)list.size() + (p.vertex ? (uint32)p.vsExports.size() : 1);
+	const uint32 cfCount = (uint32)list.size() + (p.vertex ? (uint32)p.vsExports.size() : 1) +
+		(p.sub.empty() ? 0 : (uint32)p.sub.size() + 1);
 	uint32 aluBase = (cfCount + 1) & ~1u; // in 64 bit words, after the CF list
 	uint32 at = aluBase;
 	std::vector<uint32> clauseStart, clauseWords;
@@ -268,9 +275,16 @@ static std::vector<uint32> Assemble(const Program& p)
 			at += 2;
 		}
 	}
-	for (auto& e : list)
-	{
-		if (e.type == GPU7_CF_INST_TEX)
+	std::vector<size_t> calls; // the CALLs' first words, the address to come
+	auto entry = [&](const CFEntry& e) {
+		if (e.type == GPU7_CF_INST_CALL)
+		{
+			// CALL: addr (the subroutine's), call count 0
+			calls.push_back(cf.size());
+			cf.push_back(0);
+			cf.push_back(((uint32)GPU7_CF_INST_CALL << 23) | (1u << 31));
+		}
+		else if (e.type == GPU7_CF_INST_TEX)
 		{
 			// CF_TEX: addr, count-1 (bits 10-12 and 19)
 			const uint32 count = (uint32)p.texClauses[e.clause].size() - 1;
@@ -298,7 +312,9 @@ static std::vector<uint32> Assemble(const Program& p)
 			cf.push_back(0);
 			cf.push_back((uint32)e.popCount | (e.type << 23) | (1u << 31));
 		}
-	}
+	};
+	for (auto& e : list)
+		entry(e);
 	// a program of the CF list alone ends with its last entry
 	if (p.vertex && p.vsExports.empty() && !cf.empty())
 		cf.back() |= 1u << 21;
@@ -340,6 +356,16 @@ static std::vector<uint32> Assemble(const Program& p)
 		cf.push_back(0 | (0 << 13) | (p.exportGpr << 15));
 		cf.push_back((uint32)p.exportSel[0] | ((uint32)p.exportSel[1] << 3) | ((uint32)p.exportSel[2] << 6) | ((uint32)p.exportSel[3] << 9) |
 			(1u << 21) | ((uint32)GPU7_CF_INST_EXPORT_DONE << 23) | (1u << 31));
+	}
+	// the subroutine past the end of the program
+	if (!p.sub.empty())
+	{
+		const uint32 subAddr = (uint32)cf.size() / 2;
+		for (size_t c : calls)
+			cf[c] = subAddr;
+		for (auto& e : p.sub)
+			entry(e);
+		entry({ GPU7_CF_INST_RETURN, -1, 0 });
 	}
 	std::vector<uint32> out(aluBase * 2, 0);
 	std::memcpy(out.data(), cf.data(), cf.size() * 4);
@@ -931,6 +957,50 @@ struct Gen
 		}
 	}
 
+	// a run of plain ALU and TEX entries moved into a subroutine, a CALL in
+	// their place; another CALL of it elsewhere now and then
+	void MakeCall(Program& p)
+	{
+		if (p.cf.empty())
+		{
+			for (size_t i = 0; i < p.clauses.size(); i++)
+				p.cf.push_back({ GPU7_CF_INST_ALU, (int)i, 0 });
+		}
+		std::vector<size_t> plain;
+		for (size_t i = 0; i < p.cf.size(); i++)
+		{
+			if (p.cf[i].type == GPU7_CF_INST_ALU || p.cf[i].type == GPU7_CF_INST_TEX)
+				plain.push_back(i);
+		}
+		if (plain.empty())
+			return;
+		const size_t at = plain[R((uint32)plain.size())];
+		size_t end = at + 1;
+		const size_t want = 1 + R(3);
+		while (end < p.cf.size() && end - at < want && (p.cf[end].type == GPU7_CF_INST_ALU || p.cf[end].type == GPU7_CF_INST_TEX))
+			end++;
+		p.sub.assign(p.cf.begin() + at, p.cf.begin() + end);
+		p.cf.erase(p.cf.begin() + at, p.cf.begin() + end);
+		p.cf.insert(p.cf.begin() + at, CFEntry{ GPU7_CF_INST_CALL, -1, 0 });
+		// the second outside any loop: the subroutine may set a loop's
+		// counter, which a call in its body would reset each time round
+		std::vector<size_t> outside;
+		int loops = 0;
+		for (size_t i = 0; i <= p.cf.size(); i++)
+		{
+			if (loops == 0)
+				outside.push_back(i);
+			if (i == p.cf.size())
+				break;
+			if (p.cf[i].type == GPU7_CF_INST_LOOP_START_DX10 || p.cf[i].type == GPU7_CF_INST_LOOP_START_NO_AL)
+				loops++;
+			else if (p.cf[i].type == GPU7_CF_INST_LOOP_END)
+				loops--;
+		}
+		if (Chance(30))
+			p.cf.insert(p.cf.begin() + outside[R((uint32)outside.size())], CFEntry{ GPU7_CF_INST_CALL, -1, 0 });
+	}
+
 	Program Make(bool allowDeclined)
 	{
 		Program p{};
@@ -973,6 +1043,8 @@ struct Gen
 					p.cf.push_back({ GPU7_CF_INST_ALU, a, 0 });
 			}
 		}
+		if (Chance(15))
+			MakeCall(p);
 		for (int i = 0; i < 4; i++)
 		{
 			uint32 k = R(10);
@@ -1972,6 +2044,20 @@ static int Differs(const Context& c, const Case& k, std::vector<uint32>* outA = 
 	}
 	std::vector<uint32> a = Draw(c, viaGlsl, k.p.texKind, k.inputs, uniforms, sizeof(uniforms));
 	std::vector<uint32> b = Draw(c, viaSpirv, k.p.texKind, k.inputs, uniforms, sizeof(uniforms));
+	if (k.p.expectPixel)
+	{
+		for (int ch = 0; ch < 4; ch++)
+		{
+			for (const std::vector<uint32>* px : { &a, &b })
+			{
+				if ((*px)[ch] != k.p.pixel0[ch])
+				{
+					std::printf("FAIL: pixel 0's channel %d is %08x, not %08x\n", ch, (*px)[ch], k.p.pixel0[ch]);
+					s_failures++;
+				}
+			}
+		}
+	}
 	if (k.p.expectFetch)
 	{
 		// pixel 0: buffer 1's vec4 5's z; buffer 2's vec4 9's w, x and y
@@ -2859,6 +2945,61 @@ static std::vector<Program> DirectedPrograms()
 		p.exportGpr = 0;
 		for (int i = 0; i < 4; i++)
 			p.exportSel[i] = (uint8)i;
+		out.push_back(p);
+	}
+	// a subroutine adding 1.0 to R1.x, called three times: before an if,
+	// in it (false: the call masked off) and after it; R1 (1, 2, 3, 4)
+	// first, so pixel 0 (3, 2, 3, 4)
+	{
+		Program p{};
+		AluGroup g{};
+		for (uint8 c = 0; c < 4; c++)
+		{
+			AluOp mov{};
+			mov.opcode = ALU_OP2_INST_MOV;
+			mov.src[0] = 253;
+			mov.chan[0] = c;
+			mov.destGpr = 1;
+			mov.destElem = c;
+			mov.writeMask = 1;
+			g.ops.push_back(mov);
+		}
+		g.literals[0] = 0x3F800000u;
+		g.literals[1] = 0x40000000u;
+		g.literals[2] = 0x40400000u;
+		g.literals[3] = 0x40800000u;
+		AluOp pred{};
+		pred.opcode = ALU_OP2_INST_PRED_SETGT;
+		pred.src[0] = 248; // 0.0 > 1.0
+		pred.src[1] = 249;
+		pred.exec = 1;
+		AluOp inc{};
+		inc.opcode = ALU_OP2_INST_ADD;
+		inc.src[0] = 1;
+		inc.src[1] = 249;
+		inc.destGpr = 1;
+		inc.writeMask = 1;
+		AluGroup gp{}, gi{};
+		gp.ops.push_back(pred);
+		gi.ops.push_back(inc);
+		p.clauses = { { g }, { gp }, { gi } };
+		p.cf = {
+			{ GPU7_CF_INST_ALU, 0, 0 },
+			{ GPU7_CF_INST_CALL, -1, 0 },
+			{ GPU7_CF_INST_ALU_PUSH_BEFORE, 1, 0 },
+			{ GPU7_CF_INST_CALL, -1, 0 },
+			{ GPU7_CF_INST_POP, -1, 1 },
+			{ GPU7_CF_INST_CALL, -1, 0 },
+		};
+		p.sub = { { GPU7_CF_INST_ALU, 2, 0 } };
+		p.exportGpr = 1;
+		for (int i = 0; i < 4; i++)
+			p.exportSel[i] = (uint8)i;
+		p.expectPixel = true;
+		p.pixel0[0] = 0x40400000u;
+		p.pixel0[1] = 0x40000000u;
+		p.pixel0[2] = 0x40400000u;
+		p.pixel0[3] = 0x40800000u;
 		out.push_back(p);
 	}
 	const uint32 ld4[4] = { 3, 5, 0, 0 }, ld5[4] = { 1, 2, 0, 1 };
@@ -3917,9 +4058,10 @@ int main(int argc, char** argv)
 	int direct = 0, declined = 0, drawn = 0, differing = 0, glslFailed = 0, offsetsDiffer = 0, shapeDiffers = 0;
 	int gsDrawn = 0; // of the drawn, after a geometry shader
 	int cbankDrawn = 0; // of the drawn, reading uniform buffers whole
+	int subDrawn = 0; // of the drawn, calling a subroutine
 	std::map<std::string, int> reasons;
 	const std::vector<Program> directed = DirectedPrograms();
-	CHECK(directed.size() == 19);
+	CHECK(directed.size() == 20);
 	for (int i = 0; i < count + (int)directed.size(); i++)
 	{
 		const bool allowDeclined = (i % 5) == 0;
@@ -3953,6 +4095,13 @@ int main(int argc, char** argv)
 		{
 			declined++;
 			reasons[viaSpirv.declined]++;
+			// the analyzer refuses what the inlining can't do: a call the
+			// emitter can't make is a fault
+			if (std::strstr(viaSpirv.declined, "subroutine"))
+			{
+				std::printf("FAIL: program %d's subroutine declined (%s)\n", i, viaSpirv.declined);
+				s_failures++;
+			}
 			// the GLSL way, as before: the same module
 			if (viaSpirv.spirv != viaGlsl.spirv)
 			{
@@ -4060,6 +4209,7 @@ int main(int argc, char** argv)
 		drawn++;
 		gsDrawn += k.usesGS;
 		cbankDrawn += viaGlsl.uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_FULL_CBANK;
+		subDrawn += !p.sub.empty();
 		if (Differs(c, k) == 1)
 		{
 			differing++;
@@ -4075,6 +4225,8 @@ int main(int argc, char** argv)
 	CHECK(!device || count < 100 || gsDrawn * 10 > drawn);
 	std::printf("decompiler: %d pixel shaders drawn reading uniform buffers whole\n", cbankDrawn);
 	CHECK(!device || count < 100 || cbankDrawn * 20 > drawn);
+	std::printf("decompiler: %d pixel shaders drawn calling a subroutine\n", subDrawn);
+	CHECK(!device || count < 100 || subDrawn * 30 > drawn);
 	for (auto& it : reasons)
 		std::printf("  declined: %s (%d)\n", it.first.c_str(), it.second);
 	if (differing)
@@ -4094,6 +4246,7 @@ int main(int argc, char** argv)
 		int gsCaseDrawn = 0; // of the drawn, geometry shaders
 		int soDrawn = 0; // of the drawn, writing the streamout buffer
 		int vCbankDrawn = 0; // of the drawn, reading uniform buffers whole
+		int vSubDrawn = 0; // of the drawn, calling a subroutine
 		int soOffDrawn = 0; // of those, with streamout off (the writes dropped)
 		std::map<std::string, int> vReasons;
 		{
@@ -4123,6 +4276,11 @@ int main(int argc, char** argv)
 			{
 				vDeclined++;
 				vReasons[viaSpirv.declined]++;
+				if (std::strstr(viaSpirv.declined, "subroutine"))
+				{
+					std::printf("FAIL: vertex program %d's subroutine declined (%s)\n", i, viaSpirv.declined);
+					s_failures++;
+				}
 				if (viaSpirv.spirv != viaGlsl.spirv)
 				{
 					std::printf("FAIL: vertex program %d declined (%s) but not compiled as before\n", i, viaSpirv.declined);
@@ -4224,6 +4382,7 @@ int main(int argc, char** argv)
 			gsCaseDrawn += k.gsCase;
 			soDrawn += k.streamout;
 			vCbankDrawn += viaGlsl.uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_FULL_CBANK;
+			vSubDrawn += !k.p.sub.empty();
 			soOffDrawn += k.streamout && k.streamoutOff;
 			bool same = true;
 			for (int l = -1; l < k.psCount; l++)
@@ -4303,6 +4462,8 @@ int main(int argc, char** argv)
 		CHECK(!device || !c.vertexStores || vsCount < 100 || soDrawn * 10 > vDrawn);
 		std::printf("decompiler: %d vertex and geometry shaders drawn reading uniform buffers whole\n", vCbankDrawn);
 		CHECK(!device || vsCount < 100 || vCbankDrawn * 20 > vDrawn);
+		std::printf("decompiler: %d vertex and geometry shaders drawn calling a subroutine\n", vSubDrawn);
+		CHECK(!device || vsCount < 100 || vSubDrawn * 30 > vDrawn);
 		// stream writes with streamout off are drawn (dropped), not declined
 		CHECK(!device || !c.vertexStores || vsCount < 100 || soOffDrawn > 0);
 		// geometry shaders are drawn, not declined
