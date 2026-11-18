@@ -3035,10 +3035,8 @@ namespace
 		const bool one = dim == Latte::E_DIM::DIM_1D;
 		if (dim != Latte::E_DIM::DIM_2D && !one)
 			return Decline("texel fetch dimension");
-		// an LD's texel offset ignored (the GLSL emitter's texelFetch takes
-		// none); a SAMPLE's, appended to texelFetch, does not compile there
-		if (!isLD && (t.textureFetch.offsetX != 0 || t.textureFetch.offsetY != 0 || t.textureFetch.offsetZ != 0))
-			return Decline("texel coordinates' offset");
+		// an offset, in texels, added to the texel
+		const bool hasOffset = t.textureFetch.offsetX != 0 || t.textureFetch.offsetY != 0 || t.textureFetch.offsetZ != 0;
 		if (texScaleMember[unit] < 0)
 			return Decline("texel scale not declared");
 		uint32 written[4];
@@ -3056,6 +3054,8 @@ namespace
 			scalePtr = Op(SpvOpAccessChain, spv_type_pointer(w, SpvStorageClassUniform, tV2F), { ufBlockVar, ConstI(texScaleMember[unit]) });
 			uint32 sx = Op(SpvOpCompositeExtract, tF, { Load(tV2F, scalePtr), 0 });
 			uint32 coord1 = Op(SpvOpConvertFToS, tI, { Op(SpvOpFMul, tF, { xf, sx }) });
+			if (hasOffset)
+				coord1 = Op(SpvOpIAdd, tI, { coord1, TexOffset(t, dim) });
 			uint32 lod1 = isLD ? TexCoordAs(t, 3, DT_I).id : ConstI(0);
 			if (!Ok())
 				return false;
@@ -3079,6 +3079,8 @@ namespace
 		uint32 ip[2] = { Op(SpvOpConvertFToS, tI, { Op(SpvOpCompositeExtract, tF, { scaled, 0 }) }),
 			Op(SpvOpConvertFToS, tI, { Op(SpvOpCompositeExtract, tF, { scaled, 1 }) }) };
 		uint32 coord = Construct(tV2I, ip, 2);
+		if (hasOffset)
+			coord = Op(SpvOpIAdd, tV2I, { coord, TexOffset(t, dim) });
 		uint32 lod = isLD ? TexCoordAs(t, 3, DT_I).id : ConstI(0);
 		if (!Ok())
 			return false;

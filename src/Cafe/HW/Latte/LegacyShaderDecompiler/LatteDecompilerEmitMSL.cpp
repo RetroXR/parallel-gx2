@@ -2311,8 +2311,6 @@ static void _emitTEXSampleTextureCode(LatteDecompilerShaderContext* shaderContex
     	    src->add(".");
            	if (isRead)
            	{
-          		if (hasOffset)
-         			cemu_assert_unimplemented();
           		src->add("read(");
           		unnormalizationHandled = true;
           		useTexelCoordinates = true;
@@ -2358,13 +2356,16 @@ static void _emitTEXSampleTextureCode(LatteDecompilerShaderContext* shaderContex
     		// handle integer coordinates for texelFetch
     		if (texDim == Latte::E_DIM::DIM_2D || texDim == Latte::E_DIM::DIM_2D_MSAA)
     		{
-    			src->add("uint2(");
+    			// read() takes no offset: a texel offset added to the texel
+    			src->add(hasOffset ? "uint2(int2(" : "uint2(");
     			src->add("float2(");
     			_emitTEXSampleCoordInputComponent(shaderContext, texInstruction, 0, texCoordDataType);
     			src->addFmt(", ");
     			_emitTEXSampleCoordInputComponent(shaderContext, texInstruction, 1, texCoordDataType);
 
     			src->addFmt(")*supportBuffer.tex{}Scale", texInstruction->textureFetch.textureIndex); // close float2 and scale
+    			if (hasOffset)
+    				src->addFmt(") + int2({},{})", texInstruction->textureFetch.offsetX / 2, texInstruction->textureFetch.offsetY / 2);
 
 				src->add("), ");
 				if (texOpcode == GPU7_TEX_INST_LD)
@@ -2375,10 +2376,12 @@ static void _emitTEXSampleTextureCode(LatteDecompilerShaderContext* shaderContex
     		else if (texDim == Latte::E_DIM::DIM_1D)
     		{
     			// VC DS games forget to initialize textures and use texel fetch on an uninitialized texture (a dim of 0 maps to 1D)
-    			src->add("uint(");
+    			src->add(hasOffset ? "uint(int(" : "uint(");
     			src->add("float(");
     			_emitTEXSampleCoordInputComponent(shaderContext, texInstruction, 0, (texOpcode == GPU7_TEX_INST_LD) ? LATTE_DECOMPILER_DTYPE_SIGNED_INT : LATTE_DECOMPILER_DTYPE_FLOAT);
     			src->addFmt(")*supportBuffer.tex{}Scale.x", texInstruction->textureFetch.textureIndex);
+    			if (hasOffset)
+    				src->addFmt(") + {}", texInstruction->textureFetch.offsetX / 2);
     			src->add("), 0");
     			// todo - lod
     		}
@@ -2538,7 +2541,7 @@ static void _emitTEXSampleTextureCode(LatteDecompilerShaderContext* shaderContex
     	// offset
 		if( texOpcode == GPU7_TEX_INST_SAMPLE_L || texOpcode == GPU7_TEX_INST_SAMPLE_LB || texOpcode == GPU7_TEX_INST_SAMPLE_G || texOpcode == GPU7_TEX_INST_SAMPLE_LZ || texOpcode == GPU7_TEX_INST_SAMPLE_C_LZ || texOpcode == GPU7_TEX_INST_SAMPLE || texOpcode == GPU7_TEX_INST_SAMPLE_C )
     	{
-    		if( hasOffset )
+    		if( hasOffset && !useTexelCoordinates ) // a texel read's offset is in its coordinates
     		{
     			uint8 offsetComponentCount = 0;
     			if( texDim == Latte::E_DIM::DIM_1D )

@@ -2333,9 +2333,7 @@ void _emitTEXSampleTextureCode(LatteDecompilerShaderContext* shaderContext, Latt
 
 	if (texOpcode == GPU7_TEX_INST_SAMPLE && (texInstruction->textureFetch.unnormalized[0] && texInstruction->textureFetch.unnormalized[1] && texInstruction->textureFetch.unnormalized[2] && texInstruction->textureFetch.unnormalized[3]) )
 	{
-		// texture is likely a RECT
-		if (hasOffset)
-			cemu_assert_unimplemented();
+		// texture is likely a RECT (an offset added to the texel below)
 		src->add("texelFetch(");
 		unnormalizationHandled = true;
 		useTexelCoordinates = true;
@@ -2348,8 +2346,6 @@ void _emitTEXSampleTextureCode(LatteDecompilerShaderContext* shaderContext, Latt
 	}
 	else if( texOpcode == GPU7_TEX_INST_LD )
 	{
-		if( hasOffset )
-			cemu_assert_unimplemented();
 		src->add("texelFetch(");
 		unnormalizationHandled = true;
 		useTexelCoordinates = true;
@@ -2458,7 +2454,11 @@ void _emitTEXSampleTextureCode(LatteDecompilerShaderContext* shaderContext, Latt
 
 			src->addFmt(")*uf_tex{}Scale", texInstruction->textureFetch.textureIndex); // close vec2 and scale
 
-			src->add("), ");
+			src->add(")");
+			// the offset in texels, added to the texel
+			if (hasOffset)
+				src->addFmt(" + ivec2({},{})", texInstruction->textureFetch.offsetX / 2, texInstruction->textureFetch.offsetY / 2);
+			src->add(", ");
 			if (texOpcode == GPU7_TEX_INST_LD)
 				_emitTEXSampleCoordInputComponent(shaderContext, texInstruction, 3, LATTE_DECOMPILER_DTYPE_SIGNED_INT);
 			else
@@ -2471,7 +2471,10 @@ void _emitTEXSampleTextureCode(LatteDecompilerShaderContext* shaderContext, Latt
 			src->add("float(");
 			_emitTEXSampleCoordInputComponent(shaderContext, texInstruction, 0, (texOpcode == GPU7_TEX_INST_LD) ? LATTE_DECOMPILER_DTYPE_SIGNED_INT : LATTE_DECOMPILER_DTYPE_FLOAT);
 			src->addFmt(")*uf_tex{}Scale.x", texInstruction->textureFetch.textureIndex);
-			src->add("), ");
+			src->add(")");
+			if (hasOffset)
+				src->addFmt(" + {}", texInstruction->textureFetch.offsetX / 2);
+			src->add(", ");
 			if (texOpcode == GPU7_TEX_INST_LD)
 				_emitTEXSampleCoordInputComponent(shaderContext, texInstruction, 3, LATTE_DECOMPILER_DTYPE_SIGNED_INT);
 			else
@@ -2603,10 +2606,10 @@ void _emitTEXSampleTextureCode(LatteDecompilerShaderContext* shaderContext, Latt
 			cemu_assert_unimplemented();
 		}
 	}
-	// offset
+	// offset (a texel fetch's in its texel)
 	if( texOpcode == GPU7_TEX_INST_SAMPLE_L || texOpcode == GPU7_TEX_INST_SAMPLE_LB || texOpcode == GPU7_TEX_INST_SAMPLE_G || texOpcode == GPU7_TEX_INST_SAMPLE_LZ || texOpcode == GPU7_TEX_INST_SAMPLE_C_LZ || texOpcode == GPU7_TEX_INST_SAMPLE || texOpcode == GPU7_TEX_INST_SAMPLE_C )
 	{
-		if( hasOffset )
+		if( hasOffset && !useTexelCoordinates )
 		{
 			uint8 offsetComponentCount = 0;
 			if( texDim == Latte::E_DIM::DIM_1D )

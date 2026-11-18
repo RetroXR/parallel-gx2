@@ -148,6 +148,8 @@ struct Program
 	bool roundPrecision = false;
 	// a directed program's: drawn as a point, param gen into this register
 	sint8 pointCoordGpr = -1;
+	// a directed program's pixel 0: x equal to z and y to w
+	bool expectPairs = false;
 };
 
 static void EncodeTex(const TexOp& t, uint32 w[4])
@@ -504,6 +506,9 @@ struct Gen
 	// VFETCH) make the whole buffers the shader's
 	bool bufferMode = false;
 	bool loopMade = false;
+	// clauses inside a loop: no register written relative to AR there, which
+	// could land on the loop's counter and keep it from ending
+	bool inLoop = false;
 	bool shadowUnit[4]{}; // the units compared with: a 2D's or a 2D array's
 	// the register exported, written more often where control flow decides
 	// which clauses run, so that it shows
@@ -661,7 +666,7 @@ struct Gen
 			op.writeMask = op.op3 ? 1 : (Chance(75) ? 1 : 0);
 			// a register written relative to AR (the registers then one array),
 			// now and then
-			op.destRel = Chance(4);
+			op.destRel = Chance(4) && !inLoop;
 			if (op.destRel && !op.rel[0] && !op.rel[1] && !op.rel[2])
 				op.indexMode = (uint8)R(4);
 			const bool mova = !op.op3 && (op.opcode == ALU_OP2_INST_MOVA_INT || op.opcode == ALU_OP2_INST_MOVA_FLOOR);
@@ -862,8 +867,9 @@ struct Gen
 			if (!anyWritten)
 				t.dstSel[R(4)] = compare ? 0 : (uint8)R(4);
 			t.dstGpr = Dest();
-			// offsets of the samples, the gathers' and fetches' now and then
-			const bool sampleKind = t.opcode != GPU7_TEX_INST_FETCH4 && t.opcode != GPU7_TEX_INST_LD &&
+			// offsets of the samples and texel fetches (in texels, -8 to 7),
+			// the gathers' now and then
+			const bool sampleKind = t.opcode != GPU7_TEX_INST_FETCH4 &&
 				t.opcode != GPU7_TEX_INST_GET_GRADIENTS_H && t.opcode != GPU7_TEX_INST_GET_GRADIENTS_V &&
 				!(compare && (kind == TEX_2D_ARRAY || t.opcode == GPU7_TEX_INST_SAMPLE_C_L));
 			if (Chance(sampleKind ? 30 : 3))
@@ -873,8 +879,6 @@ struct Gen
 			}
 			t.unnormalized = t.opcode == GPU7_TEX_INST_SAMPLE && (((flat2D || line) && !vertexMode && !shadowUnit[t.unit] && Chance(10)) ||
 				(allowDeclined && Chance(5)));
-			if (t.unnormalized && !allowDeclined)
-				t.offset[0] = t.offset[1] = t.offset[2] = 0;
 			if (t.opcode == GPU7_TEX_INST_GET_GRADIENTS_H || t.opcode == GPU7_TEX_INST_GET_GRADIENTS_V || (cube && !allowDeclined))
 				t.offset[0] = t.offset[1] = t.offset[2] = 0;
 			// no offset on a 3D texture outside a pixel shader: lavapipe
@@ -930,6 +934,7 @@ struct Gen
 	void Statements(Program& p, int depth, int loops, int loopBase, int& budget, bool allowDeclined)
 	{
 		noKills = vertexMode || loops > 0 || loopMade;
+		inLoop = inLoop || loops > 0;
 		uint32 n = 1 + R(3);
 		for (uint32 i = 0; i < n && budget > 0; i++)
 		{
@@ -1010,6 +1015,7 @@ struct Gen
 				float limit = (float)(1 + R(4));
 				std::memcpy(&test.literals[0], &limit, 4);
 				noKills = true;
+				inLoop = true;
 				int c = Clause(p, 2, allowDeclined);
 				auto& groups = p.clauses[c];
 				groups.insert(groups.begin(), inc);
@@ -1074,6 +1080,7 @@ struct Gen
 		destGPRs = kGPRs;
 		noKills = vertexMode; // a vertex shader has no discard
 		loopMade = false;
+		inLoop = false;
 		favorDest = -1;
 		p.exportGpr = R(kGPRs - 1);
 		// the units' textures: mostly 2D floats, a cube map (declined) now
@@ -2240,6 +2247,20 @@ static int Differs(const Context& c, const Case& k, std::vector<uint32>* outA = 
 	const bool depth = k.p.depthGpr >= 0;
 	std::vector<uint32> a = Draw(c, viaGlsl, k.p.texKind, k.inputs, uniforms, sizeof(uniforms), k.cw, depth, k.points);
 	std::vector<uint32> b = Draw(c, viaSpirv, k.p.texKind, k.inputs, uniforms, sizeof(uniforms), k.cw, depth, k.points);
+	if (k.p.expectPairs)
+	{
+		for (const std::vector<uint32>* px : { &a, &b })
+		{
+			for (int ch = 0; ch < 2; ch++)
+			{
+				if ((*px)[ch] != (*px)[ch + 2])
+				{
+					std::printf("FAIL: pixel 0's channel %d is %08x, channel %d %08x\n", ch, (*px)[ch], ch + 2, (*px)[ch + 2]);
+					s_failures++;
+				}
+			}
+		}
+	}
 	if (k.p.sysInputs)
 	{
 		// pixel 0's centre (0.5, 0.5) scaled; the triangle's signed area is
@@ -3340,6 +3361,26 @@ static std::vector<Program> DirectedPrograms()
 	}
 	const uint32 ld4[4] = { 3, 5, 0, 0 }, ld5[4] = { 1, 2, 0, 1 };
 	out.push_back(fetch(GPU7_TEX_INST_LD, ld4, ld5));
+	// texel fetches with an offset: an LD of (3, 5) offset by (1, -2) and a
+	// texel SAMPLE of (2, 6) offset by (1, -2) into xy, the same texels
+	// without one, (4, 3) and (3, 4), into zw: pixel 0's pairs equal
+	{
+		const uint32 a4[4] = { 3, 5, 0, 0 }, a5[4] = { 4, 3, 0, 0 };
+		Program p = fetch(GPU7_TEX_INST_LD, a4, a5);
+		const uint8 zw[4] = { 7, 7, 0, 1 }; // the second texel's x and y into zw
+		std::memcpy(p.texClauses[0][1].dstSel, zw, 4);
+		p.texClauses[0][0].offset[0] = 2; // half texels
+		p.texClauses[0][0].offset[1] = -4;
+		p.expectPairs = true;
+		out.push_back(p);
+		const uint32 b4[4] = { 0x40000000u, 0x40C00000u, 0, 0 }, b5[4] = { 0x40400000u, 0x40800000u, 0, 0 }; // (2, 6), (3, 4)
+		p = fetch(GPU7_TEX_INST_SAMPLE, b4, b5);
+		std::memcpy(p.texClauses[0][1].dstSel, zw, 4);
+		p.texClauses[0][0].offset[0] = 2;
+		p.texClauses[0][0].offset[1] = -4;
+		p.expectPairs = true;
+		out.push_back(p);
+	}
 	const uint32 s4[4] = { 0x40000000u, 0x40C00000u, 0, 0 }, s5[4] = { 0x40E00000u, 0x3F800000u, 0, 0 }; // (2, 6), (7, 1)
 	out.push_back(fetch(GPU7_TEX_INST_SAMPLE, s4, s5));
 	return out;
@@ -4405,7 +4446,7 @@ int main(int argc, char** argv)
 	int memDrawn = 0; // of the drawn, with a scatter buffer read
 	std::map<std::string, int> reasons;
 	const std::vector<Program> directed = DirectedPrograms();
-	CHECK(directed.size() == 24);
+	CHECK(directed.size() == 26);
 	for (int i = 0; i < count + (int)directed.size(); i++)
 	{
 		const bool allowDeclined = (i % 5) == 0;
