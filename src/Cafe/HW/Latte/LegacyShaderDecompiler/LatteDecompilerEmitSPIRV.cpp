@@ -39,6 +39,8 @@
 #include <cstdlib>
 #include <cstring>
 
+// what the shader being written has beyond the GLSL emitter's (LatteDecompiler_SPIRVBeyondGLSL)
+static thread_local const char* s_lastBeyondGLSL;
 namespace
 {
 	constexpr sint32 DT_F = LATTE_DECOMPILER_DTYPE_FLOAT;
@@ -1528,6 +1530,36 @@ namespace
 				Store(GPR(gprIndex), v);
 				continue;
 			}
+			// a point sprite's coordinates in place of the input, by component
+			sint8 spriteSel[4];
+			bool spriteTopOne;
+			if (LatteDecompiler_GetSpriteOverride(ctx, i, spriteSel, &spriteTopOne))
+			{
+				uint32 parts[4];
+				for (uint32 c = 0; c < 4; c++)
+				{
+					if (spriteSel[c] == 0 || spriteSel[c] == 1)
+						parts[c] = ConstF(spriteSel[c] == 1 ? 1.0f : 0.0f);
+					else if (spriteSel[c] == 2 || spriteSel[c] == 3)
+					{
+						uint32 pc = Load(tV2F, BuiltinInput(SpvBuiltInPointCoord));
+						parts[c] = Op(SpvOpCompositeExtract, tF, { pc, spriteSel[c] == 2 ? 0u : 1u });
+						if (spriteSel[c] == 3 && spriteTopOne)
+							parts[c] = Op(SpvOpFSub, tF, { ConstF(1.0f), parts[c] });
+					}
+					else
+					{
+						if (!inputVar[i])
+							return Decline("input without a declaration");
+						parts[c] = Op(SpvOpCompositeExtract, tF, { Load(tV4F, inputVar[i]), c });
+					}
+				}
+				uint32 v = Op(SpvOpCompositeConstruct, tV4F, { parts[0], parts[1], parts[2], parts[3] });
+				if (dt == DT_I)
+					v = Op(SpvOpBitcast, tV4I, { v });
+				Store(GPR(gprIndex), v);
+				continue;
+			}
 			if (!inputVar[i])
 				return Decline("input without a declaration");
 			uint32 v = Load(tV4F, inputVar[i]);
@@ -2905,9 +2937,14 @@ namespace
 		const bool cube = dim == Latte::E_DIM::DIM_CUBEMAP;
 		// no textureLod() of an array's or a cube array's shadow sampler, no
 		// textureLodOffset() written for SAMPLE_C_L, nor an offset of an
-		// array's; a cube's offset the GLSL emitter leaves out
-		if ((isArray || cube) && (op != GPU7_TEX_INST_SAMPLE_C || hasOffset))
+		// array's; a cube's offset the GLSL emitter leaves out. A cube's
+		// compare at level zero SPIR-V has (an explicit level of 0, the
+		// reference in w as SAMPLE_C's), where no GLSL compiles
+		const bool cubeLevelZero = cube && op == GPU7_TEX_INST_SAMPLE_C_LZ && !hasOffset && !NotPixel(); // a pixel shader's (a geometry shader's stays declined)
+		if ((isArray || cube) && (op != GPU7_TEX_INST_SAMPLE_C || hasOffset) && !cubeLevelZero)
 			return Decline("shadow array level or offset");
+		if (cubeLevelZero)
+			s_lastBeyondGLSL = "cube shadow compare at level zero";
 		if (op == GPU7_TEX_INST_SAMPLE_C_L && hasOffset)
 			return Decline("shadow level with an offset");
 		// textureLod()'s result swizzled by the selects: only x is there
@@ -4687,8 +4724,14 @@ const char* LatteDecompiler_SPIRVDeclineReason()
 	return s_lastDecline;
 }
 
+const char* LatteDecompiler_SPIRVBeyondGLSL()
+{
+	return s_lastBeyondGLSL;
+}
+
 bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext, LatteDecompilerShader* shader)
 {
+	s_lastBeyondGLSL = nullptr;
 	thread_local ThreadWriter s_writer;
 	spv_writer_t* w = &s_writer.w;
 	spv_writer_reset(w);
@@ -4699,6 +4742,7 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 	s_lastDecline = nullptr;
 	auto decline = [&](const char* why) {
 		s_lastDecline = why;
+		s_lastBeyondGLSL = nullptr; // declined: the GLSL way
 		return false;
 	};
 	// what this emitter covers so far

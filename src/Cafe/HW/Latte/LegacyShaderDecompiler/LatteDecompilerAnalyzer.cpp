@@ -21,6 +21,38 @@ Latte::E_GX2SURFFMT LatteTexture_ReconstructGX2Format(const Latte::LATTE_SQ_TEX_
 /*
  * Return index of used color attachment based on shader pixel export index (0-7)
  */
+// SPI_INTERP_CONTROL_0 as Mesa's r600 driver programs it for point sprites:
+// PNT_SPRITE_ENA bit 1, PNT_SPRITE_OVRD_X/Y/Z/W 3 bits each from bit 2 (0
+// the constant 0, 1 the constant 1, 2 S, 3 T), PNT_SPRITE_TOP_1 bit 14 (T 1
+// at the top); an override past 3 keeps the interpolated component
+bool LatteDecompiler_GetSpriteOverride(LatteDecompilerShaderContext* shaderContext, sint32 inputIndex, sint8 sel[4], bool* topOne)
+{
+	if (shaderContext->shaderType != LatteConst::ShaderType::Pixel)
+		return false;
+	const uint32 interp = shaderContext->contextRegisters[mmSPI_INTERP_CONTROL_0];
+	if (((interp >> 1) & 1) == 0)
+		return false;
+	LatteShaderPSInputTable* psInputTable = LatteSHRC_GetPSInputTable();
+	if (inputIndex < 0 || inputIndex >= psInputTable->count || !psInputTable->import[inputIndex].isSpriteTex)
+		return false;
+	// only points are rasterized as sprites: the geometry shader's output
+	// primitive where there is one, the draw's else
+	bool points;
+	if (shaderContext->options->usesGeometryShader)
+		points = shaderContext->contextRegisters[mmVGT_GS_OUT_PRIM_TYPE] == 0;
+	else
+		points = shaderContext->contextRegistersNew->VGT_PRIMITIVE_TYPE.get_PRIMITIVE_MODE() == Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::POINTS;
+	if (!points)
+		return false;
+	for (sint32 c = 0; c < 4; c++)
+	{
+		const uint32 ovrd = (interp >> (2 + 3 * c)) & 7;
+		sel[c] = ovrd <= 3 ? (sint8)ovrd : (sint8)-1;
+	}
+	*topOne = ((interp >> 14) & 1) != 0;
+	return true;
+}
+
 sint32 LatteDecompiler_getColorOutputIndexFromExportIndex(LatteDecompilerShaderContext* shaderContext, sint32 exportIndex)
 {
 	sint32 colorOutputIndex = -1;

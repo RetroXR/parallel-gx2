@@ -299,6 +299,7 @@ void LatteShader_CreatePSInputTable(LatteShaderPSInputTable* psInputTable, uint3
 			psInputTable->import[f].semanticId = LATTE_ANALYZER_IMPORT_INDEX_SPIPOSITION;
 			psInputTable->import[f].isFlat = false;
 			psInputTable->import[f].isNoPerspective = false;
+			psInputTable->import[f].isSpriteTex = false;
 			key += (uint64)0x33;
 		}
 		else
@@ -314,6 +315,7 @@ void LatteShader_CreatePSInputTable(LatteShaderPSInputTable* psInputTable, uint3
 			psInputTable->import[f].semanticId = psSemanticId;
 			psInputTable->import[f].isFlat = (psInputControl&(1 << 10)) != 0;
 			psInputTable->import[f].isNoPerspective = (psInputControl&(1 << 12)) != 0;
+			psInputTable->import[f].isSpriteTex = (psInputControl&(1 << 17)) != 0;
 		}
 	}
 	psInputTable->key = key;
@@ -1222,7 +1224,7 @@ void LatteSHRC_UpdateActiveShaders()
 	constexpr uint32 VGT_PRIMITIVE_TYPE_MASK = 0x3F;
 	constexpr uint32 SPI_PS_IN_CONTROL_0_MASK = 0x3F | (1 << 8) | (0x1F << 10) | (0xF << 15) | (0x7F << 19);
 	constexpr uint32 SPI_PS_IN_CONTROL_1_MASK = 0x1FF << 8; // front-face settings (gl_FrontFacing)
-	constexpr uint32 SPI_INTERP_CONTROL_0_MASK = 1 << 1; // point sprite coord enable
+	const uint32 spiInterpKey = LatteShader_SpriteKey(LatteGPUState.contextRegister[mmSPI_INTERP_CONTROL_0]);
 
 	uint64 baseState0 = ((uint64)(LatteGPUState.contextNew.PA_CL_VTE_CNTL.getRawValue() & PA_CL_VTE_CNTL_MASK) << 32) | (LatteGPUState.contextNew.PA_CL_CLIP_CNTL.getRawValue() & PA_CL_CLIP_CNTL_MASK);
 	uint64 baseState1 = ((uint64)(LatteGPUState.contextNew.VGT_PRIMITIVE_TYPE.getRawValue() & VGT_PRIMITIVE_TYPE_MASK) << 32) | LatteGPUState.contextRegister[mmVGT_STRMOUT_EN];
@@ -1232,7 +1234,7 @@ void LatteSHRC_UpdateActiveShaders()
 
 	hasher.MixIn(d, _activePSImportTable.key);
 	hasher.MixIn(LatteGPUState.contextRegister[mmSPI_PS_IN_CONTROL_0] & SPI_PS_IN_CONTROL_0_MASK, LatteGPUState.contextRegister[mmSPI_PS_IN_CONTROL_1] & SPI_PS_IN_CONTROL_1_MASK);
-	hasher.MixIn(LatteGPUState.contextRegister[mmSPI_INTERP_CONTROL_0] & SPI_INTERP_CONTROL_0_MASK, 0);
+	hasher.MixIn(spiInterpKey, 0);
 #ifdef ENABLE_METAL
 	if (g_renderer->GetType() == RendererAPI::Metal)
 	{

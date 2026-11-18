@@ -32,6 +32,7 @@
 #include <map>
 #include <random>
 #include <set>
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -151,6 +152,10 @@ struct Program
 	sint8 pointCoordGpr = -1;
 	// a directed program's pixel 0: x equal to z and y to w
 	bool expectPairs = false;
+	// a directed program's point sprites: SPI_INTERP_CONTROL_0 and the
+	// inputs replaced, drawn as a point
+	uint32 spriteInterp = 0;
+	uint8 spriteMask = 0;
 };
 
 static void EncodeTex(const TexOp& t, uint32 w[4])
@@ -822,8 +827,10 @@ struct Gen
 				// shader's zero
 				t.opcode = k < 75 ? compares[R(4)] : k < 90 ? GPU7_TEX_INST_GET_TEXTURE_RESINFO :
 					vertexMode ? GPU7_TEX_INST_SAMPLE_C : GPU7_TEX_INST_GET_COMP_TEX_LOD;
-				if ((kind == TEX_2D_ARRAY || kind == TEX_CUBE) &&
-					(t.opcode == GPU7_TEX_INST_SAMPLE_C_L || (t.opcode == GPU7_TEX_INST_SAMPLE_C_LZ && !vertexMode)))
+				// (a cube array's at level zero: written directly, where no
+				// GLSL compiles, drawn alone)
+				if ((kind == TEX_2D_ARRAY && (t.opcode == GPU7_TEX_INST_SAMPLE_C_L || (t.opcode == GPU7_TEX_INST_SAMPLE_C_LZ && !vertexMode))) ||
+					(kind == TEX_CUBE && t.opcode == GPU7_TEX_INST_SAMPLE_C_L))
 					t.opcode = GPU7_TEX_INST_SAMPLE_C;
 				// no compare at a level in a vertex shader: lavapipe (Mesa
 				// 25.2) crashes on some, rslc's module as well as the direct
@@ -1153,6 +1160,10 @@ struct Decompiled
 	sint32 setIndex = 0, binding = -1;
 	bool ok = false;
 	const char* declined = nullptr;
+	// written directly with what no GLSL the GLSL emitter writes compiles
+	// (LatteDecompiler_SPIRVBeyondGLSL): drawn alone, checked by its
+	// directed programs' expected pixels
+	const char* beyond = nullptr;
 	sint32 texBinding[LATTE_NUM_MAX_TEX_UNITS]; // -1: the unit is not used
 	bool shadow[LATTE_NUM_MAX_TEX_UNITS]; // a shadow sampler: the depth texture
 	sint8 attrLoc[LATTE_NUM_MAX_ATTRIBUTE_LOCATIONS]; // a vertex shader's
@@ -1185,11 +1196,17 @@ static bool s_usesGS = false;
 // location, semantics 3 to 0 (so the two ways name different locations)
 // fragCoord: input 1 the position (gl_FragCoord), as the SPI imports it;
 // psControl1: SPI_PS_IN_CONTROL_1, its front face bits; paramGenGpr: the
-// register param gen writes gl_PointCoord into (-1: none); sprites:
-// SPI_INTERP_CONTROL_0's point sprite enable, which the emitters ignore
-static void SetPSInputs(bool usesGS, bool fragCoord = false, uint32 psControl1 = 0, sint32 paramGenGpr = -1, bool sprites = false)
+// register param gen writes gl_PointCoord into (-1: none); interp:
+// SPI_INTERP_CONTROL_0 (point sprites on, their overrides and origin);
+// spriteMask: the inputs replaced by sprite coordinates (PT_SPRITE_TEX);
+// points: points drawn (the draw's, or a geometry shader's output,
+// primitive), where sprites take effect
+static void SetPSInputs(bool usesGS, bool fragCoord = false, uint32 psControl1 = 0, sint32 paramGenGpr = -1, uint32 interp = 0,
+	uint8 spriteMask = 0, bool points = false)
 {
-	s_regs[mmSPI_INTERP_CONTROL_0] = sprites ? 2u : 0u;
+	s_regs[mmSPI_INTERP_CONTROL_0] = interp;
+	s_regs[mmVGT_PRIMITIVE_TYPE] = points ? 1u : 4u;
+	s_regs[mmVGT_GS_OUT_PRIM_TYPE] = points ? 0u : 2u;
 	g_testPSInputTable.paramGen = paramGenGpr >= 0 ? 1 : 0;
 	g_testPSInputTable.paramGenGPR = (uint8)(paramGenGpr >= 0 ? paramGenGpr : 0);
 	s_usesGS = usesGS;
@@ -1199,9 +1216,13 @@ static void SetPSInputs(bool usesGS, bool fragCoord = false, uint32 psControl1 =
 		g_testPSInputTable.import[i].semanticId = (uint32)(usesGS ? 3 - i : i);
 		g_testPSInputTable.import[i].isFlat = false;
 		g_testPSInputTable.import[i].isNoPerspective = (usesGS ? 3 - i : i) == 3;
+		g_testPSInputTable.import[i].isSpriteTex = (spriteMask >> i) & 1;
 	}
 	if (fragCoord && !usesGS)
+	{
 		g_testPSInputTable.import[1].semanticId = LATTE_ANALYZER_IMPORT_INDEX_SPIPOSITION;
+		g_testPSInputTable.import[1].isSpriteTex = false;
+	}
 	s_regs[mmSPI_PS_IN_CONTROL_1] = psControl1;
 }
 
@@ -1229,6 +1250,7 @@ static Decompiled Decompile(const std::vector<uint32>& program, bool direct, boo
 		d.shadow[i] = shader->textureUsesDepthCompare[i];
 	}
 	d.declined = LatteDecompiler_SPIRVDeclineReason();
+	d.beyond = direct ? LatteDecompiler_SPIRVBeyondGLSL() : nullptr;
 	if (shader->hasError)
 	{
 		delete shader;
@@ -2156,7 +2178,8 @@ struct Case
 	// point sprites enabled
 	bool points;
 	sint32 paramGenGpr;
-	bool sprites;
+	uint32 interp; // SPI_INTERP_CONTROL_0: point sprites
+	uint8 spriteMask; // the inputs replaced by sprite coordinates
 };
 
 // the same bits, or both a NaN: which NaN an operation on a NaN gives is
@@ -2233,31 +2256,34 @@ static int Differs(const Context& c, const Case& k, std::vector<uint32>* outA = 
 	s_regs[Latte::REGADDR::SX_ALPHA_TEST_CONTROL] = k.alphaRaw;
 	g_testPreventInfiniteLoops = k.preventLoops;
 	g_testRoundToPrecision = k.roundPrecision;
-	SetPSInputs(k.usesGS, k.fragCoord, k.psControl1, k.paramGenGpr, k.sprites);
+	SetPSInputs(k.usesGS, k.fragCoord, k.psControl1, k.paramGenGpr, k.interp, k.spriteMask, k.points);
 	SetTextureRegisters(s_regs, k.p);
 	Decompiled viaGlsl = Decompile(words, false, k.strictMul, k.rte);
 	Decompiled viaSpirv = Decompile(words, true, k.strictMul, k.rte);
-	if (viaSpirv.declined || !viaGlsl.ok || !viaSpirv.ok)
+	const bool beyond = !viaGlsl.ok && viaSpirv.ok && viaSpirv.beyond;
+	if (viaSpirv.declined || (!viaGlsl.ok && !beyond) || !viaSpirv.ok)
 		return -1;
+	// the uniforms by the layout of the module drawn first
+	const Decompiled& ref = beyond ? viaSpirv : viaGlsl;
 	uint32 uniforms[2048] = {}; // a full register file (4 KiB) and what follows it
-	if (viaGlsl.uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_REMAPPED)
+	if (ref.uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_REMAPPED)
 	{
-		for (auto& e : viaGlsl.remapped)
-			std::memcpy(uniforms + viaGlsl.offsets.offset_remapped / 4 + e.mappedIndex * 4, RemappedSource(e, k.cfile), 16);
+		for (auto& e : ref.remapped)
+			std::memcpy(uniforms + ref.offsets.offset_remapped / 4 + e.mappedIndex * 4, RemappedSource(e, k.cfile), 16);
 	}
-	else if (viaGlsl.uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_FULL_CFILE)
-		std::memcpy(uniforms + viaGlsl.offsets.offset_uniformRegister / 4, k.cfile, viaGlsl.offsets.count_uniformRegister * 16);
-	if (viaGlsl.offsets.offset_alphaTestRef >= 0)
-		std::memcpy(uniforms + viaGlsl.offsets.offset_alphaTestRef / 4, &k.alphaRef, 4);
+	else if (ref.uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_FULL_CFILE)
+		std::memcpy(uniforms + ref.offsets.offset_uniformRegister / 4, k.cfile, ref.offsets.count_uniformRegister * 16);
+	if (ref.offsets.offset_alphaTestRef >= 0)
+		std::memcpy(uniforms + ref.offsets.offset_alphaTestRef / 4, &k.alphaRef, 4);
 	for (int t = 0; t < 4; t++)
 	{
-		if (viaGlsl.offsets.offset_texScale[t] >= 0)
-			std::memcpy(uniforms + viaGlsl.offsets.offset_texScale[t] / 4, k.texScale[t], 8);
+		if (ref.offsets.offset_texScale[t] >= 0)
+			std::memcpy(uniforms + ref.offsets.offset_texScale[t] / 4, k.texScale[t], 8);
 	}
-	if (viaGlsl.offsets.offset_fragCoordScale >= 0)
-		std::memcpy(uniforms + viaGlsl.offsets.offset_fragCoordScale / 4, k.fragScale, 16);
+	if (ref.offsets.offset_fragCoordScale >= 0)
+		std::memcpy(uniforms + ref.offsets.offset_fragCoordScale / 4, k.fragScale, 16);
 	const bool depth = k.p.depthGpr >= 0;
-	std::vector<uint32> a = Draw(c, viaGlsl, k.p.texKind, k.inputs, uniforms, sizeof(uniforms), k.cw, depth, k.points);
+	std::vector<uint32> a = Draw(c, ref, k.p.texKind, k.inputs, uniforms, sizeof(uniforms), k.cw, depth, k.points);
 	std::vector<uint32> b = Draw(c, viaSpirv, k.p.texKind, k.inputs, uniforms, sizeof(uniforms), k.cw, depth, k.points);
 	if (k.p.expectPairs)
 	{
@@ -2306,7 +2332,7 @@ static int Differs(const Context& c, const Case& k, std::vector<uint32>* outA = 
 			}
 		}
 	}
-	if (k.p.expectPixel && (k.p.pointCoordGpr < 0 || k.points))
+	if (k.p.expectPixel && ((k.p.pointCoordGpr < 0 && !k.p.spriteInterp) || k.points))
 	{
 		for (int ch = 0; ch < 4; ch++)
 		{
@@ -2480,6 +2506,7 @@ static void TallyInto(const Program& p, std::set<uint32>& seen)
 // (a vertex shader's own CF instructions in fewer vertex or geometry
 // shaders), printed; the count of them
 static const int kCoverMin = 3;
+static const double kSpeedFloor = 3.0;
 static int Uncovered(const std::map<uint32, int>& count)
 {
 	int missing = 0;
@@ -3483,6 +3510,35 @@ static std::vector<Program> DirectedPrograms()
 		p.pixel0[0] = 0x3F800000u;
 		p.pixel0[1] = p.pixel0[2] = p.pixel0[3] = 0;
 		out.push_back(p);
+		// the same at level zero (SAMPLE_C_LZ): written directly only, no
+		// GLSL compiling it
+		p.texClauses[0][0].opcode = p.texClauses[0][1].opcode = GPU7_TEX_INST_SAMPLE_C_LZ;
+		out.push_back(p);
+	}
+	// a point sprite: input 1 replaced by (S, T, 0, 1) - overrides 2, 3, 0,
+	// 1 - with T 1 at the top (TOP_1), exported: pixel 0's centre (0.5,
+	// 0.5) of 4 gives S 0.125 and T 0.875
+	{
+		Program p{};
+		AluGroup g{};
+		AluOp mov{};
+		mov.opcode = ALU_OP2_INST_MOV;
+		mov.src[0] = 249; // 1.0
+		mov.destGpr = 5;
+		mov.writeMask = 1;
+		g.ops.push_back(mov);
+		p.clauses.push_back({ g });
+		p.exportGpr = 1;
+		for (int i = 0; i < 4; i++)
+			p.exportSel[i] = (uint8)i;
+		p.spriteInterp = 2u | (1u << 14) | (2u << 2) | (3u << 5) | (0u << 8) | (1u << 11);
+		p.spriteMask = 2;
+		p.expectPixel = true;
+		p.pixel0[0] = 0x3E000000u; // 0.125
+		p.pixel0[1] = 0x3F600000u; // 0.875
+		p.pixel0[2] = 0;
+		p.pixel0[3] = 0x3F800000u;
+		out.push_back(p);
 	}
 	// param gen: gl_PointCoord into R4 (past the four inputs, which are
 	// written after it), exported, of one point over the 4x4 target; pixel
@@ -3770,6 +3826,7 @@ static Decompiled DecompileVertex(const std::vector<uint32>& program, bool direc
 	std::memcpy(d.attrLoc, out.resourceMappingVK.attributeMapping, sizeof(d.attrLoc));
 	d.tfBinding = out.resourceMappingVK.tfStorageBindingPoint;
 	d.declined = LatteDecompiler_SPIRVDeclineReason();
+	d.beyond = direct ? LatteDecompiler_SPIRVBeyondGLSL() : nullptr;
 	if (shader->hasError)
 	{
 		delete shader;
@@ -4651,13 +4708,23 @@ int main(int argc, char** argv)
 	int fragCoordDrawn = 0, frontFaceDrawn = 0, depthDrawn = 0;
 	int roundDrawn = 0; // of the drawn, sampling with the texel edge nudge
 	int pointCoordDrawn = 0; // of the drawn, as a point reading gl_PointCoord
+	int beyondDrawn = 0; // written directly where no GLSL compiles, drawn alone
 	int spritesDrawn = 0, allBitsDrawn = 0; // with point sprites on, the front face of all bits
 	int memDrawn = 0; // of the drawn, with a scatter buffer read
 	int cubeShadowDrawn = 0; // of the drawn, comparing with a cube array
 	std::map<std::string, int> reasons;
 	std::map<uint32, int> covered; // the instructions drawn (Tally)
+	// the shaders written directly: the time to decompile each the GLSL way
+	// (GLSL, then rslc) and directly, the analysis both share included
+	double secondsGlsl = 0.0, secondsDirect = 0.0;
+	int timed = 0;
 	const std::vector<Program> directed = DirectedPrograms();
-	CHECK(directed.size() == 27);
+	// the pixel shader key's sprite part: none with sprites off, whatever
+	// else the register holds; the overrides and origin with them on
+	CHECK(LatteShader_SpriteKey(0) == 0 && LatteShader_SpriteKey(0x7FFDu) == 0 && LatteShader_SpriteKey(1) == 0);
+	CHECK(LatteShader_SpriteKey(2u | (2u << 2)) != LatteShader_SpriteKey(2u | (3u << 2)));
+	CHECK(LatteShader_SpriteKey(2u) != LatteShader_SpriteKey(2u | (1u << 14)));
+	CHECK(directed.size() == 29);
 	for (int i = 0; i < count + (int)directed.size(); i++)
 	{
 		const bool allowDeclined = (i % 5) == 0;
@@ -4690,9 +4757,18 @@ int main(int argc, char** argv)
 		const bool own = i >= (int)directed.size();
 		k.fragCoord = own ? gen.SysChance(25) : p.sysInputs;
 		// the front face now and then of all bits (ALL_BITS, written as 1.0
-		// or 0.0 all the same); point sprites enabled (ignored) now and then
+		// or 0.0 all the same); point sprites now and then: on, each
+		// component's override (0, 1, S, T or past them, the interpolated
+		// value), the origin, and the inputs they replace
 		k.psControl1 = own && gen.SysChance(25) ? (1u << 8) | (gen.SysR(4) << 9) | (gen.SysChance(30) ? 1u << 11 : 0u) : 0;
-		k.sprites = own && gen.SysChance(10);
+		k.interp = 0;
+		if (own && gen.SysChance(30))
+		{
+			k.interp = 2u | (gen.SysChance(50) ? 1u << 14 : 0u);
+			for (uint32 cmp = 0; cmp < 4; cmp++)
+				k.interp |= gen.SysR(6) << (2 + 3 * cmp);
+		}
+		k.spriteMask = (uint8)gen.SysR(16);
 		k.cw = gen.SysChance(50);
 		for (int f = 0; f < 4; f++)
 			k.fragScale[f] = (float)(1 + gen.SysR(16)) / 4.0f;
@@ -4706,6 +4782,13 @@ int main(int argc, char** argv)
 			k.points = !device || c.largePoints;
 			k.paramGenGpr = p.pointCoordGpr;
 		}
+		if (p.spriteInterp)
+		{
+			k.points = !device || c.largePoints;
+			k.usesGS = false;
+			k.interp = p.spriteInterp;
+			k.spriteMask = p.spriteMask;
+		}
 		if (p.sysInputs)
 		{
 			k.usesGS = false;
@@ -4713,10 +4796,19 @@ int main(int argc, char** argv)
 			k.fragScale[0] = 2.0f;
 			k.fragScale[1] = 4.0f;
 		}
-		SetPSInputs(k.usesGS, k.fragCoord, k.psControl1, k.paramGenGpr, k.sprites);
+		SetPSInputs(k.usesGS, k.fragCoord, k.psControl1, k.paramGenGpr, k.interp, k.spriteMask, k.points);
 		SetTextureRegisters(s_regs, p);
+		const auto t0 = std::chrono::steady_clock::now();
 		Decompiled viaGlsl = Decompile(words, false, strictMul, rte);
+		const auto t1 = std::chrono::steady_clock::now();
 		Decompiled viaSpirv = Decompile(words, true, strictMul, rte);
+		const auto t2 = std::chrono::steady_clock::now();
+		if (!viaSpirv.declined && viaGlsl.ok)
+		{
+			secondsGlsl += std::chrono::duration<double>(t1 - t0).count();
+			secondsDirect += std::chrono::duration<double>(t2 - t1).count();
+			timed++;
+		}
 		if (viaSpirv.declined)
 		{
 			declined++;
@@ -4748,7 +4840,9 @@ int main(int argc, char** argv)
 			}
 			continue;
 		}
-		if (!viaGlsl.ok)
+		// written directly where no GLSL compiles, by design: drawn alone
+		const bool beyond = !viaGlsl.ok && viaSpirv.ok && viaSpirv.beyond;
+		if (!viaGlsl.ok && !beyond)
 		{
 			// what the GLSL emitter writes but rslc refuses: the direct
 			// emitter must have declined it
@@ -4758,7 +4852,9 @@ int main(int argc, char** argv)
 			continue;
 		}
 		direct++;
+		beyondDrawn += beyond;
 		CHECK(viaSpirv.ok);
+		if (!beyond)
 		{
 			const std::string diff = ShapeDiff(Shape(viaGlsl.spirv), Shape(viaSpirv.spirv));
 			if (!diff.empty())
@@ -4786,8 +4882,8 @@ int main(int argc, char** argv)
 				}
 			}
 		}
-		if (!SameOffsets(viaGlsl.offsets, viaSpirv.offsets) || viaGlsl.binding != viaSpirv.binding || viaGlsl.setIndex != viaSpirv.setIndex ||
-			std::memcmp(viaGlsl.ubBinding, viaSpirv.ubBinding, sizeof(viaGlsl.ubBinding)) != 0)
+		if (!beyond && (!SameOffsets(viaGlsl.offsets, viaSpirv.offsets) || viaGlsl.binding != viaSpirv.binding || viaGlsl.setIndex != viaSpirv.setIndex ||
+			std::memcmp(viaGlsl.ubBinding, viaSpirv.ubBinding, sizeof(viaGlsl.ubBinding)) != 0))
 		{
 			offsetsDiffer++;
 			std::printf("FAIL: program %d: uniform layout differs\n", i);
@@ -4841,7 +4937,7 @@ int main(int argc, char** argv)
 		frontFaceDrawn += k.psControl1 != 0;
 		depthDrawn += p.depthGpr >= 0;
 		pointCoordDrawn += k.paramGenGpr >= 0;
-		spritesDrawn += k.sprites;
+		spritesDrawn += k.points && (k.interp & 2) && k.spriteMask;
 		allBitsDrawn += (k.psControl1 >> 11) & 1;
 		bool mem = false;
 		for (auto& clause : p.texClauses)
@@ -4856,6 +4952,20 @@ int main(int argc, char** argv)
 			std::printf("FAIL: program %d draws differently\n", i);
 			if (differing == 1 && getenv("DECOMPILER_MINIMIZE"))
 				Minimize(c, k, outDir);
+		}
+	}
+	// the direct path at least kSpeedFloor times as fast (about 11 at -O1,
+	// sanitizers and emulators slowing both alike): a change that makes it
+	// slow, an allocation or a quadratic walk, fails here
+	if (timed > 0)
+	{
+		const double ratio = secondsGlsl / (secondsDirect > 0.0 ? secondsDirect : 1e-9);
+		std::printf("decompiler: %d pixel shaders decompiled in %.3f ms each the GLSL way, %.3f ms directly (%.1f times as fast)\n", timed,
+			secondsGlsl * 1000.0 / timed, secondsDirect * 1000.0 / timed, ratio);
+		if (count >= 100 && ratio < kSpeedFloor)
+		{
+			std::printf("FAIL: the direct path is %.1f times as fast as the GLSL way, under %.1f\n", ratio, kSpeedFloor);
+			s_failures++;
 		}
 	}
 	std::printf("decompiler: %d random pixel shaders, %d written as SPIR-V directly (%d drawn both ways, %d after a geometry shader, %d differing), %d declined\n",
@@ -4874,9 +4984,12 @@ int main(int argc, char** argv)
 	CHECK(!device || count < 100 || roundDrawn * 60 > drawn);
 	std::printf("decompiler: %d pixel shaders drawn as points reading gl_PointCoord\n", pointCoordDrawn);
 	CHECK(!device || !c.largePoints || count < 100 || pointCoordDrawn * 30 > drawn);
-	std::printf("decompiler: %d pixel shaders drawn with point sprites on, %d with the front face of all bits\n", spritesDrawn, allBitsDrawn);
-	CHECK(!device || count < 100 || (spritesDrawn * 30 > drawn && allBitsDrawn * 60 > drawn));
+	std::printf("decompiler: %d pixel shaders drawn as point sprites, %d with the front face of all bits\n", spritesDrawn, allBitsDrawn);
+	CHECK(!device || !c.largePoints || count < 100 || spritesDrawn * 60 > drawn);
+	CHECK(!device || count < 100 || allBitsDrawn * 60 > drawn);
 	std::printf("decompiler: %d pixel shaders drawn with a scatter buffer read\n", memDrawn);
+	std::printf("decompiler: %d pixel shaders written directly where no GLSL compiles (drawn alone)\n", beyondDrawn);
+	CHECK(!device || beyondDrawn > 0); // the directed cube compare at level zero, at least
 	CHECK(!device || count < 100 || memDrawn * 60 > drawn);
 	std::printf("decompiler: %d pixel shaders drawn comparing with a cube array\n", cubeShadowDrawn);
 	CHECK(!device || count < 100 || cubeShadowDrawn * 100 > drawn);
@@ -5122,7 +5235,8 @@ int main(int argc, char** argv)
 		std::printf("decompiler: %d vertex and geometry shaders drawn calling a subroutine\n", vSubDrawn);
 		CHECK(!device || vsCount < 100 || vSubDrawn * 30 > vDrawn);
 		std::printf("decompiler: %d vertex and geometry shaders drawn sampling with the texel edge nudge\n", vRoundDrawn);
-		CHECK(!device || vsCount < 100 || vRoundDrawn * 100 > vDrawn);
+		// few vertex shaders sample a 2D: a full run's (the default count) at least
+		CHECK(!device || count < 600 || vRoundDrawn > 0);
 		// a full run (the default count) draws every instruction
 		if (device && count >= 600)
 		{

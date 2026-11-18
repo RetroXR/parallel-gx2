@@ -304,6 +304,9 @@ void LatteDecompiler_DecompileVertexShader(uint64 shaderBaseHash, uint32* contex
 void LatteDecompiler_DecompileGeometryShader(uint64 shaderBaseHash, uint32* contextRegisters, uint8* programData, uint32 programSize, uint8* gsCopyProgramData, uint32 gsCopyProgramSize, uint32 vsRingParameterCount, LatteDecompilerOptions& options, LatteDecompilerOutput_t* output);
 // why the calling thread's last shader went the GLSL way (nullptr: it did not)
 const char* LatteDecompiler_SPIRVDeclineReason();
+// what the last shader written directly has that no GLSL the GLSL emitter
+// writes compiles (a cube shadow compare at level zero); null for none
+const char* LatteDecompiler_SPIRVBeyondGLSL();
 void LatteDecompiler_DecompilePixelShader(uint64 shaderBaseHash, uint32* contextRegisters, uint8* programData, uint32 programSize, LatteDecompilerOptions& options, LatteDecompilerOutput_t* output);
 
 // specialized shader parsers

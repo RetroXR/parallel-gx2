@@ -23,6 +23,14 @@ LatteDecompilerShader* LatteSHRC_FindPixelShader(uint64 baseHash, uint64 auxHash
 
 #define GPU7_PS_MAX_INPUTS	32
 
+// SPI_INTERP_CONTROL_0's part of a pixel shader's key: point sprites on, their
+// component overrides and origin (TOP_1); none where sprites are off, so
+// that a shader's key without them is as it was
+inline uint32 LatteShader_SpriteKey(uint32 spiInterpControl0)
+{
+	return (spiInterpControl0 & 2) ? (spiInterpControl0 & 0x7FFE) : 0;
+}
+
 struct LatteShaderPSInputTable
 {
 	struct psImport_t
@@ -30,6 +38,7 @@ struct LatteShaderPSInputTable
 		uint32 semanticId;
 		bool isFlat;
 		bool isNoPerspective;
+		bool isSpriteTex; // PT_SPRITE_TEX: replaced by the point sprite's coordinates where sprites are on
 	};
 	psImport_t import[GPU7_PS_MAX_INPUTS]{}; // GPR is index
 	sint32 count;

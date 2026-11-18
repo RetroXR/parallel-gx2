@@ -4264,8 +4264,7 @@ void LatteDecompiler_emitMSLShader(LatteDecompilerShaderContext* shaderContext, 
 		uint32 psControl1 = shaderContext->contextRegisters[mmSPI_PS_IN_CONTROL_1];
 
 		uint32 spiInterpControl = shaderContext->contextRegisters[mmSPI_INTERP_CONTROL_0];
-		uint8 spriteEnable = (spiInterpControl >> 1) & 1;
-		cemu_assert_debug(spriteEnable == 0);
+		(void)spiInterpControl; // point sprites: LatteDecompiler_GetSpriteOverride
 
 		uint8 frontFace_enabled = (psControl1 >> 8) & 1;
 		uint8 frontFace_chan = (psControl1 >> 9) & 3;
@@ -4298,6 +4297,31 @@ void LatteDecompiler_emitMSLShader(LatteDecompilerShaderContext* shaderContext, 
 					src->addFmt("{} = GET_FRAGCOORD();" _CRLF, _getRegisterVarName(shaderContext, gprIndex));
 				else
 					src->addFmt("{} = as_type<int4>(GET_FRAGCOORD());" _CRLF, _getRegisterVarName(shaderContext, gprIndex));
+				continue;
+			}
+			// a point sprite's coordinates in place of the input, by component
+			sint8 spriteSel[4];
+			bool spriteTopOne;
+			if (LatteDecompiler_GetSpriteOverride(shaderContext, i, spriteSel, &spriteTopOne))
+			{
+				const bool isInt = shaderContext->typeTracker.defaultDataType == LATTE_DECOMPILER_DTYPE_SIGNED_INT;
+				src->addFmt("{} = {}float4(", _getRegisterVarName(shaderContext, gprIndex), isInt ? "as_type<int4>(" : "");
+				for (sint32 c = 0; c < 4; c++)
+				{
+					if (c > 0)
+						src->add(",");
+					if (spriteSel[c] == 0)
+						src->add("0.0");
+					else if (spriteSel[c] == 1)
+						src->add("1.0");
+					else if (spriteSel[c] == 2)
+						src->add("pointCoord.x");
+					else if (spriteSel[c] == 3)
+						src->add(spriteTopOne ? "(1.0-pointCoord.y)" : "pointCoord.y");
+					else
+						src->addFmt("in.passParameterSem{}.{}", psInputSemanticId, _getElementStrByIndex(c));
+				}
+				src->addFmt("){};" _CRLF, isInt ? ")" : "");
 				continue;
 			}
 

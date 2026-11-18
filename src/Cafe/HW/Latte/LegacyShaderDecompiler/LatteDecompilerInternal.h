@@ -280,3 +280,8 @@ void LatteDecompiler_cleanup(LatteDecompilerShaderContext* shaderContext);
 // helper functions
 
 sint32 LatteDecompiler_getColorOutputIndexFromExportIndex(LatteDecompilerShaderContext* shaderContext, sint32 exportIndex);
+// a pixel shader input replaced by point sprite coordinates (SPI_INTERP_CONTROL_0's
+// PNT_SPRITE_ENA, the input's PT_SPRITE_TEX, points rasterized): each
+// component's override, 0 (0.0), 1 (1.0), 2 (S), 3 (T, 1-T where TOP_1) or
+// -1 (interpolated); false where the input is not replaced
+bool LatteDecompiler_GetSpriteOverride(LatteDecompilerShaderContext* shaderContext, sint32 inputIndex, sint8 sel[4], bool* topOne);
