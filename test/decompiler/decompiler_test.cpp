@@ -31,6 +31,7 @@
 #include <cstring>
 #include <map>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -2360,6 +2361,155 @@ static int Differs(const Context& c, const Case& k, std::vector<uint32>* outA = 
 	return SamePixels(a, b) ? 0 : 1;
 }
 
+// every instruction the direct emitter writes, required drawn by a full run
+// (the default count): a generator change that stops making one fails,
+// rather than leaving its emitter code untested
+static const uint32 kCoverOP2[] = {
+	ALU_OP2_INST_ADD, ALU_OP2_INST_ADD_INT, ALU_OP2_INST_AND_INT,
+	ALU_OP2_INST_ASHR_INT, ALU_OP2_INST_COS, ALU_OP2_INST_CUBE,
+	ALU_OP2_INST_DOT4, ALU_OP2_INST_DOT4_IEEE, ALU_OP2_INST_EXP_IEEE,
+	ALU_OP2_INST_FLOOR, ALU_OP2_INST_FLT_TO_INT, ALU_OP2_INST_FLT_TO_UINT,
+	ALU_OP2_INST_FRACT, ALU_OP2_INST_INT_TO_FLOAT, ALU_OP2_INST_KILLE,
+	ALU_OP2_INST_KILLE_INT, ALU_OP2_INST_KILLGE, ALU_OP2_INST_KILLGT,
+	ALU_OP2_INST_KILLGT_INT, ALU_OP2_INST_KILLNE_INT, ALU_OP2_INST_LOG_CLAMPED,
+	ALU_OP2_INST_LOG_IEEE, ALU_OP2_INST_LSHL_INT, ALU_OP2_INST_LSHR_INT,
+	ALU_OP2_INST_MAX, ALU_OP2_INST_MAX_DX10, ALU_OP2_INST_MAX_INT,
+	ALU_OP2_INST_MAX_UINT, ALU_OP2_INST_MIN, ALU_OP2_INST_MIN_DX10,
+	ALU_OP2_INST_MIN_INT, ALU_OP2_INST_MIN_UINT, ALU_OP2_INST_MOV,
+	ALU_OP2_INST_MOVA_FLOOR, ALU_OP2_INST_MOVA_INT, ALU_OP2_INST_MUL,
+	ALU_OP2_INST_MULLO_INT, ALU_OP2_INST_MULLO_UINT, ALU_OP2_INST_MUL_IEEE,
+	ALU_OP2_INST_NOP, ALU_OP2_INST_NOT_INT, ALU_OP2_INST_OR_INT,
+	ALU_OP2_INST_PRED_SETE, ALU_OP2_INST_PRED_SETE_INT, ALU_OP2_INST_PRED_SETGE,
+	ALU_OP2_INST_PRED_SETGE_INT, ALU_OP2_INST_PRED_SETGT, ALU_OP2_INST_PRED_SETGT_INT,
+	ALU_OP2_INST_PRED_SETNE, ALU_OP2_INST_PRED_SETNE_INT, ALU_OP2_INST_RECIPSQRT_CLAMPED,
+	ALU_OP2_INST_RECIPSQRT_FF, ALU_OP2_INST_RECIPSQRT_IEEE, ALU_OP2_INST_RECIP_CLAMPED,
+	ALU_OP2_INST_RECIP_FF, ALU_OP2_INST_RECIP_IEEE, ALU_OP2_INST_RNDNE,
+	ALU_OP2_INST_SETE, ALU_OP2_INST_SETE_DX10, ALU_OP2_INST_SETE_INT,
+	ALU_OP2_INST_SETGE, ALU_OP2_INST_SETGE_DX10, ALU_OP2_INST_SETGE_INT,
+	ALU_OP2_INST_SETGE_UINT, ALU_OP2_INST_SETGT, ALU_OP2_INST_SETGT_DX10,
+	ALU_OP2_INST_SETGT_INT, ALU_OP2_INST_SETGT_UINT, ALU_OP2_INST_SETNE,
+	ALU_OP2_INST_SETNE_DX10, ALU_OP2_INST_SETNE_INT, ALU_OP2_INST_SIN,
+	ALU_OP2_INST_SQRT_IEEE, ALU_OP2_INST_SUB_INT, ALU_OP2_INST_TRUNC,
+	ALU_OP2_INST_UINT_TO_FLOAT, ALU_OP2_INST_XOR_INT,
+};
+static const uint32 kCoverOP3[] = {
+	ALU_OP3_INST_CMOVE, ALU_OP3_INST_CMOVGE, ALU_OP3_INST_CMOVGE_INT,
+	ALU_OP3_INST_CMOVGT, ALU_OP3_INST_CNDE_INT, ALU_OP3_INST_CNDGT_INT,
+	ALU_OP3_INST_MULADD, ALU_OP3_INST_MULADD_D2, ALU_OP3_INST_MULADD_IEEE,
+	ALU_OP3_INST_MULADD_M2, ALU_OP3_INST_MULADD_M4,
+};
+static const uint32 kCoverTEX[] = {
+	GPU7_TEX_INST_FETCH4, GPU7_TEX_INST_GET_COMP_TEX_LOD,
+	GPU7_TEX_INST_GET_GRADIENTS_H, GPU7_TEX_INST_GET_GRADIENTS_V,
+	GPU7_TEX_INST_GET_TEXTURE_RESINFO, GPU7_TEX_INST_LD,
+	GPU7_TEX_INST_MEM, GPU7_TEX_INST_SAMPLE,
+	GPU7_TEX_INST_SAMPLE_C, GPU7_TEX_INST_SAMPLE_C_L,
+	GPU7_TEX_INST_SAMPLE_C_LZ, GPU7_TEX_INST_SAMPLE_G,
+	GPU7_TEX_INST_SAMPLE_L, GPU7_TEX_INST_SAMPLE_LB,
+	GPU7_TEX_INST_SAMPLE_LZ, GPU7_TEX_INST_SET_CUBEMAP_INDEX,
+	GPU7_TEX_INST_SET_GRADIENTS_H, GPU7_TEX_INST_SET_GRADIENTS_V,
+	GPU7_TEX_INST_VFETCH,
+};
+static const uint32 kCoverCF[] = {
+	GPU7_CF_INST_ALU, GPU7_CF_INST_ALU_BREAK,
+	GPU7_CF_INST_ALU_ELSE_AFTER, GPU7_CF_INST_ALU_POP2_AFTER,
+	GPU7_CF_INST_ALU_POP_AFTER, GPU7_CF_INST_ALU_PUSH_BEFORE,
+	GPU7_CF_INST_CALL, GPU7_CF_INST_ELSE,
+	GPU7_CF_INST_EMIT_VERTEX, GPU7_CF_INST_EXPORT,
+	GPU7_CF_INST_EXPORT_DONE, GPU7_CF_INST_LOOP_BREAK,
+	GPU7_CF_INST_LOOP_END, GPU7_CF_INST_LOOP_START_DX10,
+	GPU7_CF_INST_LOOP_START_NO_AL, GPU7_CF_INST_MEM_RING_WRITE,
+	GPU7_CF_INST_MEM_STREAM0_WRITE, GPU7_CF_INST_MEM_STREAM1_WRITE,
+	GPU7_CF_INST_POP, GPU7_CF_INST_RETURN,
+	GPU7_CF_INST_TEX,
+};
+
+// the instructions a program draws: an ALU op (0x1000 for an OP3), a TEX
+// op (0x2000) or a CF instruction (0x3000)
+static void TallyInto(const Program& p, std::set<uint32>& seen);
+// each instruction's count of shaders drawn with it, by stage (0x10000 a
+// vertex or geometry shader's)
+static void Tally(const Program& p, std::map<uint32, int>& count)
+{
+	std::set<uint32> seen;
+	TallyInto(p, seen);
+	for (uint32 key : seen)
+		count[key | (p.vertex ? 0x10000u : 0u)]++;
+}
+
+static void TallyInto(const Program& p, std::set<uint32>& seen)
+{
+	for (auto& clause : p.clauses)
+		for (auto& g : clause)
+			for (auto& o : g.ops)
+				seen.insert((o.op3 ? 0x1000u : 0u) | o.opcode);
+	for (auto& clause : p.texClauses)
+	{
+		for (auto& t : clause)
+			seen.insert(0x2000u | (t.memFormat ? (uint32)GPU7_TEX_INST_MEM : t.vfetch ? (uint32)GPU7_TEX_INST_VFETCH : t.opcode));
+	}
+	for (auto* list : { &p.cf, &p.sub })
+		for (auto& e : *list)
+			seen.insert(0x3000u | e.type);
+	if (p.cf.empty() && !p.clauses.empty())
+		seen.insert(0x3000u | GPU7_CF_INST_ALU);
+	if (!p.sub.empty())
+		seen.insert(0x3000u | GPU7_CF_INST_RETURN);
+	if (!p.vertex)
+	{
+		seen.insert(0x3000u | GPU7_CF_INST_EXPORT_DONE);
+		if (p.depthGpr >= 0)
+			seen.insert(0x3000u | GPU7_CF_INST_EXPORT);
+	}
+	for (size_t i = 0; i < p.vsExports.size(); i++)
+	{
+		const Program::VsExport& e = p.vsExports[i];
+		const bool last = i + 1 == p.vsExports.size();
+		const uint32 type = e.type == 5 ? (e.sel[1] ? GPU7_CF_INST_MEM_STREAM1_WRITE : GPU7_CF_INST_MEM_STREAM0_WRITE) :
+			e.type == 4 ? GPU7_CF_INST_EMIT_VERTEX : e.type == 3 ? GPU7_CF_INST_MEM_RING_WRITE :
+			last ? GPU7_CF_INST_EXPORT_DONE : GPU7_CF_INST_EXPORT;
+		seen.insert(0x3000u | type);
+	}
+}
+
+// the instructions a full run drew in fewer than kCoverMin pixel shaders
+// (a vertex shader's own CF instructions in fewer vertex or geometry
+// shaders), printed; the count of them
+static const int kCoverMin = 3;
+static int Uncovered(const std::map<uint32, int>& count)
+{
+	int missing = 0;
+	auto need = [&](uint32 key, const char* kind, uint32 op) {
+		auto it = count.find(key);
+		const int n = it == count.end() ? 0 : it->second;
+		if (n >= kCoverMin)
+			return;
+		std::printf("FAIL: %d %s shaders drawn with %s instruction 0x%02x\n", n, key & 0x10000u ? "vertex" : "pixel", kind, op);
+		missing++;
+	};
+	for (uint32 op : kCoverOP2)
+		need(op, "ALU OP2", op);
+	for (uint32 op : kCoverOP3)
+		need(0x1000u | op, "ALU OP3", op);
+	for (uint32 op : kCoverTEX)
+		need(0x2000u | op, "TEX", op);
+	for (uint32 op : kCoverCF)
+	{
+		const bool vertexOnly = op == GPU7_CF_INST_EMIT_VERTEX || op == GPU7_CF_INST_MEM_RING_WRITE ||
+			op == GPU7_CF_INST_MEM_STREAM0_WRITE || op == GPU7_CF_INST_MEM_STREAM1_WRITE;
+		need((vertexOnly ? 0x10000u : 0u) | 0x3000u | op, "CF", op);
+	}
+	// and a vertex shader's exports
+	need(0x10000u | 0x3000u | GPU7_CF_INST_EXPORT, "CF", GPU7_CF_INST_EXPORT);
+	need(0x10000u | 0x3000u | GPU7_CF_INST_EXPORT_DONE, "CF", GPU7_CF_INST_EXPORT_DONE);
+	if (getenv("DECOMPILER_COVERAGE"))
+	{
+		for (auto& it : count)
+			std::printf("  coverage %05x: %d\n", it.first, it.second);
+	}
+	return missing;
+}
+
 // the smallest program that still draws differently: groups, then
 // instructions, taken out one at a time while it does
 static void Minimize(const Context& c, Case k, const char* outDir)
@@ -4500,6 +4650,7 @@ int main(int argc, char** argv)
 	int memDrawn = 0; // of the drawn, with a scatter buffer read
 	int cubeShadowDrawn = 0; // of the drawn, comparing with a cube array
 	std::map<std::string, int> reasons;
+	std::map<uint32, int> covered; // the instructions drawn (Tally)
 	const std::vector<Program> directed = DirectedPrograms();
 	CHECK(directed.size() == 27);
 	for (int i = 0; i < count + (int)directed.size(); i++)
@@ -4674,6 +4825,7 @@ int main(int argc, char** argv)
 		if (!p.inputs.empty())
 			std::memcpy(k.inputs, p.inputs.data(), sizeof(k.inputs));
 		drawn++;
+		Tally(p, covered);
 		gsDrawn += k.usesGS;
 		cbankDrawn += viaGlsl.uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_FULL_CBANK;
 		subDrawn += !p.sub.empty();
@@ -4869,6 +5021,7 @@ int main(int argc, char** argv)
 				(k.streamout && !c.vertexStores))
 				continue;
 			vDrawn++;
+			Tally(k.p, covered);
 			vGsDrawn += k.usesGS;
 			gsCaseDrawn += k.gsCase;
 			soDrawn += k.streamout;
@@ -4958,6 +5111,13 @@ int main(int argc, char** argv)
 		CHECK(!device || vsCount < 100 || vSubDrawn * 30 > vDrawn);
 		std::printf("decompiler: %d vertex and geometry shaders drawn sampling with the texel edge nudge\n", vRoundDrawn);
 		CHECK(!device || vsCount < 100 || vRoundDrawn * 30 > vDrawn);
+		// a full run (the default count) draws every instruction
+		if (device && count >= 600)
+		{
+			const int missing = Uncovered(covered);
+			std::printf("decompiler: %d instructions and stages drawn, %d the emitter writes drawn too seldom\n", (int)covered.size(), missing);
+			CHECK(missing == 0);
+		}
 		// stream writes with streamout off are drawn (dropped), not declined
 		CHECK(!device || !c.vertexStores || vsCount < 100 || soOffDrawn > 0);
 		// geometry shaders are drawn, not declined
