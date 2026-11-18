@@ -168,6 +168,10 @@ namespace
 		// uf_windowSpaceToClipSpaceTransform's and uf_pointSize's members of
 		// the uniform block, -1 where it has none
 		sint32 windowMember{-1}, pointSizeMember{-1}, alphaRefMember{-1};
+		// a pixel shader's uf_fragCoordScale member; gl_FragDepth where it
+		// exports depth
+		sint32 fragCoordMember{-1};
+		uint32 fragDepthVar{}, fragCoordVar{}, frontFacingVar{};
 		// streamout through the storage buffer: uf_verticesPerInstance's and
 		// uf_streamoutBufferBase<n>'s members, int sb_buffer[], sbBase<n>
 		sint32 verticesPerInstanceMember{-1};
@@ -1320,11 +1324,22 @@ namespace
 			uniformOffsets.offset_pointSize = uniformCurrentOffset;
 			uniformCurrentOffset += 4;
 		}
+		// uf_fragCoordScale, a vec4 on Vulkan (its origin in zw), where the
+		// shader reads gl_FragCoord
+		bool fragCoordPadding = !NotPixel();
 		if (!NotPixel() && dc->analyzer.hasFragCoordAccess)
-			return Decline("gl_FragCoord");
+		{
+			const bool gl = api == RendererAPI::OpenGL;
+			uniformCurrentOffset = gl ? (uniformCurrentOffset + 7) & ~7 : (uniformCurrentOffset + 15) & ~15;
+			fragCoordMember = (sint32)memberCount;
+			memberTypes[memberCount] = gl ? tV2F : tV4F;
+			memberOffsets[memberCount++] = uniformCurrentOffset;
+			uniformOffsets.offset_fragCoordScale = uniformCurrentOffset;
+			uniformCurrentOffset += gl ? 8 : 16;
+			fragCoordPadding = false;
+		}
 		// uf_tex<n>Scale for each unit fetched from by texel, the first
 		// after the padding where uf_fragCoordScale was
-		bool fragCoordPadding = !NotPixel();
 		for (sint32 t = 0; t < LATTE_NUM_MAX_TEX_UNITS; t++)
 		{
 			texScaleMember[t] = -1;
@@ -1423,6 +1438,17 @@ namespace
 			colorOut[i] = v;
 			interfaceIds[interfaceCount++] = v;
 		}
+		// gl_FragDepth, where an export writes it
+		for (auto& cf : ctx->cfInstructions)
+		{
+			if ((cf.type == GPU7_CF_INST_EXPORT || cf.type == GPU7_CF_INST_EXPORT_DONE) && cf.exportType == 0 && cf.exportArrayBase == 61 &&
+				!fragDepthVar)
+			{
+				fragDepthVar = spv_global_variable(w, spv_type_pointer(w, SpvStorageClassOutput, tF), SpvStorageClassOutput);
+				Decorate(fragDepthVar, SpvDecorationBuiltIn, { SpvBuiltInFragDepth });
+				interfaceIds[interfaceCount++] = fragDepthVar;
+			}
+		}
 		return true;
 	}
 
@@ -1436,8 +1462,10 @@ namespace
 			return Decline("sprites");
 		if (psInputTable->paramGen != 0)
 			return Decline("param gen");
-		if ((psControl1 >> 8) & 1)
-			return Decline("front face");
+		const bool frontFace = (psControl1 >> 8) & 1;
+		const uint32 frontFaceChan = (psControl1 >> 9) & 3;
+		const bool frontFaceAllBits = (psControl1 >> 11) & 1;
+		const uint32 frontFaceGpr = (psControl1 >> 12) & 0x1F;
 		for (sint32 i = 0; i < psInputTable->count; i++)
 		{
 			sint32 gprIndex = i;
@@ -1445,13 +1473,46 @@ namespace
 				continue;
 			uint32 semanticId = psInputTable->import[i].semanticId;
 			if (semanticId == LATTE_ANALYZER_IMPORT_INDEX_SPIPOSITION)
-				return Decline("gl_FragCoord");
+			{
+				// GET_FRAGCOORD(): vec4(gl_FragCoord.xy*uf_fragCoordScale.xy,
+				// gl_FragCoord.z, 1.0/gl_FragCoord.w)
+				if (fragCoordMember < 0)
+					return Decline("gl_FragCoord without its scale");
+				uint32 fc = Load(tV4F, BuiltinInput(SpvBuiltInFragCoord));
+				uint32 xy = Op(SpvOpVectorShuffle, tV2F, { fc, fc, 0, 1 });
+				uint32 scalePtr = Op(SpvOpAccessChain, spv_type_pointer(w, SpvStorageClassUniform, tV4F), { ufBlockVar, ConstI(fragCoordMember) });
+				uint32 scale = Load(tV4F, scalePtr);
+				uint32 sxy = Op(SpvOpVectorShuffle, tV2F, { scale, scale, 0, 1 });
+				uint32 mxy = Op(SpvOpFMul, tV2F, { xy, sxy });
+				fc = Load(tV4F, BuiltinInput(SpvBuiltInFragCoord));
+				uint32 z = Op(SpvOpCompositeExtract, tF, { fc, 2 });
+				fc = Load(tV4F, BuiltinInput(SpvBuiltInFragCoord));
+				uint32 fw = Op(SpvOpCompositeExtract, tF, { fc, 3 });
+				uint32 rw = Op(SpvOpFDiv, tF, { ConstF(1.0f), fw });
+				uint32 v = Op(SpvOpCompositeConstruct, tV4F, { mxy, z, rw });
+				if (dt == DT_I)
+					v = Op(SpvOpBitcast, tV4I, { v });
+				Store(GPR(gprIndex), v);
+				continue;
+			}
 			if (!inputVar[i])
 				return Decline("input without a declaration");
 			uint32 v = Load(tV4F, inputVar[i]);
 			if (dt == DT_I)
 				v = Op(SpvOpBitcast, tV4I, { v });
 			Store(GPR(gprIndex), v);
+		}
+		// R<n>.<chan> = gl_FrontFacing?1.0:0.0, where R0 is used (the GLSL
+		// emitter's check)
+		if (frontFace && (ctx->analyzer.gprUseMask[0] & 1) != 0)
+		{
+			if (frontFaceAllBits)
+				return Decline("front face of all bits");
+			uint32 ff = Load(tBool, BuiltinInput(SpvBuiltInFrontFacing));
+			uint32 v = Op(SpvOpSelect, tF, { ff, ConstF(1.0f), ConstF(0.0f) });
+			if (dt == DT_I)
+				v = Op(SpvOpBitcast, tI, { v });
+			Store(Channel(GPR(frontFaceGpr), dt, frontFaceChan), v);
 		}
 		return true;
 	}
@@ -2440,6 +2501,20 @@ namespace
 
 	bool SpvShader::EmitExport(LatteDecompilerCFInstruction& cf)
 	{
+		if (cf.exportType == 0 && cf.exportArrayBase == 61)
+		{
+			// gl_FragDepth = <the export's vec4>.x; the stencil reference and
+			// the others the GLSL emitter leaves unimplemented
+			if (cf.exportBurstCount != 0 || cf.exportComponentSel[0] == 7 || cf.exportComponentSel[1] != 7 ||
+				cf.exportComponentSel[2] != 7 || cf.exportComponentSel[3] != 7)
+				return Decline("depth export select");
+			uint32 c[4];
+			for (uint32 k = 0; k < 4; k++)
+				c[k] = ExportComponent(cf, 0, k).id;
+			uint32 v = Op(SpvOpCompositeConstruct, tV4F, { c[0], c[1], c[2], c[3] });
+			Store(fragDepthVar, Op(SpvOpCompositeExtract, tF, { v, 0 }));
+			return Ok();
+		}
 		if (cf.exportType != 0 || cf.exportArrayBase >= 8)
 			return Decline("pixel export other than color");
 		for (uint32 i = 0; i < cf.exportBurstCount + 1; i++)
@@ -3263,10 +3338,12 @@ namespace
 
 	uint32 SpvShader::BuiltinInput(uint32 builtin)
 	{
-		uint32& var = builtin == SpvBuiltInVertexIndex ? vertexIndexVar : instanceIndexVar;
+		uint32& var = builtin == SpvBuiltInVertexIndex ? vertexIndexVar : builtin == SpvBuiltInInstanceIndex ? instanceIndexVar :
+			builtin == SpvBuiltInFragCoord ? fragCoordVar : frontFacingVar;
 		if (!var)
 		{
-			var = spv_global_variable(w, spv_type_pointer(w, SpvStorageClassInput, tI), SpvStorageClassInput);
+			const uint32 type = builtin == SpvBuiltInFragCoord ? tV4F : builtin == SpvBuiltInFrontFacing ? tBool : tI;
+			var = spv_global_variable(w, spv_type_pointer(w, SpvStorageClassInput, type), SpvStorageClassInput);
 			Decorate(var, SpvDecorationBuiltIn, { builtin });
 			interfaceIds[interfaceCount++] = var;
 		}
@@ -4703,6 +4780,11 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 	{
 		uint32 mode[2] = { mainId, SpvExecutionModeOriginUpperLeft };
 		spv_inst(w, SPV_SEC_EXEC_MODE, SpvOpExecutionMode, mode, 2);
+		if (s.fragDepthVar)
+		{
+			uint32 depth[2] = { mainId, SpvExecutionModeDepthReplacing };
+			spv_inst(w, SPV_SEC_EXEC_MODE, SpvOpExecutionMode, depth, 2);
+		}
 	}
 	if (s.sampledCubeArray)
 	{

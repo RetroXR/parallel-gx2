@@ -132,6 +132,15 @@ struct Program
 	// a directed program's pixel 0, checked as drawn
 	bool expectPixel = false;
 	uint32 pixel0[4];
+	// a pixel shader's depth export (-1: none): R<depthGpr>.<depthSel>,
+	// after the color; a directed program's pixel 0 depth, checked
+	sint8 depthGpr = -1;
+	uint8 depthSel = 0;
+	bool expectDepth = false;
+	float depth0 = 0.0f;
+	// a directed program's system inputs: input 1 gl_FragCoord (scaled by
+	// (2, 4)), the front face into R0.y; pixel 0 then (1, 2) and the face
+	bool sysInputs = false;
 };
 
 static void EncodeTex(const TexOp& t, uint32 w[4])
@@ -209,7 +218,7 @@ static std::vector<uint32> Assemble(const Program& p)
 		for (size_t i = 0; i < p.clauses.size(); i++)
 			list.push_back({ GPU7_CF_INST_ALU, (int)i, 0 });
 	}
-	const uint32 cfCount = (uint32)list.size() + (p.vertex ? (uint32)p.vsExports.size() : 1) +
+	const uint32 cfCount = (uint32)list.size() + (p.vertex ? (uint32)p.vsExports.size() : (p.depthGpr >= 0 ? 2 : 1)) +
 		(p.sub.empty() ? 0 : (uint32)p.sub.size() + 1);
 	uint32 aluBase = (cfCount + 1) & ~1u; // in 64 bit words, after the CF list
 	uint32 at = aluBase;
@@ -352,10 +361,17 @@ static std::vector<uint32> Assemble(const Program& p)
 	}
 	else
 	{
-		// EXPORT_DONE, pixel, color 0, end of program
+		// EXPORT_DONE, pixel, color 0, end of program; or an EXPORT of it,
+		// then the depth (array base 61, its channel then none)
+		const bool depth = p.depthGpr >= 0;
 		cf.push_back(0 | (0 << 13) | (p.exportGpr << 15));
 		cf.push_back((uint32)p.exportSel[0] | ((uint32)p.exportSel[1] << 3) | ((uint32)p.exportSel[2] << 6) | ((uint32)p.exportSel[3] << 9) |
-			(1u << 21) | ((uint32)GPU7_CF_INST_EXPORT_DONE << 23) | (1u << 31));
+			(depth ? 0 : (1u << 21)) | ((uint32)(depth ? GPU7_CF_INST_EXPORT : GPU7_CF_INST_EXPORT_DONE) << 23) | (1u << 31));
+		if (depth)
+		{
+			cf.push_back(61u | ((uint32)p.depthGpr << 15));
+			cf.push_back((uint32)p.depthSel | (7u << 3) | (7u << 6) | (7u << 9) | (1u << 21) | ((uint32)GPU7_CF_INST_EXPORT_DONE << 23) | (1u << 31));
+		}
 	}
 	// the subroutine past the end of the program
 	if (!p.sub.empty())
@@ -477,6 +493,12 @@ struct Gen
 	uint8 Dest() { return (uint8)((favorDest >= 0 && Chance(35)) ? favorDest : (int)R(destGPRs)); }
 	uint32 R(uint32 n) { return rng() % n; }
 	bool Chance(uint32 percent) { return R(100) < percent; }
+	// the pixel shader's system values (gl_FragCoord, the front face, a
+	// depth export) from a stream of their own: the programs and every
+	// other choice stay as each seed made them
+	std::mt19937 sys;
+	uint32 SysR(uint32 n) { return sys() % n; }
+	bool SysChance(uint32 percent) { return SysR(100) < percent; }
 
 	// a source: what was written in the previous group (PV/PS), a GPR, a
 	// constant, a literal or a uniform
@@ -1045,6 +1067,12 @@ struct Gen
 		}
 		if (Chance(15))
 			MakeCall(p);
+		// a depth export now and then: a register's channel, or a constant
+		if (!vertexMode && SysChance(20))
+		{
+			p.depthGpr = (sint8)(SysChance(50) ? p.exportGpr : SysR(kGPRs - 1));
+			p.depthSel = (uint8)(SysChance(85) ? SysR(4) : 4 + SysR(2));
+		}
 		for (int i = 0; i < 4; i++)
 		{
 			uint32 k = R(10);
@@ -1097,7 +1125,9 @@ static bool s_usesGS = false;
 // four inputs from the vertex shader, R0 to R3, at locations 0 to 3: by
 // index, semantics 0 to 3; after a geometry shader, at the semantic's
 // location, semantics 3 to 0 (so the two ways name different locations)
-static void SetPSInputs(bool usesGS)
+// fragCoord: input 1 the position (gl_FragCoord), as the SPI imports it;
+// psControl1: SPI_PS_IN_CONTROL_1, its front face bits
+static void SetPSInputs(bool usesGS, bool fragCoord = false, uint32 psControl1 = 0)
 {
 	s_usesGS = usesGS;
 	g_testPSInputTable.count = 4;
@@ -1107,6 +1137,9 @@ static void SetPSInputs(bool usesGS)
 		g_testPSInputTable.import[i].isFlat = false;
 		g_testPSInputTable.import[i].isNoPerspective = (usesGS ? 3 - i : i) == 3;
 	}
+	if (fragCoord && !usesGS)
+		g_testPSInputTable.import[1].semanticId = LATTE_ANALYZER_IMPORT_INDEX_SPIPOSITION;
+	s_regs[mmSPI_PS_IN_CONTROL_1] = psControl1;
 }
 
 static Decompiled Decompile(const std::vector<uint32>& program, bool direct, bool strictMul, bool rte)
@@ -1205,6 +1238,14 @@ struct Context
 	VkImageView colorView = VK_NULL_HANDLE;
 	VkFramebuffer framebuffer = VK_NULL_HANDLE;
 	VkBuffer readback = VK_NULL_HANDLE, ubo = VK_NULL_HANDLE;
+	// a pixel shader exporting depth: the color and a D32 target, the depth
+	// read back after the color
+	VkRenderPass renderPassDepth = VK_NULL_HANDLE;
+	VkImage depthTarget = VK_NULL_HANDLE;
+	VkDeviceMemory depthTargetMem = VK_NULL_HANDLE, depthReadMem = VK_NULL_HANDLE;
+	VkImageView depthTargetView = VK_NULL_HANDLE;
+	VkFramebuffer framebufferDepth = VK_NULL_HANDLE;
+	VkBuffer depthReadback = VK_NULL_HANDLE;
 	uint8* uboData = nullptr;
 	// the streamout storage buffer (kStreamoutBytes), written by vertex
 	// and geometry shaders where the device lets them store
@@ -1246,7 +1287,9 @@ layout(location = 3) out vec4 p3;
 void main()
 {
 	vec2 pos = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2));
-	gl_Position = vec4(pos * 2.0 - 1.0, 0.0, 1.0);
+	// a depth and a w that vary (gl_FragCoord's z and w)
+	float w = 1.0 + pos.y * 0.75;
+	gl_Position = vec4((pos * 2.0 - 1.0) * w, pos.x * 0.375 * w, w);
 	// inputs that vary over the target, and some that stay put
 	p0 = pc.v[0] * pos.x + pc.v[1];
 	p1 = pc.v[1] * pos.y - pc.v[2];
@@ -1561,6 +1604,37 @@ static bool CreateContext(Context& c)
 	fbi.height = H;
 	fbi.layers = 1;
 	VKCHECK(vkCreateFramebuffer(c.device, &fbi, nullptr, &c.framebuffer));
+	{
+		VkAttachmentDescription atts[2] = { att, att };
+		atts[1].format = VK_FORMAT_D32_SFLOAT;
+		VkAttachmentReference dref{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+		VkSubpassDescription subD = sub;
+		subD.pDepthStencilAttachment = &dref;
+		VkRenderPassCreateInfo rpd = rpi;
+		rpd.attachmentCount = 2;
+		rpd.pAttachments = atts;
+		rpd.pSubpasses = &subD;
+		VKCHECK(vkCreateRenderPass(c.device, &rpd, nullptr, &c.renderPassDepth));
+		VkImageCreateInfo di = ii;
+		di.format = VK_FORMAT_D32_SFLOAT;
+		di.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+		VKCHECK(vkCreateImage(c.device, &di, nullptr, &c.depthTarget));
+		VkMemoryRequirements dreq;
+		vkGetImageMemoryRequirements(c.device, c.depthTarget, &dreq);
+		c.depthTargetMem = Bind(c, dreq, 0);
+		VKCHECK(vkBindImageMemory(c.device, c.depthTarget, c.depthTargetMem, 0));
+		VkImageViewCreateInfo dvi = vi;
+		dvi.image = c.depthTarget;
+		dvi.format = VK_FORMAT_D32_SFLOAT;
+		dvi.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+		VKCHECK(vkCreateImageView(c.device, &dvi, nullptr, &c.depthTargetView));
+		VkImageView views[2] = { c.colorView, c.depthTargetView };
+		VkFramebufferCreateInfo fbd = fbi;
+		fbd.renderPass = c.renderPassDepth;
+		fbd.attachmentCount = 2;
+		fbd.pAttachments = views;
+		VKCHECK(vkCreateFramebuffer(c.device, &fbd, nullptr, &c.framebufferDepth));
+	}
 
 	VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
 	bi.size = W * H * 16;
@@ -1570,6 +1644,11 @@ static bool CreateContext(Context& c)
 	vkGetBufferMemoryRequirements(c.device, c.readback, &breq);
 	c.readMem = Bind(c, breq, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 	VKCHECK(vkBindBufferMemory(c.device, c.readback, c.readMem, 0));
+	bi.size = W * H * 4;
+	VKCHECK(vkCreateBuffer(c.device, &bi, nullptr, &c.depthReadback));
+	vkGetBufferMemoryRequirements(c.device, c.depthReadback, &breq);
+	c.depthReadMem = Bind(c, breq, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	VKCHECK(vkBindBufferMemory(c.device, c.depthReadback, c.depthReadMem, 0));
 	bi.size = 8192;
 	bi.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
 	VKCHECK(vkCreateBuffer(c.device, &bi, nullptr, &c.ubo));
@@ -1680,6 +1759,13 @@ static void DestroyContext(Context& c)
 	vkDestroyBuffer(c.device, c.readback, nullptr);
 	vkFreeMemory(c.device, c.uboMem, nullptr);
 	vkFreeMemory(c.device, c.readMem, nullptr);
+	vkDestroyBuffer(c.device, c.depthReadback, nullptr);
+	vkFreeMemory(c.device, c.depthReadMem, nullptr);
+	vkDestroyFramebuffer(c.device, c.framebufferDepth, nullptr);
+	vkDestroyImageView(c.device, c.depthTargetView, nullptr);
+	vkDestroyImage(c.device, c.depthTarget, nullptr);
+	vkFreeMemory(c.device, c.depthTargetMem, nullptr);
+	vkDestroyRenderPass(c.device, c.renderPassDepth, nullptr);
 	vkDestroyFramebuffer(c.device, c.framebuffer, nullptr);
 	vkDestroyImageView(c.device, c.colorView, nullptr);
 	vkDestroyImage(c.device, c.color, nullptr);
@@ -1729,7 +1815,10 @@ static void WriteUniformBuffers(const Context& c, const Decompiled& d, VkDescrip
 		vkUpdateDescriptorSets(c.device, n, writes, 0, nullptr);
 }
 
-static std::vector<uint32> Draw(const Context& c, const Decompiled& d, const uint8 texKind[4], const float inputs[16], const uint32* uniforms, size_t uniformBytes)
+// cw: the triangle's front face clockwise (so drawn as a back face);
+// depth: into the depth target too, its values after the pixels'
+static std::vector<uint32> Draw(const Context& c, const Decompiled& d, const uint8 texKind[4], const float inputs[16], const uint32* uniforms, size_t uniformBytes,
+	bool cw = false, bool depth = false)
 {
 	// the uniform block and the texture units at the shader's set and
 	// bindings (set 0 empty, as the renderer's vertex set)
@@ -1838,6 +1927,7 @@ static std::vector<uint32> Draw(const Context& c, const Decompiled& d, const uin
 	vps.pScissors = &sc;
 	VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
 	rs.cullMode = VK_CULL_MODE_NONE;
+	rs.frontFace = cw ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
 	rs.lineWidth = 1.0f;
 	VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
 	ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
@@ -1846,6 +1936,10 @@ static std::vector<uint32> Draw(const Context& c, const Decompiled& d, const uin
 	VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
 	cb.attachmentCount = 1;
 	cb.pAttachments = &cba;
+	VkPipelineDepthStencilStateCreateInfo dss{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+	dss.depthTestEnable = VK_TRUE;
+	dss.depthWriteEnable = VK_TRUE;
+	dss.depthCompareOp = VK_COMPARE_OP_ALWAYS;
 	VkGraphicsPipelineCreateInfo gpi{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
 	gpi.stageCount = 2;
 	gpi.pStages = stages;
@@ -1855,8 +1949,9 @@ static std::vector<uint32> Draw(const Context& c, const Decompiled& d, const uin
 	gpi.pRasterizationState = &rs;
 	gpi.pMultisampleState = &ms;
 	gpi.pColorBlendState = &cb;
+	gpi.pDepthStencilState = depth ? &dss : nullptr;
 	gpi.layout = layout;
-	gpi.renderPass = c.renderPass;
+	gpi.renderPass = depth ? c.renderPassDepth : c.renderPass;
 	VkPipeline pipeline;
 	VKCHECK(vkCreateGraphicsPipelines(c.device, VK_NULL_HANDLE, 1, &gpi, nullptr, &pipeline));
 
@@ -1869,14 +1964,15 @@ static std::vector<uint32> Draw(const Context& c, const Decompiled& d, const uin
 	VkCommandBufferBeginInfo cbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
 	cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 	VKCHECK(vkBeginCommandBuffer(cmd, &cbi));
-	VkClearValue clear;
-	clear.color = {{-7.0f, 13.0f, -21.0f, 42.0f}}; // a discarded pixel keeps it
+	VkClearValue clear[2];
+	clear[0].color = {{-7.0f, 13.0f, -21.0f, 42.0f}}; // a discarded pixel keeps it
+	clear[1].depthStencil = {0.625f, 0};
 	VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-	rbi.renderPass = c.renderPass;
-	rbi.framebuffer = c.framebuffer;
+	rbi.renderPass = depth ? c.renderPassDepth : c.renderPass;
+	rbi.framebuffer = depth ? c.framebufferDepth : c.framebuffer;
 	rbi.renderArea = {{0, 0}, {W, H}};
-	rbi.clearValueCount = 1;
-	rbi.pClearValues = &clear;
+	rbi.clearValueCount = depth ? 2 : 1;
+	rbi.pClearValues = clear;
 	vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 	if (nb)
@@ -1888,6 +1984,11 @@ static std::vector<uint32> Draw(const Context& c, const Decompiled& d, const uin
 	region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
 	region.imageExtent = {W, H, 1};
 	vkCmdCopyImageToBuffer(cmd, c.color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, c.readback, 1, &region);
+	if (depth)
+	{
+		region.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+		vkCmdCopyImageToBuffer(cmd, c.depthTarget, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, c.depthReadback, 1, &region);
+	}
 	VKCHECK(vkEndCommandBuffer(cmd));
 	VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
 	si.commandBufferCount = 1;
@@ -1910,6 +2011,13 @@ static std::vector<uint32> Draw(const Context& c, const Decompiled& d, const uin
 	VKCHECK(vkMapMemory(c.device, c.readMem, 0, pixels.size() * 4, 0, &map));
 	std::memcpy(pixels.data(), map, pixels.size() * 4);
 	vkUnmapMemory(c.device, c.readMem);
+	if (depth)
+	{
+		pixels.resize(W * H * 5);
+		VKCHECK(vkMapMemory(c.device, c.depthReadMem, 0, W * H * 4, 0, &map));
+		std::memcpy(pixels.data() + W * H * 4, map, W * H * 4);
+		vkUnmapMemory(c.device, c.depthReadMem);
+	}
 	vkFreeCommandBuffers(c.device, c.pool, 1, &cmd);
 	vkDestroyPipeline(c.device, pipeline, nullptr);
 	vkDestroyShaderModule(c.device, fs, nullptr);
@@ -1946,6 +2054,11 @@ struct Case
 	uint32 cfile[256 * 4];
 	float alphaRef;
 	float texScale[4][2]; // uf_tex<n>Scale
+	// input 1 gl_FragCoord, uf_fragCoordScale; SPI_PS_IN_CONTROL_1 (front
+	// face into a register); the triangle drawn as a back face
+	bool fragCoord, cw;
+	float fragScale[4];
+	uint32 psControl1;
 };
 
 // the same bits, or both a NaN: which NaN an operation on a NaN gives is
@@ -2021,7 +2134,7 @@ static int Differs(const Context& c, const Case& k, std::vector<uint32>* outA = 
 	std::vector<uint32> words = Assemble(k.p);
 	s_regs[Latte::REGADDR::SX_ALPHA_TEST_CONTROL] = k.alphaRaw;
 	g_testPreventInfiniteLoops = k.preventLoops;
-	SetPSInputs(k.usesGS);
+	SetPSInputs(k.usesGS, k.fragCoord, k.psControl1);
 	SetTextureRegisters(s_regs, k.p);
 	Decompiled viaGlsl = Decompile(words, false, k.strictMul, k.rte);
 	Decompiled viaSpirv = Decompile(words, true, k.strictMul, k.rte);
@@ -2042,8 +2155,44 @@ static int Differs(const Context& c, const Case& k, std::vector<uint32>* outA = 
 		if (viaGlsl.offsets.offset_texScale[t] >= 0)
 			std::memcpy(uniforms + viaGlsl.offsets.offset_texScale[t] / 4, k.texScale[t], 8);
 	}
-	std::vector<uint32> a = Draw(c, viaGlsl, k.p.texKind, k.inputs, uniforms, sizeof(uniforms));
-	std::vector<uint32> b = Draw(c, viaSpirv, k.p.texKind, k.inputs, uniforms, sizeof(uniforms));
+	if (viaGlsl.offsets.offset_fragCoordScale >= 0)
+		std::memcpy(uniforms + viaGlsl.offsets.offset_fragCoordScale / 4, k.fragScale, 16);
+	const bool depth = k.p.depthGpr >= 0;
+	std::vector<uint32> a = Draw(c, viaGlsl, k.p.texKind, k.inputs, uniforms, sizeof(uniforms), k.cw, depth);
+	std::vector<uint32> b = Draw(c, viaSpirv, k.p.texKind, k.inputs, uniforms, sizeof(uniforms), k.cw, depth);
+	if (k.p.sysInputs)
+	{
+		// pixel 0's centre (0.5, 0.5) scaled; the triangle's signed area is
+		// negative in framebuffer space, front facing where clockwise is
+		const float want[3] = { 1.0f, 2.0f, k.cw ? 1.0f : 0.0f };
+		for (int ch = 0; ch < 3; ch++)
+		{
+			for (const std::vector<uint32>* px : { &a, &b })
+			{
+				float v;
+				std::memcpy(&v, px->data() + ch, 4);
+				if (v != want[ch])
+				{
+					std::printf("FAIL: pixel 0's system input %d is %f, not %f\n", ch, v, want[ch]);
+					s_failures++;
+				}
+			}
+		}
+	}
+	if (k.p.expectDepth)
+	{
+		for (const std::vector<uint32>* px : { &a, &b })
+		{
+			float d0 = 0.0f;
+			if (px->size() > W * H * 4)
+				std::memcpy(&d0, px->data() + W * H * 4, 4);
+			if (d0 != k.p.depth0)
+			{
+				std::printf("FAIL: pixel 0's depth is %f, not %f\n", d0, k.p.depth0);
+				s_failures++;
+			}
+		}
+	}
 	if (k.p.expectPixel)
 	{
 		for (int ch = 0; ch < 4; ch++)
@@ -3000,6 +3149,51 @@ static std::vector<Program> DirectedPrograms()
 		p.pixel0[1] = 0x40000000u;
 		p.pixel0[2] = 0x40400000u;
 		p.pixel0[3] = 0x40800000u;
+		out.push_back(p);
+	}
+	// gl_FragCoord's x and y and the front face (R1.x, R1.y, R0.y) into R2
+	{
+		Program p{};
+		AluGroup g{};
+		const uint8 srcGpr[3] = { 1, 1, 0 }, srcChan[3] = { 0, 1, 1 };
+		for (uint8 c = 0; c < 3; c++)
+		{
+			AluOp mov{};
+			mov.opcode = ALU_OP2_INST_MOV;
+			mov.src[0] = srcGpr[c];
+			mov.chan[0] = srcChan[c];
+			mov.destGpr = 2;
+			mov.destElem = c;
+			mov.writeMask = 1;
+			g.ops.push_back(mov);
+		}
+		p.clauses.push_back({ g });
+		p.exportGpr = 2;
+		for (int i = 0; i < 4; i++)
+			p.exportSel[i] = (uint8)i;
+		p.sysInputs = true;
+		out.push_back(p);
+	}
+	// a depth export of a literal (0.375 into R2.y): pixel 0's depth
+	{
+		Program p{};
+		AluGroup g{};
+		AluOp mov{};
+		mov.opcode = ALU_OP2_INST_MOV;
+		mov.src[0] = 253;
+		mov.destGpr = 2;
+		mov.destElem = 1;
+		mov.writeMask = 1;
+		g.ops.push_back(mov);
+		g.literals[0] = 0x3EC00000u; // 0.375
+		p.clauses.push_back({ g });
+		p.exportGpr = 2;
+		for (int i = 0; i < 4; i++)
+			p.exportSel[i] = (uint8)i;
+		p.depthGpr = 2;
+		p.depthSel = 1;
+		p.expectDepth = true;
+		p.depth0 = 0.375f;
 		out.push_back(p);
 	}
 	const uint32 ld4[4] = { 3, 5, 0, 0 }, ld5[4] = { 1, 2, 0, 1 };
@@ -4055,13 +4249,16 @@ int main(int argc, char** argv)
 	s_regs[mmCB_SHADER_MASK] = 0xF;
 	Gen gen;
 	gen.rng.seed(argc > 3 ? (uint32)std::strtoul(argv[3], nullptr, 10) : 20261116u);
+	gen.sys.seed((argc > 3 ? (uint32)std::strtoul(argv[3], nullptr, 10) : 20261116u) ^ 0x5F5F0001u);
 	int direct = 0, declined = 0, drawn = 0, differing = 0, glslFailed = 0, offsetsDiffer = 0, shapeDiffers = 0;
 	int gsDrawn = 0; // of the drawn, after a geometry shader
 	int cbankDrawn = 0; // of the drawn, reading uniform buffers whole
 	int subDrawn = 0; // of the drawn, calling a subroutine
+	// of the drawn: reading gl_FragCoord, the front face, exporting depth
+	int fragCoordDrawn = 0, frontFaceDrawn = 0, depthDrawn = 0;
 	std::map<std::string, int> reasons;
 	const std::vector<Program> directed = DirectedPrograms();
-	CHECK(directed.size() == 20);
+	CHECK(directed.size() == 22);
 	for (int i = 0; i < count + (int)directed.size(); i++)
 	{
 		const bool allowDeclined = (i % 5) == 0;
@@ -4087,7 +4284,23 @@ int main(int argc, char** argv)
 		g_testPreventInfiniteLoops = k.preventLoops = gen.Chance(50);
 		// now and then after a geometry shader: the same inputs, by semantic
 		k.usesGS = gen.Chance(20);
-		SetPSInputs(k.usesGS);
+		// gl_FragCoord as an input, the front face into a register (R0,
+		// whose use the GLSL emitter requires), a back face drawn, now and
+		// then; not for directed programs, whose registers are their own
+		const bool own = i >= (int)directed.size();
+		k.fragCoord = own ? gen.SysChance(25) : p.sysInputs;
+		k.psControl1 = own && gen.SysChance(25) ? (1u << 8) | (gen.SysR(4) << 9) : 0;
+		k.cw = gen.SysChance(50);
+		for (int f = 0; f < 4; f++)
+			k.fragScale[f] = (float)(1 + gen.SysR(16)) / 4.0f;
+		if (p.sysInputs)
+		{
+			k.usesGS = false;
+			k.psControl1 = (1u << 8) | (1u << 9);
+			k.fragScale[0] = 2.0f;
+			k.fragScale[1] = 4.0f;
+		}
+		SetPSInputs(k.usesGS, k.fragCoord, k.psControl1);
 		SetTextureRegisters(s_regs, p);
 		Decompiled viaGlsl = Decompile(words, false, strictMul, rte);
 		Decompiled viaSpirv = Decompile(words, true, strictMul, rte);
@@ -4210,6 +4423,9 @@ int main(int argc, char** argv)
 		gsDrawn += k.usesGS;
 		cbankDrawn += viaGlsl.uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_FULL_CBANK;
 		subDrawn += !p.sub.empty();
+		fragCoordDrawn += viaGlsl.offsets.offset_fragCoordScale >= 0;
+		frontFaceDrawn += k.psControl1 != 0;
+		depthDrawn += p.depthGpr >= 0;
 		if (Differs(c, k) == 1)
 		{
 			differing++;
@@ -4227,6 +4443,9 @@ int main(int argc, char** argv)
 	CHECK(!device || count < 100 || cbankDrawn * 20 > drawn);
 	std::printf("decompiler: %d pixel shaders drawn calling a subroutine\n", subDrawn);
 	CHECK(!device || count < 100 || subDrawn * 30 > drawn);
+	std::printf("decompiler: %d pixel shaders drawn reading gl_FragCoord, %d the front face, %d exporting depth\n", fragCoordDrawn,
+		frontFaceDrawn, depthDrawn);
+	CHECK(!device || count < 100 || (fragCoordDrawn * 30 > drawn && frontFaceDrawn * 30 > drawn && depthDrawn * 30 > drawn));
 	for (auto& it : reasons)
 		std::printf("  declined: %s (%d)\n", it.first.c_str(), it.second);
 	if (differing)
