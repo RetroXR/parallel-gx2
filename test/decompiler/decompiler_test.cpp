@@ -144,6 +144,8 @@ struct Program
 	bool sysInputs = false;
 	// a directed program's: drawn as a texel edge title (the nudge on)
 	bool roundPrecision = false;
+	// a directed program's: drawn as a point, param gen into this register
+	sint8 pointCoordGpr = -1;
 };
 
 static void EncodeTex(const TexOp& t, uint32 w[4])
@@ -1129,9 +1131,12 @@ static bool s_usesGS = false;
 // index, semantics 0 to 3; after a geometry shader, at the semantic's
 // location, semantics 3 to 0 (so the two ways name different locations)
 // fragCoord: input 1 the position (gl_FragCoord), as the SPI imports it;
-// psControl1: SPI_PS_IN_CONTROL_1, its front face bits
-static void SetPSInputs(bool usesGS, bool fragCoord = false, uint32 psControl1 = 0)
+// psControl1: SPI_PS_IN_CONTROL_1, its front face bits; paramGenGpr: the
+// register param gen writes gl_PointCoord into (-1: none)
+static void SetPSInputs(bool usesGS, bool fragCoord = false, uint32 psControl1 = 0, sint32 paramGenGpr = -1)
 {
+	g_testPSInputTable.paramGen = paramGenGpr >= 0 ? 1 : 0;
+	g_testPSInputTable.paramGenGPR = (uint8)(paramGenGpr >= 0 ? paramGenGpr : 0);
 	s_usesGS = usesGS;
 	g_testPSInputTable.count = 4;
 	for (int i = 0; i < 4; i++)
@@ -1261,6 +1266,7 @@ struct Context
 	uint8* sbufData = nullptr;
 	bool vertexStores = false;
 	VkShaderModule vs = VK_NULL_HANDLE;
+	VkShaderModule vsPoint = VK_NULL_HANDLE; // one point over the target
 	bool rte = false;
 	bool largePoints = false; // points of sizes other than 1
 	bool geometryShader = false;
@@ -1298,6 +1304,25 @@ void main()
 	p1 = pc.v[1] * pos.y - pc.v[2];
 	p2 = pc.v[2];
 	p3 = pc.v[3] * (pos.x - pos.y);
+}
+)";
+
+// one point of the target's size over it (gl_PointCoord over its pixels),
+// the inputs the push constants
+static const char* kVSPoint = R"(#version 450
+layout(push_constant) uniform PC { vec4 v[4]; } pc;
+layout(location = 0) out vec4 p0;
+layout(location = 1) out vec4 p1;
+layout(location = 2) out vec4 p2;
+layout(location = 3) out vec4 p3;
+void main()
+{
+	gl_Position = vec4(0.0, 0.0, 0.25, 1.0);
+	gl_PointSize = 4.0;
+	p0 = pc.v[0];
+	p1 = pc.v[1];
+	p2 = pc.v[2];
+	p3 = pc.v[3];
 }
 )";
 
@@ -1692,6 +1717,13 @@ static bool CreateContext(Context& c)
 	}
 	c.vs = Module(c, std::vector<uint32>(res.spirv, res.spirv + res.spirv_len));
 	rslc_result_free(&res, &opts);
+	if (!rslc_compile(kVSPoint, strlen(kVSPoint), RSLC_STAGE_VERTEX, &opts, &res))
+	{
+		std::printf("FAIL: rslc: %s\n", err);
+		std::exit(1);
+	}
+	c.vsPoint = Module(c, std::vector<uint32>(res.spirv, res.spirv + res.spirv_len));
+	rslc_result_free(&res, &opts);
 	for (int k = TEX_2D; k <= TEX_CUBE; k++)
 		CreateTexture(c, (TexKind)k);
 	CreateTexture(c, TEX_2D, true);
@@ -1729,6 +1761,7 @@ static void DestroyContext(Context& c)
 		return;
 	vkDeviceWaitIdle(c.device);
 	vkDestroyShaderModule(c.device, c.vs, nullptr);
+	vkDestroyShaderModule(c.device, c.vsPoint, nullptr);
 	for (auto m : c.fsParam)
 		vkDestroyShaderModule(c.device, m, nullptr);
 	vkDestroyShaderModule(c.device, c.fsDepth, nullptr);
@@ -1821,7 +1854,7 @@ static void WriteUniformBuffers(const Context& c, const Decompiled& d, VkDescrip
 // cw: the triangle's front face clockwise (so drawn as a back face);
 // depth: into the depth target too, its values after the pixels'
 static std::vector<uint32> Draw(const Context& c, const Decompiled& d, const uint8 texKind[4], const float inputs[16], const uint32* uniforms, size_t uniformBytes,
-	bool cw = false, bool depth = false)
+	bool cw = false, bool depth = false, bool points = false)
 {
 	// the uniform block and the texture units at the shader's set and
 	// bindings (set 0 empty, as the renderer's vertex set)
@@ -1913,14 +1946,14 @@ static std::vector<uint32> Draw(const Context& c, const Decompiled& d, const uin
 	VkPipelineShaderStageCreateInfo stages[2]{};
 	stages[0].sType = stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 	stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-	stages[0].module = c.vs;
+	stages[0].module = points ? c.vsPoint : c.vs;
 	stages[0].pName = "main";
 	stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
 	stages[1].module = fs;
 	stages[1].pName = "main";
 	VkPipelineVertexInputStateCreateInfo vin{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
 	VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-	ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	ia.topology = points ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 	VkViewport vp{0, 0, (float)W, (float)H, 0, 1};
 	VkRect2D sc{{0, 0}, {W, H}};
 	VkPipelineViewportStateCreateInfo vps{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
@@ -1981,7 +2014,7 @@ static std::vector<uint32> Draw(const Context& c, const Decompiled& d, const uin
 	if (nb)
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 1, 1, &ds, 0, nullptr);
 	vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 64, inputs);
-	vkCmdDraw(cmd, 3, 1, 0, 0);
+	vkCmdDraw(cmd, points ? 1 : 3, 1, 0, 0);
 	vkCmdEndRenderPass(cmd);
 	VkBufferImageCopy region{};
 	region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -2063,6 +2096,9 @@ struct Case
 	bool fragCoord, cw;
 	float fragScale[4];
 	uint32 psControl1;
+	// drawn as one point over the target; param gen's register (-1: none)
+	bool points;
+	sint32 paramGenGpr;
 };
 
 // the same bits, or both a NaN: which NaN an operation on a NaN gives is
@@ -2139,7 +2175,7 @@ static int Differs(const Context& c, const Case& k, std::vector<uint32>* outA = 
 	s_regs[Latte::REGADDR::SX_ALPHA_TEST_CONTROL] = k.alphaRaw;
 	g_testPreventInfiniteLoops = k.preventLoops;
 	g_testRoundToPrecision = k.roundPrecision;
-	SetPSInputs(k.usesGS, k.fragCoord, k.psControl1);
+	SetPSInputs(k.usesGS, k.fragCoord, k.psControl1, k.paramGenGpr);
 	SetTextureRegisters(s_regs, k.p);
 	Decompiled viaGlsl = Decompile(words, false, k.strictMul, k.rte);
 	Decompiled viaSpirv = Decompile(words, true, k.strictMul, k.rte);
@@ -2163,8 +2199,8 @@ static int Differs(const Context& c, const Case& k, std::vector<uint32>* outA = 
 	if (viaGlsl.offsets.offset_fragCoordScale >= 0)
 		std::memcpy(uniforms + viaGlsl.offsets.offset_fragCoordScale / 4, k.fragScale, 16);
 	const bool depth = k.p.depthGpr >= 0;
-	std::vector<uint32> a = Draw(c, viaGlsl, k.p.texKind, k.inputs, uniforms, sizeof(uniforms), k.cw, depth);
-	std::vector<uint32> b = Draw(c, viaSpirv, k.p.texKind, k.inputs, uniforms, sizeof(uniforms), k.cw, depth);
+	std::vector<uint32> a = Draw(c, viaGlsl, k.p.texKind, k.inputs, uniforms, sizeof(uniforms), k.cw, depth, k.points);
+	std::vector<uint32> b = Draw(c, viaSpirv, k.p.texKind, k.inputs, uniforms, sizeof(uniforms), k.cw, depth, k.points);
 	if (k.p.sysInputs)
 	{
 		// pixel 0's centre (0.5, 0.5) scaled; the triangle's signed area is
@@ -2198,7 +2234,7 @@ static int Differs(const Context& c, const Case& k, std::vector<uint32>* outA = 
 			}
 		}
 	}
-	if (k.p.expectPixel)
+	if (k.p.expectPixel && (k.p.pointCoordGpr < 0 || k.points))
 	{
 		for (int ch = 0; ch < 4; ch++)
 		{
@@ -3178,6 +3214,29 @@ static std::vector<Program> DirectedPrograms()
 		for (int i = 0; i < 4; i++)
 			p.exportSel[i] = (uint8)i;
 		p.sysInputs = true;
+		out.push_back(p);
+	}
+	// param gen: gl_PointCoord into R4 (past the four inputs, which are
+	// written after it), exported, of one point over the 4x4 target; pixel
+	// 0's centre is (0.5, 0.5) of 4, so 0.125 each
+	{
+		Program p{};
+		AluGroup g{};
+		AluOp mov{};
+		mov.opcode = ALU_OP2_INST_MOV;
+		mov.src[0] = 249; // 1.0
+		mov.destGpr = 2;
+		mov.writeMask = 1;
+		g.ops.push_back(mov);
+		p.clauses.push_back({ g });
+		p.exportGpr = 4;
+		for (int i = 0; i < 4; i++)
+		{
+			p.exportSel[i] = (uint8)i;
+			p.pixel0[i] = 0x3E000000u; // 0.125
+		}
+		p.pointCoordGpr = 4;
+		p.expectPixel = true;
 		out.push_back(p);
 	}
 	// the texel edge nudge's size: a nearest sample of the 8x8 uint texture
@@ -4303,9 +4362,10 @@ int main(int argc, char** argv)
 	// of the drawn: reading gl_FragCoord, the front face, exporting depth
 	int fragCoordDrawn = 0, frontFaceDrawn = 0, depthDrawn = 0;
 	int roundDrawn = 0; // of the drawn, sampling with the texel edge nudge
+	int pointCoordDrawn = 0; // of the drawn, as a point reading gl_PointCoord
 	std::map<std::string, int> reasons;
 	const std::vector<Program> directed = DirectedPrograms();
-	CHECK(directed.size() == 23);
+	CHECK(directed.size() == 24);
 	for (int i = 0; i < count + (int)directed.size(); i++)
 	{
 		const bool allowDeclined = (i % 5) == 0;
@@ -4341,6 +4401,16 @@ int main(int argc, char** argv)
 		k.cw = gen.SysChance(50);
 		for (int f = 0; f < 4; f++)
 			k.fragScale[f] = (float)(1 + gen.SysR(16)) / 4.0f;
+		// one point over the target now and then (where the device draws
+		// points of its size), param gen's gl_PointCoord into a register
+		// (the exported one, or an input's) on most of those
+		k.points = own && gen.SysChance(20) && (!device || c.largePoints);
+		k.paramGenGpr = k.points && gen.SysChance(75) ? (sint32)(gen.SysChance(50) ? p.exportGpr : gen.SysR(kGPRs)) : -1;
+		if (p.pointCoordGpr >= 0)
+		{
+			k.points = !device || c.largePoints;
+			k.paramGenGpr = p.pointCoordGpr;
+		}
 		if (p.sysInputs)
 		{
 			k.usesGS = false;
@@ -4348,7 +4418,7 @@ int main(int argc, char** argv)
 			k.fragScale[0] = 2.0f;
 			k.fragScale[1] = 4.0f;
 		}
-		SetPSInputs(k.usesGS, k.fragCoord, k.psControl1);
+		SetPSInputs(k.usesGS, k.fragCoord, k.psControl1, k.paramGenGpr);
 		SetTextureRegisters(s_regs, p);
 		Decompiled viaGlsl = Decompile(words, false, strictMul, rte);
 		Decompiled viaSpirv = Decompile(words, true, strictMul, rte);
@@ -4474,6 +4544,7 @@ int main(int argc, char** argv)
 		fragCoordDrawn += viaGlsl.offsets.offset_fragCoordScale >= 0;
 		frontFaceDrawn += k.psControl1 != 0;
 		depthDrawn += p.depthGpr >= 0;
+		pointCoordDrawn += k.paramGenGpr >= 0;
 		roundDrawn += viaGlsl.glsl.find("/512.0") != std::string::npos;
 		if (Differs(c, k) == 1)
 		{
@@ -4497,6 +4568,8 @@ int main(int argc, char** argv)
 	CHECK(!device || count < 100 || (fragCoordDrawn * 30 > drawn && frontFaceDrawn * 30 > drawn && depthDrawn * 30 > drawn));
 	std::printf("decompiler: %d pixel shaders drawn sampling with the texel edge nudge\n", roundDrawn);
 	CHECK(!device || count < 100 || roundDrawn * 30 > drawn);
+	std::printf("decompiler: %d pixel shaders drawn as points reading gl_PointCoord\n", pointCoordDrawn);
+	CHECK(!device || !c.largePoints || count < 100 || pointCoordDrawn * 30 > drawn);
 	for (auto& it : reasons)
 		std::printf("  declined: %s (%d)\n", it.first.c_str(), it.second);
 	if (differing)

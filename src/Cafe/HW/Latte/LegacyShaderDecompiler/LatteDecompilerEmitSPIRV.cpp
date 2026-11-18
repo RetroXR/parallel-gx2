@@ -171,7 +171,7 @@ namespace
 		// a pixel shader's uf_fragCoordScale member; gl_FragDepth where it
 		// exports depth
 		sint32 fragCoordMember{-1};
-		uint32 fragDepthVar{}, fragCoordVar{}, frontFacingVar{};
+		uint32 fragDepthVar{}, fragCoordVar{}, frontFacingVar{}, pointCoordVar{};
 		// streamout through the storage buffer: uf_verticesPerInstance's and
 		// uf_streamoutBufferBase<n>'s members, int sb_buffer[], sbBase<n>
 		sint32 verticesPerInstanceMember{-1};
@@ -1479,7 +1479,15 @@ namespace
 		if ((spiInterpControl >> 1) & 1)
 			return Decline("sprites");
 		if (psInputTable->paramGen != 0)
-			return Decline("param gen");
+		{
+			// param gen: R<paramGenGPR> = gl_PointCoord.xyxy, before the
+			// inputs
+			uint32 pc = Load(tV2F, BuiltinInput(SpvBuiltInPointCoord));
+			uint32 v = Op(SpvOpVectorShuffle, tV4F, { pc, pc, 0, 1, 0, 1 });
+			if (dt == DT_I)
+				v = Op(SpvOpBitcast, tV4I, { v });
+			Store(GPR(psInputTable->paramGenGPR), v);
+		}
 		const bool frontFace = (psControl1 >> 8) & 1;
 		const uint32 frontFaceChan = (psControl1 >> 9) & 3;
 		const bool frontFaceAllBits = (psControl1 >> 11) & 1;
@@ -3353,10 +3361,11 @@ namespace
 	uint32 SpvShader::BuiltinInput(uint32 builtin)
 	{
 		uint32& var = builtin == SpvBuiltInVertexIndex ? vertexIndexVar : builtin == SpvBuiltInInstanceIndex ? instanceIndexVar :
-			builtin == SpvBuiltInFragCoord ? fragCoordVar : frontFacingVar;
+			builtin == SpvBuiltInFragCoord ? fragCoordVar : builtin == SpvBuiltInPointCoord ? pointCoordVar : frontFacingVar;
 		if (!var)
 		{
-			const uint32 type = builtin == SpvBuiltInFragCoord ? tV4F : builtin == SpvBuiltInFrontFacing ? tBool : tI;
+			const uint32 type = builtin == SpvBuiltInFragCoord ? tV4F : builtin == SpvBuiltInFrontFacing ? tBool :
+				builtin == SpvBuiltInPointCoord ? tV2F : tI;
 			var = spv_global_variable(w, spv_type_pointer(w, SpvStorageClassInput, type), SpvStorageClassInput);
 			Decorate(var, SpvDecorationBuiltIn, { builtin });
 			interfaceIds[interfaceCount++] = var;
