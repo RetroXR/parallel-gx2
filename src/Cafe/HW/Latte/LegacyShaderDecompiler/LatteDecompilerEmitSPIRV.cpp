@@ -132,7 +132,11 @@ namespace
 		// each subroutine's activeMaskStackSub<addr>[1] and
 		// activeMaskStackCSub<addr>[2], by its index in list_subroutines; the
 		// one being inlined (its stacks then the mask's)
-		std::vector<uint32> subMaskVar, subMaskCVar;
+		// (no allocation: a shader is decompiled while a game plays; one with
+		// more subroutines goes the GLSL way)
+		static const uint32 kMaxSubroutines = 16;
+		uint32 subMaskVar[kMaxSubroutines]{}, subMaskCVar[kMaxSubroutines]{};
+		uint32 subroutineCount{};
 		bool inSubroutine{};
 		sint32 maskLen{}, maskCLen{};
 		uint32 aluBreakVar{}; // the ALU_BREAK clause's aluBreak
@@ -1477,8 +1481,10 @@ namespace
 		LatteShaderPSInputTable* psInputTable = LatteSHRC_GetPSInputTable();
 		uint32 psControl1 = ctx->contextRegisters[mmSPI_PS_IN_CONTROL_1];
 		uint32 spiInterpControl = ctx->contextRegisters[mmSPI_INTERP_CONTROL_0];
-		if ((spiInterpControl >> 1) & 1)
-			return Decline("sprites");
+		// point sprites (SPI_INTERP_CONTROL_0's PNT_SPRITE_ENA): the GLSL
+		// emitter asserts in a debug build and imports the inputs as they
+		// are; so does this
+		(void)spiInterpControl;
 		if (psInputTable->paramGen != 0)
 		{
 			// param gen: R<paramGenGPR> = gl_PointCoord.xyxy, before the
@@ -1533,8 +1539,9 @@ namespace
 		// emitter's check)
 		if (frontFace && (ctx->analyzer.gprUseMask[0] & 1) != 0)
 		{
-			if (frontFaceAllBits)
-				return Decline("front face of all bits");
+			// all bits (ALL_BITS): the GLSL emitter asserts in a debug build
+			// and writes 1.0 or 0.0 still; so does this
+			(void)frontFaceAllBits;
 			uint32 ff = Load(tBool, BuiltinInput(SpvBuiltInFrontFacing));
 			uint32 v = Op(SpvOpSelect, tF, { ff, ConstF(1.0f), ConstF(0.0f) });
 			if (dt == DT_I)
@@ -4297,7 +4304,7 @@ namespace
 				break;
 			}
 		}
-		if (index >= subMaskVar.size() || !hasActiveMask)
+		if (index >= subroutineCount || !hasActiveMask)
 			return Decline("subroutine not found");
 		uint32 entry = Load(tBool, MaskPtr(true, cf.activeStackDepth + 1));
 		const uint32 ptrB = spv_type_pointer(w, SpvStorageClassFunction, tBool);
@@ -4792,8 +4799,10 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 		// each subroutine's stacks, as the GLSL emitter declares them
 		for (size_t i = 0; i < shaderContext->list_subroutines.size(); i++)
 		{
-			s.subMaskVar.push_back(s.Local(spv_type_array(w, s.tBool, s.ConstI(1)), 0));
-			s.subMaskCVar.push_back(s.Local(spv_type_array(w, s.tBool, s.ConstI(2)), 0));
+			if (s.subroutineCount == SpvShader::kMaxSubroutines)
+				return decline("too many subroutines");
+			s.subMaskVar[s.subroutineCount] = s.Local(spv_type_array(w, s.tBool, s.ConstI(1)), 0);
+			s.subMaskCVar[s.subroutineCount++] = s.Local(spv_type_array(w, s.tBool, s.ConstI(2)), 0);
 		}
 	}
 	// the streamout buffers' bases; the inputs (a geometry shader reads the

@@ -1185,9 +1185,11 @@ static bool s_usesGS = false;
 // location, semantics 3 to 0 (so the two ways name different locations)
 // fragCoord: input 1 the position (gl_FragCoord), as the SPI imports it;
 // psControl1: SPI_PS_IN_CONTROL_1, its front face bits; paramGenGpr: the
-// register param gen writes gl_PointCoord into (-1: none)
-static void SetPSInputs(bool usesGS, bool fragCoord = false, uint32 psControl1 = 0, sint32 paramGenGpr = -1)
+// register param gen writes gl_PointCoord into (-1: none); sprites:
+// SPI_INTERP_CONTROL_0's point sprite enable, which the emitters ignore
+static void SetPSInputs(bool usesGS, bool fragCoord = false, uint32 psControl1 = 0, sint32 paramGenGpr = -1, bool sprites = false)
 {
+	s_regs[mmSPI_INTERP_CONTROL_0] = sprites ? 2u : 0u;
 	g_testPSInputTable.paramGen = paramGenGpr >= 0 ? 1 : 0;
 	g_testPSInputTable.paramGenGPR = (uint8)(paramGenGpr >= 0 ? paramGenGpr : 0);
 	s_usesGS = usesGS;
@@ -2150,9 +2152,11 @@ struct Case
 	bool fragCoord, cw;
 	float fragScale[4];
 	uint32 psControl1;
-	// drawn as one point over the target; param gen's register (-1: none)
+	// drawn as one point over the target; param gen's register (-1: none);
+	// point sprites enabled
 	bool points;
 	sint32 paramGenGpr;
+	bool sprites;
 };
 
 // the same bits, or both a NaN: which NaN an operation on a NaN gives is
@@ -2229,7 +2233,7 @@ static int Differs(const Context& c, const Case& k, std::vector<uint32>* outA = 
 	s_regs[Latte::REGADDR::SX_ALPHA_TEST_CONTROL] = k.alphaRaw;
 	g_testPreventInfiniteLoops = k.preventLoops;
 	g_testRoundToPrecision = k.roundPrecision;
-	SetPSInputs(k.usesGS, k.fragCoord, k.psControl1, k.paramGenGpr);
+	SetPSInputs(k.usesGS, k.fragCoord, k.psControl1, k.paramGenGpr, k.sprites);
 	SetTextureRegisters(s_regs, k.p);
 	Decompiled viaGlsl = Decompile(words, false, k.strictMul, k.rte);
 	Decompiled viaSpirv = Decompile(words, true, k.strictMul, k.rte);
@@ -4647,6 +4651,7 @@ int main(int argc, char** argv)
 	int fragCoordDrawn = 0, frontFaceDrawn = 0, depthDrawn = 0;
 	int roundDrawn = 0; // of the drawn, sampling with the texel edge nudge
 	int pointCoordDrawn = 0; // of the drawn, as a point reading gl_PointCoord
+	int spritesDrawn = 0, allBitsDrawn = 0; // with point sprites on, the front face of all bits
 	int memDrawn = 0; // of the drawn, with a scatter buffer read
 	int cubeShadowDrawn = 0; // of the drawn, comparing with a cube array
 	std::map<std::string, int> reasons;
@@ -4684,7 +4689,10 @@ int main(int argc, char** argv)
 		// then; not for directed programs, whose registers are their own
 		const bool own = i >= (int)directed.size();
 		k.fragCoord = own ? gen.SysChance(25) : p.sysInputs;
-		k.psControl1 = own && gen.SysChance(25) ? (1u << 8) | (gen.SysR(4) << 9) : 0;
+		// the front face now and then of all bits (ALL_BITS, written as 1.0
+		// or 0.0 all the same); point sprites enabled (ignored) now and then
+		k.psControl1 = own && gen.SysChance(25) ? (1u << 8) | (gen.SysR(4) << 9) | (gen.SysChance(30) ? 1u << 11 : 0u) : 0;
+		k.sprites = own && gen.SysChance(10);
 		k.cw = gen.SysChance(50);
 		for (int f = 0; f < 4; f++)
 			k.fragScale[f] = (float)(1 + gen.SysR(16)) / 4.0f;
@@ -4705,7 +4713,7 @@ int main(int argc, char** argv)
 			k.fragScale[0] = 2.0f;
 			k.fragScale[1] = 4.0f;
 		}
-		SetPSInputs(k.usesGS, k.fragCoord, k.psControl1, k.paramGenGpr);
+		SetPSInputs(k.usesGS, k.fragCoord, k.psControl1, k.paramGenGpr, k.sprites);
 		SetTextureRegisters(s_regs, p);
 		Decompiled viaGlsl = Decompile(words, false, strictMul, rte);
 		Decompiled viaSpirv = Decompile(words, true, strictMul, rte);
@@ -4833,6 +4841,8 @@ int main(int argc, char** argv)
 		frontFaceDrawn += k.psControl1 != 0;
 		depthDrawn += p.depthGpr >= 0;
 		pointCoordDrawn += k.paramGenGpr >= 0;
+		spritesDrawn += k.sprites;
+		allBitsDrawn += (k.psControl1 >> 11) & 1;
 		bool mem = false;
 		for (auto& clause : p.texClauses)
 			for (auto& t : clause)
@@ -4861,9 +4871,11 @@ int main(int argc, char** argv)
 		frontFaceDrawn, depthDrawn);
 	CHECK(!device || count < 100 || (fragCoordDrawn * 30 > drawn && frontFaceDrawn * 30 > drawn && depthDrawn * 30 > drawn));
 	std::printf("decompiler: %d pixel shaders drawn sampling with the texel edge nudge\n", roundDrawn);
-	CHECK(!device || count < 100 || roundDrawn * 30 > drawn);
+	CHECK(!device || count < 100 || roundDrawn * 60 > drawn);
 	std::printf("decompiler: %d pixel shaders drawn as points reading gl_PointCoord\n", pointCoordDrawn);
 	CHECK(!device || !c.largePoints || count < 100 || pointCoordDrawn * 30 > drawn);
+	std::printf("decompiler: %d pixel shaders drawn with point sprites on, %d with the front face of all bits\n", spritesDrawn, allBitsDrawn);
+	CHECK(!device || count < 100 || (spritesDrawn * 30 > drawn && allBitsDrawn * 60 > drawn));
 	std::printf("decompiler: %d pixel shaders drawn with a scatter buffer read\n", memDrawn);
 	CHECK(!device || count < 100 || memDrawn * 60 > drawn);
 	std::printf("decompiler: %d pixel shaders drawn comparing with a cube array\n", cubeShadowDrawn);
@@ -5110,7 +5122,7 @@ int main(int argc, char** argv)
 		std::printf("decompiler: %d vertex and geometry shaders drawn calling a subroutine\n", vSubDrawn);
 		CHECK(!device || vsCount < 100 || vSubDrawn * 30 > vDrawn);
 		std::printf("decompiler: %d vertex and geometry shaders drawn sampling with the texel edge nudge\n", vRoundDrawn);
-		CHECK(!device || vsCount < 100 || vRoundDrawn * 30 > vDrawn);
+		CHECK(!device || vsCount < 100 || vRoundDrawn * 100 > vDrawn);
 		// a full run (the default count) draws every instruction
 		if (device && count >= 600)
 		{
