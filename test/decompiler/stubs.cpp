@@ -44,9 +44,11 @@ bool ActiveSettings::ShaderPreventInfiniteLoopsEnabled()
 {
 	return g_testPreventInfiniteLoops;
 }
+// the titles sampling on texel edges' nudge: the test turns it on and off
+bool g_testRoundToPrecision = false;
 bool ActiveSettings::ForceSamplerRoundToPrecision()
 {
-	return false;
+	return g_testRoundToPrecision;
 }
 
 // one color buffer, 32 bit float per channel (the test reads the bits back)

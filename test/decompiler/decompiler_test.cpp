@@ -36,6 +36,7 @@
 
 extern LatteShaderPSInputTable g_testPSInputTable;
 extern bool g_testPreventInfiniteLoops;
+extern bool g_testRoundToPrecision; // the texel edge nudge's titles
 
 static int s_failures = 0;
 #define CHECK(cond) do { if (!(cond)) { std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); s_failures++; } } while (0)
@@ -141,6 +142,8 @@ struct Program
 	// a directed program's system inputs: input 1 gl_FragCoord (scaled by
 	// (2, 4)), the front face into R0.y; pixel 0 then (1, 2) and the face
 	bool sysInputs = false;
+	// a directed program's: drawn as a texel edge title (the nudge on)
+	bool roundPrecision = false;
 };
 
 static void EncodeTex(const TexOp& t, uint32 w[4])
@@ -2050,6 +2053,7 @@ struct Case
 	Program p;
 	uint32 alphaRaw;
 	bool strictMul, rte, preventLoops, usesGS;
+	bool roundPrecision; // a texel edge title's (ForceSamplerRoundToPrecision)
 	float inputs[16];
 	uint32 cfile[256 * 4];
 	float alphaRef;
@@ -2134,6 +2138,7 @@ static int Differs(const Context& c, const Case& k, std::vector<uint32>* outA = 
 	std::vector<uint32> words = Assemble(k.p);
 	s_regs[Latte::REGADDR::SX_ALPHA_TEST_CONTROL] = k.alphaRaw;
 	g_testPreventInfiniteLoops = k.preventLoops;
+	g_testRoundToPrecision = k.roundPrecision;
 	SetPSInputs(k.usesGS, k.fragCoord, k.psControl1);
 	SetTextureRegisters(s_regs, k.p);
 	Decompiled viaGlsl = Decompile(words, false, k.strictMul, k.rte);
@@ -2308,6 +2313,7 @@ static void Minimize(const Context& c, Case k, const char* outDir)
 	Differs(c, k, &a, &b);
 	std::vector<uint32> words = Assemble(k.p);
 	g_testPreventInfiniteLoops = k.preventLoops;
+	g_testRoundToPrecision = k.roundPrecision;
 	SetTextureRegisters(s_regs, k.p);
 	std::string glsl = Decompile(words, false, k.strictMul, k.rte).glsl;
 	std::printf("minimal program (strictMul %d, rte %d, alpha %08x):\n%s\n", k.strictMul, k.rte, k.alphaRaw, glsl.c_str());
@@ -3174,6 +3180,44 @@ static std::vector<Program> DirectedPrograms()
 		p.sysInputs = true;
 		out.push_back(p);
 	}
+	// the texel edge nudge's size: a nearest sample of the 8x8 uint texture
+	// at u (3 - 0.003) / 8, which a nudge of 1/8/512 keeps in texel 2 and
+	// one of twice that (or of level 1's size) moves into texel 3
+	{
+		Program p{};
+		AluGroup g{};
+		for (uint8 c = 0; c < 2; c++)
+		{
+			AluOp mov{};
+			mov.opcode = ALU_OP2_INST_MOV;
+			mov.src[0] = 253;
+			mov.chan[0] = c;
+			mov.destGpr = 4;
+			mov.destElem = c;
+			mov.writeMask = 1;
+			g.ops.push_back(mov);
+		}
+		g.literals[0] = 0x3EBFCED9u; // (3 - 0.003) / 8
+		g.literals[1] = 0x3EA00000u; // 2.5 / 8
+		p.clauses.push_back({ g });
+		TexOp t{};
+		t.opcode = GPU7_TEX_INST_SAMPLE_LZ;
+		t.srcGpr = 4;
+		t.dstGpr = 0;
+		for (uint8 c = 0; c < 4; c++)
+		{
+			t.srcSel[c] = c;
+			t.dstSel[c] = c;
+		}
+		p.texClauses.push_back({ t });
+		p.cf = { { GPU7_CF_INST_ALU, 0, 0 }, { GPU7_CF_INST_TEX, 0, 0 } };
+		p.texKind[0] = TEX_2D_UINT;
+		p.exportGpr = 0;
+		for (int i = 0; i < 4; i++)
+			p.exportSel[i] = (uint8)i;
+		p.roundPrecision = true;
+		out.push_back(p);
+	}
 	// a depth export of a literal (0.375 into R2.y): pixel 0's depth
 	{
 		Program p{};
@@ -3223,6 +3267,7 @@ struct VSCase
 	uint8 psSemantic[8];
 	int psCount;
 	bool dxClip, viewportScale, strictMul, rte, preventLoops;
+	bool roundPrecision;
 	// drawn as points: of uf_pointSize's size, or the exported one
 	bool points;
 	// with a geometry shader (the test's): the position and the parameters
@@ -3334,6 +3379,7 @@ static void SetVertexState(const VSCase& k)
 	}
 	SetTextureRegisters(s_regs, k.p);
 	g_testPreventInfiniteLoops = k.preventLoops;
+	g_testRoundToPrecision = k.roundPrecision;
 	s_fetchShader.bufferGroups.clear();
 	for (size_t i = 0; i < k.attribs.size(); i++)
 	{
@@ -4256,9 +4302,10 @@ int main(int argc, char** argv)
 	int subDrawn = 0; // of the drawn, calling a subroutine
 	// of the drawn: reading gl_FragCoord, the front face, exporting depth
 	int fragCoordDrawn = 0, frontFaceDrawn = 0, depthDrawn = 0;
+	int roundDrawn = 0; // of the drawn, sampling with the texel edge nudge
 	std::map<std::string, int> reasons;
 	const std::vector<Program> directed = DirectedPrograms();
-	CHECK(directed.size() == 22);
+	CHECK(directed.size() == 23);
 	for (int i = 0; i < count + (int)directed.size(); i++)
 	{
 		const bool allowDeclined = (i % 5) == 0;
@@ -4282,6 +4329,7 @@ int main(int argc, char** argv)
 		const bool strictMul = k.strictMul = gen.Chance(50);
 		const bool rte = k.rte = c.rte && gen.Chance(50);
 		g_testPreventInfiniteLoops = k.preventLoops = gen.Chance(50);
+		g_testRoundToPrecision = k.roundPrecision = i < (int)directed.size() ? p.roundPrecision : gen.SysChance(30);
 		// now and then after a geometry shader: the same inputs, by semantic
 		k.usesGS = gen.Chance(20);
 		// gl_FragCoord as an input, the front face into a register (R0,
@@ -4426,6 +4474,7 @@ int main(int argc, char** argv)
 		fragCoordDrawn += viaGlsl.offsets.offset_fragCoordScale >= 0;
 		frontFaceDrawn += k.psControl1 != 0;
 		depthDrawn += p.depthGpr >= 0;
+		roundDrawn += viaGlsl.glsl.find("/512.0") != std::string::npos;
 		if (Differs(c, k) == 1)
 		{
 			differing++;
@@ -4446,6 +4495,8 @@ int main(int argc, char** argv)
 	std::printf("decompiler: %d pixel shaders drawn reading gl_FragCoord, %d the front face, %d exporting depth\n", fragCoordDrawn,
 		frontFaceDrawn, depthDrawn);
 	CHECK(!device || count < 100 || (fragCoordDrawn * 30 > drawn && frontFaceDrawn * 30 > drawn && depthDrawn * 30 > drawn));
+	std::printf("decompiler: %d pixel shaders drawn sampling with the texel edge nudge\n", roundDrawn);
+	CHECK(!device || count < 100 || roundDrawn * 30 > drawn);
 	for (auto& it : reasons)
 		std::printf("  declined: %s (%d)\n", it.first.c_str(), it.second);
 	if (differing)
@@ -4466,6 +4517,7 @@ int main(int argc, char** argv)
 		int soDrawn = 0; // of the drawn, writing the streamout buffer
 		int vCbankDrawn = 0; // of the drawn, reading uniform buffers whole
 		int vSubDrawn = 0; // of the drawn, calling a subroutine
+		int vRoundDrawn = 0; // of the drawn, sampling with the texel edge nudge
 		int soOffDrawn = 0; // of those, with streamout off (the writes dropped)
 		std::map<std::string, int> vReasons;
 		{
@@ -4488,6 +4540,7 @@ int main(int argc, char** argv)
 			k.strictMul = gen.Chance(50);
 			k.rte = c.rte && gen.Chance(50);
 			k.preventLoops = gen.Chance(50);
+			k.roundPrecision = gen.SysChance(30);
 			std::vector<uint32> words = Assemble(k.p);
 			Decompiled viaGlsl = DecompileVertex(words, false, k);
 			Decompiled viaSpirv = DecompileVertex(words, true, k);
@@ -4602,6 +4655,7 @@ int main(int argc, char** argv)
 			soDrawn += k.streamout;
 			vCbankDrawn += viaGlsl.uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_FULL_CBANK;
 			vSubDrawn += !k.p.sub.empty();
+			vRoundDrawn += viaGlsl.glsl.find("/512.0") != std::string::npos;
 			soOffDrawn += k.streamout && k.streamoutOff;
 			bool same = true;
 			for (int l = -1; l < k.psCount; l++)
@@ -4683,6 +4737,8 @@ int main(int argc, char** argv)
 		CHECK(!device || vsCount < 100 || vCbankDrawn * 20 > vDrawn);
 		std::printf("decompiler: %d vertex and geometry shaders drawn calling a subroutine\n", vSubDrawn);
 		CHECK(!device || vsCount < 100 || vSubDrawn * 30 > vDrawn);
+		std::printf("decompiler: %d vertex and geometry shaders drawn sampling with the texel edge nudge\n", vRoundDrawn);
+		CHECK(!device || vsCount < 100 || vRoundDrawn * 30 > vDrawn);
 		// stream writes with streamout off are drawn (dropped), not declined
 		CHECK(!device || !c.vertexStores || vsCount < 100 || soOffDrawn > 0);
 		// geometry shaders are drawn, not declined

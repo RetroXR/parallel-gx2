@@ -1001,6 +1001,24 @@ namespace
 			uint32 parts[4] = { ConstU(v), ConstU(v), ConstU(v), ConstU(v) };
 			return spv_const_composite(w, VecU(n), parts, n);
 		}
+		// the titles that sample on texel edges (ForceSamplerRoundToPrecision):
+		// a 2D's coordinates + vec2(1.0)/vec2(textureSize(tex, 0))/512.0
+		uint32 RoundToPrecision(sint32 unit, uint32 coord)
+		{
+			if (!ActiveSettings::ForceSamplerRoundToPrecision())
+				return coord;
+			imageQuery = true;
+			uint32 image = Op(SpvOpImage, texImage[unit], { Load(texType[unit], texVar[unit]) });
+			uint32 size = Op(SpvOpImageQuerySizeLod, spv_type_vector(w, tI, 2), { image, ConstI(0) });
+			// vec2(ivec2): each component converted, as rslc writes it
+			uint32 sx = Op(SpvOpConvertSToF, tF, { Op(SpvOpCompositeExtract, tI, { size, 0 }) });
+			uint32 sy = Op(SpvOpConvertSToF, tF, { Op(SpvOpCompositeExtract, tI, { size, 1 }) });
+			uint32 sizeF = Op(SpvOpCompositeConstruct, tV2F, { sx, sy });
+			uint32 step = Op(SpvOpFDiv, tV2F, { SplatF(1.0f, 2), sizeF });
+			step = Op(SpvOpFDiv, tV2F, { step, SplatF(512.0f, 2) });
+			return Op(SpvOpFAdd, tV2F, { coord, step });
+		}
+
 		uint32 SplatF(float f, uint32 n)
 		{
 			if (n == 1)
@@ -2785,8 +2803,6 @@ namespace
 		const bool three = dim == Latte::E_DIM::DIM_3D || dim == Latte::E_DIM::DIM_2D_ARRAY;
 		const bool one = dim == Latte::E_DIM::DIM_1D;
 		const bool cube = dim == Latte::E_DIM::DIM_CUBEMAP;
-		if (!three && !one && !cube && ActiveSettings::ForceSamplerRoundToPrecision())
-			return Decline("sampler round to precision");
 		if (cube && hasOffset)
 			return Decline("cube map offset"); // no offset argument written
 		// sampler, coordinates, then the level or bias, as the call reads them
@@ -2803,6 +2819,8 @@ namespace
 			for (uint32 i = 0; i < n; i++)
 				c[i] = TexCoord(t, (sint32)i);
 			coord = CoordVector(c, n);
+			if (!three)
+				coord = RoundToPrecision(unit, coord);
 		}
 		uint32 mask = 0;
 		uint32 operands[2];
@@ -2967,8 +2985,6 @@ namespace
 			return Decline("gather dimension");
 		// (a texel offset ignored: the GLSL emitter's textureGather takes none)
 		const bool isArray = dim == Latte::E_DIM::DIM_2D_ARRAY || cube;
-		if (!isArray && ActiveSettings::ForceSamplerRoundToPrecision())
-			return Decline("sampler round to precision");
 		uint32 written[4];
 		const uint32 count = TexWritten(t, written);
 		if (!count)
@@ -2988,7 +3004,7 @@ namespace
 			coord = CoordVector(c, n);
 		}
 		if (!isArray)
-			coord = Op(SpvOpFAdd, tV2F, { SplatF(0.0001f, 2), coord });
+			coord = RoundToPrecision(unit, Op(SpvOpFAdd, tV2F, { SplatF(0.0001f, 2), coord }));
 		if (!Ok())
 			return false;
 		uint32 v = ImageOp(SpvOpImageGather, isInt ? tV4U : tV4F, sampler, coord, ConstI(0), 0, nullptr, 0);
@@ -3162,8 +3178,6 @@ namespace
 			return Decline("gradient dimension");
 		if (!gradVar[0])
 			return Decline("gradients never set");
-		if (!one && ActiveSettings::ForceSamplerRoundToPrecision())
-			return Decline("sampler round to precision");
 		uint32 written[4];
 		const uint32 count = TexWritten(t, written);
 		if (!count)
@@ -3176,7 +3190,7 @@ namespace
 		else
 		{
 			Val c[2] = { TexCoord(t, 0), TexCoord(t, 1) };
-			coord = CoordVector(c, 2);
+			coord = RoundToPrecision(unit, CoordVector(c, 2));
 		}
 		uint32 operands[3];
 		uint32 nOperands = 0;
