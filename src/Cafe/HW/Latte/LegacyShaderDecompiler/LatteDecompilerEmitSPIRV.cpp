@@ -981,6 +981,7 @@ namespace
 		bool EmitGeometryRingWrite(LatteDecompilerCFInstruction& cf);
 		bool EmitEmitVertex(LatteDecompilerCFInstruction& cf);
 		bool EmitCall(LatteDecompilerCFInstruction& cf);
+		bool EmitMemRead(LatteDecompilerTEXInstruction& t);
 		bool DeclareStreamout();
 		bool DeclareUniformBuffers();
 		bool EmitUniformFetch(LatteDecompilerTEXInstruction& t);
@@ -3325,6 +3326,12 @@ namespace
 					return false;
 				continue;
 			}
+			if (op == GPU7_TEX_INST_MEM)
+			{
+				if (!EmitMemRead(t))
+					return false;
+				continue;
+			}
 			if (!sample && !query)
 				return Decline("texture instruction kind");
 			if (unit < 0 || unit >= LATTE_NUM_MAX_TEX_UNITS)
@@ -4234,6 +4241,30 @@ namespace
 			StreamStore(buffer, cf.exportArrayBase + i, v);
 		}
 		return Ok();
+	}
+
+	// _emitTEXReadMemCode: a scatter buffer read, which the GLSL emitter
+	// writes as zeros of the format's size (its reads still to do), the
+	// channels written swizzled from them
+	bool SpvShader::EmitMemRead(LatteDecompilerTEXInstruction& t)
+	{
+		uint32 readCount;
+		if (t.memRead.format == Latte::E_HWFMT::HWFMT_32_FLOAT)
+			readCount = 1;
+		else if (t.memRead.format == Latte::E_HWFMT::HWFMT_32_32_FLOAT)
+			readCount = 2;
+		else if (t.memRead.format == Latte::E_HWFMT::HWFMT_32_32_32_FLOAT)
+			readCount = 3;
+		else
+			return Decline("memory read format"); // the GLSL emitter writes no value
+		uint32 written[4];
+		const uint32 count = TexWritten(t, written);
+		if (!count)
+			return false;
+		if (count > readCount)
+			return Decline("memory read of more channels than read"); // a vector too short
+		uint32 v = count == 1 ? ConstF(0.0f) : SplatF(0.0f, count);
+		return StoreTexResult(t, v, DT_F, count, written);
 	}
 
 	// _emitCFCall: the subroutine inlined, its mask stacks from the caller's

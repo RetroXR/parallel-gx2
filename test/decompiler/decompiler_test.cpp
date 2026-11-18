@@ -74,6 +74,8 @@ struct TexOp
 	// a VFETCH (the unit the buffer, 0x9F the ring) at this byte offset
 	bool vfetch;
 	uint16 vtxOffset;
+	// a scatter buffer read (TEX MEM, memory op 2) of this format (0: none)
+	uint8 memFormat;
 };
 
 // a CF instruction: an ALU or TEX clause of a kind, or one without a clause
@@ -150,6 +152,17 @@ struct Program
 
 static void EncodeTex(const TexOp& t, uint32 w[4])
 {
+	if (t.memFormat)
+	{
+		// MEM_RD_WORD0-2: memory op 2 (a scatter buffer read), the source
+		// register's channel, the destination's selects and the format
+		w[0] = (uint32)GPU7_TEX_INST_MEM | (2u << 8) | ((uint32)t.srcGpr << 16) | (((uint32)t.srcSel[0] & 3) << 24);
+		w[1] = (uint32)t.dstGpr | ((uint32)t.dstSel[0] << 9) | ((uint32)t.dstSel[1] << 12) | ((uint32)t.dstSel[2] << 15) |
+			((uint32)t.dstSel[3] << 18) | ((uint32)t.memFormat << 22);
+		w[2] = 0;
+		w[3] = 0;
+		return;
+	}
 	if (t.vfetch)
 	{
 		// VTX_WORD0-2: fetch type 2, the buffer, source R<srcGpr>.<srcSel[0]>
@@ -741,6 +754,32 @@ struct Gen
 		for (uint32 i = 0; i < n; i++)
 		{
 			TexOp t{};
+			if (SysChance(6))
+			{
+				// a scatter buffer read: one to three floats, into as many
+				// channels or fewer (more: the GLSL emitter's vector is too
+				// short, declined)
+				static const uint8 formats[3] = { 0x0E, 0x1E, 0x30 }; // HWFMT_32, 32_32, 32_32_32 float
+				const uint32 size = 1 + SysR(3);
+				t.memFormat = formats[size - 1];
+				t.opcode = GPU7_TEX_INST_MEM;
+				t.srcGpr = (uint8)SysR(kGPRs);
+				t.srcSel[0] = (uint8)SysR(4);
+				t.dstGpr = (uint8)SysR(destGPRs); // not a loop's counter
+				for (int c = 0; c < 4; c++)
+					t.dstSel[c] = 7;
+				const uint32 want = (allowDeclined && SysChance(20)) ? 4 : 1 + SysR(size);
+				for (uint32 c = 0, placed = 0; placed < want && c < 4; c++)
+				{
+					if (SysChance(70) || 4 - c <= want - placed)
+					{
+						t.dstSel[c] = (uint8)SysR(4);
+						placed++;
+					}
+				}
+				clause.push_back(t);
+				continue;
+			}
 			if (bufferMode && Chance(15))
 			{
 				// a uniform buffer's vec4 at a register's index
@@ -4363,6 +4402,7 @@ int main(int argc, char** argv)
 	int fragCoordDrawn = 0, frontFaceDrawn = 0, depthDrawn = 0;
 	int roundDrawn = 0; // of the drawn, sampling with the texel edge nudge
 	int pointCoordDrawn = 0; // of the drawn, as a point reading gl_PointCoord
+	int memDrawn = 0; // of the drawn, with a scatter buffer read
 	std::map<std::string, int> reasons;
 	const std::vector<Program> directed = DirectedPrograms();
 	CHECK(directed.size() == 24);
@@ -4545,6 +4585,11 @@ int main(int argc, char** argv)
 		frontFaceDrawn += k.psControl1 != 0;
 		depthDrawn += p.depthGpr >= 0;
 		pointCoordDrawn += k.paramGenGpr >= 0;
+		bool mem = false;
+		for (auto& clause : p.texClauses)
+			for (auto& t : clause)
+				mem |= t.memFormat != 0;
+		memDrawn += mem;
 		roundDrawn += viaGlsl.glsl.find("/512.0") != std::string::npos;
 		if (Differs(c, k) == 1)
 		{
@@ -4570,6 +4615,8 @@ int main(int argc, char** argv)
 	CHECK(!device || count < 100 || roundDrawn * 30 > drawn);
 	std::printf("decompiler: %d pixel shaders drawn as points reading gl_PointCoord\n", pointCoordDrawn);
 	CHECK(!device || !c.largePoints || count < 100 || pointCoordDrawn * 30 > drawn);
+	std::printf("decompiler: %d pixel shaders drawn with a scatter buffer read\n", memDrawn);
+	CHECK(!device || count < 100 || memDrawn * 60 > drawn);
 	for (auto& it : reasons)
 		std::printf("  declined: %s (%d)\n", it.first.c_str(), it.second);
 	if (differing)
