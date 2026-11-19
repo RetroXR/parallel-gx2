@@ -262,7 +262,8 @@ struct LatteDecompilerShaderContext
 	// fetch shader (required for vertex shader)
 	LatteFetchShader* fetchShader{};
 	// geometry copy shader (only present when geometry shader is active)
-	LatteParsedGSCopyShader* parsedGSCopyShader;
+	LatteParsedGSCopyShader* parsedGSCopyShader; // gsCopyShader once parsed
+	LatteParsedGSCopyShader gsCopyShader;
 	// state
 	bool hasError;
 	// type tracker

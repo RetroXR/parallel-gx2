@@ -35,24 +35,29 @@ void LatteGSCopyShaderParser_assignRegisterParameterOutput(LatteParsedGSCopyShad
 	cemu_assert_debug(false); // register is exported but never initialized?
 }
 
-void LatteGSCopyShaderParser_addStreamWrite(LatteParsedGSCopyShader* shaderContext, uint32 bufferIndex, uint32 exportSourceGPR, uint32 exportArrayBase, uint32 memWriteArraySize, uint32 memWriteCompMask)
+bool LatteGSCopyShaderParser_addStreamWrite(LatteParsedGSCopyShader* shaderContext, uint32 bufferIndex, uint32 exportSourceGPR, uint32 exportArrayBase, uint32 memWriteArraySize, uint32 memWriteCompMask)
 {
 	// get info about current state of GPR
 	for (sint32 i = shaderContext->numParam - 1; i >= 0; i--)
 	{
 		if (shaderContext->paramMapping[i].gprIndex == exportSourceGPR)
 		{
-			LatteGSCopyShaderStreamWrite_t streamWrite;
+			if (shaderContext->list_streamWrites.count >= GPU7_COPY_SHADER_MAX_STREAM_WRITES)
+			{
+				cemuLog_log(LogType::Force, "Copyshader: more than {} stream writes", GPU7_COPY_SHADER_MAX_STREAM_WRITES);
+				return false;
+			}
+			LatteGSCopyShaderStreamWrite_t& streamWrite = shaderContext->list_streamWrites.items[shaderContext->list_streamWrites.count++];
 			streamWrite.bufferIndex = (uint8)bufferIndex;
 			streamWrite.offset = shaderContext->paramMapping[i].offset;
 			streamWrite.exportArrayBase = exportArrayBase;
 			streamWrite.memWriteArraySize = memWriteArraySize;
 			streamWrite.memWriteCompMask = memWriteCompMask;
-			shaderContext->list_streamWrites.push_back(streamWrite);
-			return;
+			return true;
 		}
 	}
 	cemu_assert_debug(false); // GPR not initialized?
+	return true;
 }
 
 bool LatteGSCopyShaderParser_getExportTypeByOffset(LatteParsedGSCopyShader* shaderContext, uint32 offset, uint32* exportType, uint32* exportParam)
@@ -129,11 +134,11 @@ bool LatteGSCopyShaderParser_parseClauseVtx(LatteParsedGSCopyShader* shaderConte
 	return true;
 }
 
-LatteParsedGSCopyShader* LatteGSCopyShaderParser_parse(uint8* programData, uint32 programSize)
+bool LatteGSCopyShaderParser_parse(LatteParsedGSCopyShader* shaderContext, uint8* programData, uint32 programSize)
 {
 	cemu_assert_debug((programSize & 3) == 0);
-	LatteParsedGSCopyShader* shaderContext = new LatteParsedGSCopyShader();
 	shaderContext->numParam = 0;
+	shaderContext->list_streamWrites.count = 0;
 	// parse control flow instructions
 	for(uint32 i=0; i<programSize/8; i++)
 	{
@@ -218,7 +223,8 @@ LatteParsedGSCopyShader* LatteGSCopyShaderParser_parse(uint8* programData, uint3
 				uint32 memWriteCompMask = (cfWord1 >> 12) & 0xF;
 				uint32 exportSourceGPR = (cfWord0 >> 15) & 0x7F;
 
-				LatteGSCopyShaderParser_addStreamWrite(shaderContext, bufferIndex, exportSourceGPR, exportArrayBase, memWriteArraySize, memWriteCompMask);
+				if (!LatteGSCopyShaderParser_addStreamWrite(shaderContext, bufferIndex, exportSourceGPR, exportArrayBase, memWriteArraySize, memWriteCompMask))
+					return false;
 			}
 			else
 			{
@@ -235,8 +241,7 @@ LatteParsedGSCopyShader* LatteGSCopyShaderParser_parse(uint8* programData, uint3
 			// ALU clauses not supported
 			debug_printf("Copyshader has ALU clause?\n");
 			cemu_assert_debug(false);
-			delete shaderContext;
-			return nullptr;
+			return false;
 		}
 	}
 	// verify if all registers are exported
@@ -245,5 +250,5 @@ LatteParsedGSCopyShader* LatteGSCopyShaderParser_parse(uint8* programData, uint3
 		if( shaderContext->paramMapping[i].exportParam == 0xFF )
 			debugBreakpoint();
 	}
-	return shaderContext;
+	return true;
 }

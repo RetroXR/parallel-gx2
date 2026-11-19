@@ -1258,6 +1258,19 @@ static void SetPSInputs(bool usesGS, bool fragCoord = false, uint32 psControl1 =
 	s_regs[mmSPI_PS_IN_CONTROL_1] = psControl1;
 }
 
+// what a decompile may allocate: the shader, its SPIR-V, and each of its
+// uniform lists that has entries, once
+static unsigned long long AllocBound(const LatteDecompilerShader* shader)
+{
+	unsigned long long n = 2;
+	n += !shader->list_remappedUniformEntries.empty();
+	n += !shader->list_remappedUniformEntries_register.empty();
+	n += !shader->list_remappedUniformEntries_bufferGroups.empty();
+	for (auto& group : shader->list_remappedUniformEntries_bufferGroups)
+		n += !group.entries.empty();
+	return n;
+}
+
 static Decompiled Decompile(const std::vector<uint32>& program, bool direct, bool strictMul, bool rte)
 {
 	Decompiled d;
@@ -1271,8 +1284,7 @@ static Decompiled Decompile(const std::vector<uint32>& program, bool direct, boo
 	LatteDecompiler_DecompilePixelShader(0x1234, s_regs, (uint8*)program.data(), (uint32)program.size() * 4, options, &out);
 	d.allocs = s_allocs - allocsBefore;
 	LatteDecompilerShader* shader = out.shader;
-	// the shader, its SPIR-V, its uniform lists and one list per uniform buffer
-	d.allocBound = 5 + shader->list_remappedUniformEntries_bufferGroups.size();
+	d.allocBound = AllocBound(shader);
 	d.offsets = out.uniformOffsetsVK;
 	d.remapped = shader->list_remappedUniformEntries;
 	d.uniformMode = shader->uniformMode;
@@ -3841,12 +3853,15 @@ static Decompiled DecompileVertex(const std::vector<uint32>& program, bool direc
 	options.spirvInstrinsics.hasRoundingModeRTEFloat32 = k.rte;
 	LatteDecompilerOutput_t out{};
 	SetVertexState(k);
+	const unsigned long long allocsBefore = s_allocs;
 	if (k.gsCase)
 		LatteDecompiler_DecompileGeometryShader(0x9abc, s_regs, (uint8*)program.data(), (uint32)program.size() * 4,
 			(uint8*)k.copyShader.data(), (uint32)k.copyShader.size() * 4, (uint32)k.gsIn, options, &out);
 	else
 		LatteDecompiler_DecompileVertexShader(0x5678, s_regs, (uint8*)program.data(), (uint32)program.size() * 4, &s_fetchShader, options, &out);
+	d.allocs = s_allocs - allocsBefore;
 	LatteDecompilerShader* shader = out.shader;
+	d.allocBound = AllocBound(shader);
 	d.offsets = out.uniformOffsetsVK;
 	d.remapped = shader->list_remappedUniformEntries;
 	d.uniformMode = shader->uniformMode;
@@ -5127,6 +5142,14 @@ int main(int argc, char** argv)
 					s_failures++;
 				}
 				continue;
+			}
+			// allocating only the shader, as a pixel shader's (the copy shader
+			// a geometry shader's decompile parses into its own storage)
+			if (DECOMPILER_COUNT_ALLOCS && viaSpirv.allocs > viaSpirv.allocBound)
+			{
+				std::printf("FAIL: %s program %d allocates %llu times decompiled directly, over %llu\n", k.gsCase ? "geometry" : "vertex", i,
+					viaSpirv.allocs, viaSpirv.allocBound);
+				s_failures++;
 			}
 			if (!viaGlsl.ok)
 			{

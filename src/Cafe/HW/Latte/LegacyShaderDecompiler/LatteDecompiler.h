@@ -312,6 +312,8 @@ void LatteDecompiler_DecompilePixelShader(uint64 shaderBaseHash, uint32* context
 // specialized shader parsers
 
 #define GPU7_COPY_SHADER_MAX_PARAMS	(32)
+// a stream write per parameter and stream buffer
+#define GPU7_COPY_SHADER_MAX_STREAM_WRITES	(GPU7_COPY_SHADER_MAX_PARAMS * 4)
 
 struct LatteGSCopyShaderStreamWrite_t
 {
@@ -333,8 +335,17 @@ struct LatteParsedGSCopyShader
 	}paramMapping[GPU7_COPY_SHADER_MAX_PARAMS];
 	sint32 numParam;
 	// streamout writes
-	std::vector<LatteGSCopyShaderStreamWrite_t> list_streamWrites;
+	struct StreamWrites
+	{
+		LatteGSCopyShaderStreamWrite_t items[GPU7_COPY_SHADER_MAX_STREAM_WRITES];
+		uint32 count;
+		LatteGSCopyShaderStreamWrite_t* begin() { return items; }
+		LatteGSCopyShaderStreamWrite_t* end() { return items + count; }
+		bool empty() const { return count == 0; }
+	}list_streamWrites;
 };
 
-LatteParsedGSCopyShader* LatteGSCopyShaderParser_parse(uint8* programData, uint32 programSize);
+// the copy shader parsed into 'out' (the decompile's own, nothing allocated);
+// false for one it does not take
+bool LatteGSCopyShaderParser_parse(LatteParsedGSCopyShader* out, uint8* programData, uint32 programSize);
 bool LatteGSCopyShaderParser_getExportTypeByOffset(LatteParsedGSCopyShader* shaderContext, uint32 offset, uint32* exportType, uint32* exportParam);

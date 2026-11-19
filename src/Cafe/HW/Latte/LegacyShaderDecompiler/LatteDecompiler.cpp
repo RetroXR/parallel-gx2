@@ -1199,9 +1199,10 @@ void LatteDecompiler_DecompileGeometryShader(uint64 shaderBaseHash, uint32* cont
 	}
 	else
 	{
-		shaderContext.parsedGSCopyShader = LatteGSCopyShaderParser_parse(gsCopyProgramData, gsCopyProgramSize);
 		// a copy shader it does not take (an ALU clause): no outputs to map
-		if (shaderContext.parsedGSCopyShader == nullptr)
+		if (LatteGSCopyShaderParser_parse(&shaderContext.gsCopyShader, gsCopyProgramData, gsCopyProgramSize))
+			shaderContext.parsedGSCopyShader = &shaderContext.gsCopyShader;
+		else
 			shader->hasError = true;
 	}
 	for (sint32 i = 0; i < LATTE_NUM_MAX_TEX_UNITS; i++)
@@ -1240,7 +1241,5 @@ void LatteDecompiler_DecompilePixelShader(uint64 shaderBaseHash, uint32* context
 void LatteDecompiler_cleanup(LatteDecompilerShaderContext* shaderContext)
 {
 	shaderContext->cfInstructions.clear();
-	// the geometry shader's parsed copy shader, the decompile's alone
-	delete shaderContext->parsedGSCopyShader;
 	shaderContext->parsedGSCopyShader = nullptr;
 }
