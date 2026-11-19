@@ -246,12 +246,67 @@ static void Pipelines()
 	CHECK(reserved.Capacity() == 16384);
 }
 
+// the states a shader going is in, taken out by a walk of the table: every
+// one of them, none else, the rest still found and listed once
+static void RemoveUsing()
+{
+	s_table.Clear();
+	std::mt19937_64 rng(11);
+	std::map<uint64_t, uint64_t> ref; // key -> its "shader"
+	for (int i = 0; i < 40; i++)
+	{
+		const uint64_t key = rng() | 1;
+		Info* info = s_table.Add(key);
+		CHECK(info != nullptr);
+		if (!info)
+			continue;
+		info->mark = rng() % 5; // the shader it has
+		Variant r;
+		info->variants.Add(Variant{ key, (int)(rng() % 5) }, &r);
+		ref[key] = info->mark;
+	}
+	for (uint64_t shader = 0; shader < 5; shader++)
+	{
+		size_t want = 0;
+		for (auto it = ref.begin(); it != ref.end();)
+		{
+			Info* info = s_table.Find(it->first);
+			bool uses = info->mark == shader;
+			for (auto& v : info->variants)
+				uses |= (uint64_t)v.shader == shader;
+			if (uses)
+			{
+				want++;
+				it = ref.erase(it);
+			}
+			else
+				++it;
+		}
+		const size_t removed = s_table.RemoveIf([shader](uint64_t, Info& info) {
+			bool uses = info.mark == shader;
+			for (auto& v : info.variants)
+				uses |= (uint64_t)v.shader == shader;
+			return uses;
+		});
+		CHECK(removed == want);
+		CHECK(s_table.Count() == ref.size());
+		std::map<uint64_t, int> listed;
+		for (size_t i = 0; i < s_table.Count(); i++)
+			listed[s_table.KeyAt(i)]++;
+		for (auto& it : ref)
+			CHECK(listed[it.first] == 1 && s_table.Find(it.first) != nullptr);
+	}
+	CHECK(s_table.Empty());
+	s_table.Clear();
+}
+
 int main()
 {
 	Variants();
 	Table();
 	Full();
 	Pipelines();
+	RemoveUsing();
 	if (s_failures)
 	{
 		std::printf("shader_state_test: %d failed\n", s_failures);

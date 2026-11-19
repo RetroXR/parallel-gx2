@@ -60,8 +60,6 @@ struct LatteFetchShader
 
 	static bool isValidBufferIndex(const uint32 index) { return index < 0x10; };
 
-	// keys in shader state cache
-	std::vector<uint64> m_shaderStateCacheKeys;
 
 	// fetch shader cache, the GPU thread's alone (FetchShaderRegistry.h)
 	LatteFetchShader* RegisterInCache(CacheHash fsHash); // fails if another fetch shader object is already registered with the same fsHash. Returns the previously registered fetch shader, null when this one is registered, or this one when the cache is full (not registered)

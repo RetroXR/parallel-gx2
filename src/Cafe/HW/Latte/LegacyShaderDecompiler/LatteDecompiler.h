@@ -252,8 +252,6 @@ struct LatteDecompilerShader : PoolNew<LatteDecompilerShader>
 	};
 	LatteShaderList<LatteFastAccessRemappedUniformEntry_register_t> list_remappedUniformEntries_register;
 	LatteShaderList<_RemappedUniformBufferGroup> list_remappedUniformEntries_bufferGroups;
-	// keys in shader state cache
-	std::vector<uint64> m_shaderStateCacheKeys;
 };
 
 struct LatteDecompilerOutputUniformOffsets

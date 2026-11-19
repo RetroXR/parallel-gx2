@@ -109,6 +109,28 @@ public:
 		return true;
 	}
 
+	// every state pred(key, info) is true for taken out; how many. For a
+	// shader going (rare: a title's end, a graphic pack's change), so no
+	// state keeps a list of the shaders it has, nor a shader of its states
+	template<typename Pred>
+	size_t RemoveIf(Pred pred)
+	{
+		size_t removed = 0;
+		size_t i = 0;
+		while (i < m_count)
+		{
+			const uint64_t key = m_keys[i];
+			if (pred(key, *Find(key)))
+			{
+				Remove(key); // the last key into place i, looked at next
+				removed++;
+			}
+			else
+				i++;
+		}
+		return removed;
+	}
+
 	size_t Count() const { return m_count; }
 	bool Empty() const { return m_count == 0; }
 	// the i'th key of the dense list (i < Count()): a removal moves the last

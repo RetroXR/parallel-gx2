@@ -13,7 +13,7 @@
 #endif
 #include "util/crypto/sha.h"
 
-bool LatteSHRC_RemoveShaderStateCacheEntryByKey(uint64 key);
+void LatteSHRC_RemoveShaderStatesUsing(const void* shader);
 
 uint32 LatteShaderRecompiler_getAttributeSize(Latte::E_HWFMT format)
 {
@@ -454,13 +454,8 @@ LatteFetchShader* LatteShaderRecompiler_createFetchShader(LatteFetchShader::Cach
 LatteFetchShader::~LatteFetchShader()
 {
 	UnregisterInCache();
-	// remove from shader state cache
-	// (a key no state has any more is let go, or this would not end)
-	while (!m_shaderStateCacheKeys.empty())
-	{
-		if (!LatteSHRC_RemoveShaderStateCacheEntryByKey(m_shaderStateCacheKeys.back()))
-			m_shaderStateCacheKeys.pop_back();
-	}
+	// the shader states using it go
+	LatteSHRC_RemoveShaderStatesUsing(this);
 }
 
 // One for each fetch shader address the GPU was given, from a pool: none

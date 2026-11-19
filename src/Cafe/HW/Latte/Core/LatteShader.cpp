@@ -92,6 +92,7 @@ inline ska::flat_hash_map<uint64, LatteDecompilerShader*>& LatteSHRC_GetCacheByT
 }
 
 bool LatteSHRC_RemoveShaderStateCacheEntryByKey(uint64 key);
+void LatteSHRC_RemoveShaderStatesUsing(const void* shader);
 
 // calculate hash from shader binary
 // this algorithm could be more efficient since we could leverage the fact that the size is always aligned to 8 byte
@@ -193,14 +194,8 @@ void LatteSHRC_RemoveFromCaches(LatteDecompilerShader* shader)
 		}
 	}
 	cemu_assert(removed);
-	// remove from shader state cache
-	// deleting by key means we delete all the other aux variants associated with it too, but it keeps the code simple and cache entries are cheap to recreate anyway
-	// (a key no state has any more is let go, or this would not end)
-	while (!shader->m_shaderStateCacheKeys.empty())
-	{
-		if (!LatteSHRC_RemoveShaderStateCacheEntryByKey(shader->m_shaderStateCacheKeys.back()))
-			shader->m_shaderStateCacheKeys.pop_back();
-	}
+	// the states using it go, with their other aux variants (cheap to make again)
+	LatteSHRC_RemoveShaderStatesUsing(shader);
 }
 
 void LatteSHRC_RemoveFromCacheByHash(uint64 shader_base_hash, uint64 shader_aux_hash, LatteConst::ShaderType type)
@@ -1103,22 +1098,28 @@ bool LatteSHRC_RemoveShaderStateCacheEntryByKey(uint64 key)
 		cemu_assert_suspicious(); // shader shouldn't have a key which was already removed
 		return false;
 	}
-	ShaderStateInfo& shaderStateInfo = *found;
-	if (shaderStateInfo.fetchShader)
-		std::erase(shaderStateInfo.fetchShader->m_shaderStateCacheKeys, key);
-	g_shaderStateCacheSetAuxCount -= shaderStateInfo.auxVariants.size();
-	for (auto& auxVariant : shaderStateInfo.auxVariants)
-	{
-		if (auxVariant.vertexShader)
-			std::erase(auxVariant.vertexShader->m_shaderStateCacheKeys, key);
-		if (auxVariant.pixelShader)
-			std::erase(auxVariant.pixelShader->m_shaderStateCacheKeys, key);
-		if (auxVariant.geometryShader)
-			std::erase(auxVariant.geometryShader->m_shaderStateCacheKeys, key);
-	}
+	g_shaderStateCacheSetAuxCount -= found->auxVariants.size();
 	s_shaderStateCache.Remove(key);
 	--g_shaderStateCacheSetCount;
 	return true;
+}
+
+// every state with the shader (a decompiled or a fetch shader) in it taken
+// out, as the shader goes: found by a walk of the table, so neither keeps a
+// list of the other
+void LatteSHRC_RemoveShaderStatesUsing(const void* shader)
+{
+	s_shaderStateCache.RemoveIf([shader](uint64, ShaderStateInfo& info) {
+		bool uses = info.fetchShader == shader || info.vertexShader == shader || info.pixelShader == shader || info.geometryShader == shader;
+		for (auto& v : info.auxVariants)
+			uses |= v.vertexShader == shader || v.pixelShader == shader || v.geometryShader == shader;
+		if (uses)
+		{
+			g_shaderStateCacheSetAuxCount -= info.auxVariants.size();
+			--g_shaderStateCacheSetCount;
+		}
+		return uses;
+	});
 }
 
 void LatteSHRC_CleanupShaderStateCache()
@@ -1303,8 +1304,6 @@ void LatteSHRC_UpdateActiveShaders()
 		shaderStateInfo->geometryShader = geometryShader;
 		shaderStateInfo->lastAccessFrameCount = LatteGPUState.frameCounter;
 		shaderStateInfo->combinedAuxHash = combinedAuxHash;
-		if (shaderStateInfo->fetchShader)
-			shaderStateInfo->fetchShader->m_shaderStateCacheKeys.emplace_back(h);
 		++g_shaderStateCacheSetCount;
 	}
 
@@ -1314,30 +1313,8 @@ void LatteSHRC_UpdateActiveShaders()
 	auxVariant.pixelShader = pixelShader;
 	auxVariant.geometryShader = geometryShader;
 	auxVariant.hasError = shaderError;
-	if (auxVariant.vertexShader)
-		vectorAppendUnique(auxVariant.vertexShader->m_shaderStateCacheKeys, h);
-	if (auxVariant.pixelShader)
-		vectorAppendUnique(auxVariant.pixelShader->m_shaderStateCacheKeys, h);
-	if (auxVariant.geometryShader)
-		vectorAppendUnique(auxVariant.geometryShader->m_shaderStateCacheKeys, h);
 	ShaderStateInfoAuxVariant replaced;
-	if (shaderStateInfo->auxVariants.Add(auxVariant, &replaced))
-	{
-		// its shaders no longer under h, but for those another variant has
-		auto& variants = shaderStateInfo->auxVariants;
-		auto forget = [&](LatteDecompilerShader* s) {
-			if (!s)
-				return;
-			for (auto& v : variants)
-				if (v.vertexShader == s || v.pixelShader == s || v.geometryShader == s)
-					return;
-			std::erase(s->m_shaderStateCacheKeys, h);
-		};
-		forget(replaced.vertexShader);
-		forget(replaced.pixelShader);
-		forget(replaced.geometryShader);
-	}
-	else
+	if (!shaderStateInfo->auxVariants.Add(auxVariant, &replaced))
 		++g_shaderStateCacheSetAuxCount;
 
 	// set shaders as active
