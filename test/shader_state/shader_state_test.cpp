@@ -1,9 +1,11 @@
-// The shader state cache's table and aux variants (ShaderStateTable.h):
+// The shader state cache's table and aux variants (ShaderStateTable.h), and
+// the Vulkan renderer's pipeline table (U64Table.h):
 // states added, found, taken out and walked as LatteShader.cpp's cleanup
 // walks them, against a reference map; a full table refusing a state; the
 // variants past their places replacing the oldest but the first; and none
 // of it allocating, however many states come and go.
 #include "Cafe/HW/Latte/Core/ShaderStateTable.h"
+#include "util/helpers/U64Table.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -197,11 +199,59 @@ static void Full()
 	s_table.Clear();
 }
 
+// the pipelines by their key: grown past three quarters of its slots, every
+// entry still found; a removal only of the pipeline the key has; nothing
+// allocated once it is as large as it has been
+static void Pipelines()
+{
+	struct Pipeline
+	{
+		uint64_t key;
+	};
+	static Pipeline pipelines[5000];
+	U64Table<Pipeline> table;
+	CHECK(table.Capacity() == 16);
+	std::mt19937_64 rng(5);
+	for (int i = 0; i < 5000; i++)
+	{
+		pipelines[i].key = rng();
+		table.Put(pipelines[i].key, &pipelines[i]);
+	}
+	CHECK(table.Count() == 5000 && table.Capacity() == 8192);
+	for (int i = 0; i < 5000; i++)
+		CHECK(table.Find(pipelines[i].key) == &pipelines[i]);
+	// another under a key leaves the one there; the one there goes
+	Pipeline other{ pipelines[7].key };
+	table.Remove(pipelines[7].key, &other);
+	CHECK(table.Find(pipelines[7].key) == &pipelines[7]);
+	for (int i = 0; i < 5000; i += 2)
+		table.Remove(pipelines[i].key, &pipelines[i]);
+	CHECK(table.Count() == 2500);
+	for (int i = 0; i < 5000; i++)
+		CHECK(table.Find(pipelines[i].key) == (i % 2 ? &pipelines[i] : nullptr));
+	if (COUNT_ALLOCS)
+	{
+		const unsigned long long t0 = s_allocs;
+		for (int round = 0; round < 20; round++)
+		{
+			for (int i = 0; i < 5000; i += 2)
+				table.Put(pipelines[i].key, &pipelines[i]);
+			for (int i = 0; i < 5000; i += 2)
+				table.Remove(pipelines[i].key, &pipelines[i]);
+		}
+		CHECK(s_allocs == t0);
+	}
+	U64Table<Pipeline> reserved;
+	reserved.Reserve(10000);
+	CHECK(reserved.Capacity() == 16384);
+}
+
 int main()
 {
 	Variants();
 	Table();
 	Full();
+	Pipelines();
 	if (s_failures)
 	{
 		std::printf("shader_state_test: %d failed\n", s_failures);

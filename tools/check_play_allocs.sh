@@ -35,6 +35,8 @@ src/Cafe/HW/Latte/Renderer/Vulkan/VulkanQuery.cpp VulkanRenderer::occlusionQuery
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanQuery.cpp VulkanRenderer::occlusionQuery_destroy
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.cpp VKRObjectRenderPass::VKRObjectRenderPass
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRendererCore.cpp VulkanRenderer::draw_createGraphicsPipeline
+src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRendererCore.cpp VulkanRenderer::draw_getCachedPipeline
+src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRendererCore.cpp VulkanRenderer::unregisterGraphicsPipeline
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::CreateDescriptorSetLayout
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::InitVertexInputState
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::InitDynamicState

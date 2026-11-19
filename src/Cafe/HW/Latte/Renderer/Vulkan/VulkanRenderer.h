@@ -16,6 +16,7 @@
 #include "libretro/LibretroViews.h"
 #include "util/helpers/FixedQueue.h"
 #include "util/helpers/PoolNew.h"
+#include "util/helpers/U64Table.h"
 #include "util/containers/flat_hash_map.hpp"
 #include "util/containers/robin_hood.h"
 
@@ -301,7 +302,10 @@ public:
 	void DrawBackbufferQuad(LatteTextureView* texView, RendererOutputShader* shader, bool useLinearTexFilter, sint32 imageX, sint32 imageY, sint32 imageWidth, sint32 imageHeight, bool padView, bool clearBackground) override;
 	void CreateDescriptorPool();
 
-	robin_hood::unordered_flat_map<uint64, robin_hood::unordered_flat_map<uint64, PipelineInfo*> > m_pipeline_info_cache; // using robin_hood::unordered_flat_map is twice as fast (1-2% overall CPU time reduction)
+	// the pipelines made, by their key (which has the vertex shader's hash in
+	// it): one lookup a draw, sized at init and grown only past the most a
+	// game has had (a vertex shader's own map of them each before)
+	U64Table<PipelineInfo> m_pipeline_info_cache;
 	void draw_debugPipelineHashState();
 	PipelineInfo* draw_getCachedPipeline();
 

@@ -59,45 +59,24 @@ void VulkanRenderer::draw_debugPipelineHashState()
 
 PipelineInfo* VulkanRenderer::draw_getCachedPipeline()
 {
-	// todo - optimize m_pipeline_info_cache away and store directly in vk vertex shader
 	const auto fetchShader = LatteSHRC_GetActiveFetchShader();
 	const auto vertexShader = LatteSHRC_GetActiveVertexShader();
-	const auto it = m_pipeline_info_cache.find(vertexShader->baseHash);
-	if (it == m_pipeline_info_cache.cend())
-		return nullptr;
-
 	const auto geometryShader = LatteSHRC_GetActiveGeometryShader();
 	const auto pixelShader = LatteSHRC_GetActivePixelShader();
 	auto cachedFboVk = (CachedFBOVk*)m_state.activeFBO;
 
 	const uint64 stateHash = draw_calculateGraphicsPipelineHash(fetchShader, vertexShader, geometryShader, pixelShader, cachedFboVk->GetRenderPassObj(), LatteGPUState.contextNew);
-
-	const auto innerit = it->second.find(stateHash);
-	if (innerit == it->second.cend())
+	PipelineInfo* pipelineInfo = m_pipeline_info_cache.Find(stateHash);
+	// the key has the vertex shader's hash in it; this one's, not another's
+	// whose key collides
+	if (pipelineInfo && pipelineInfo->vertexShader && pipelineInfo->vertexShader->baseHash != vertexShader->baseHash)
 		return nullptr;
-
-	return innerit->second;
+	return pipelineInfo;
 }
 
 void VulkanRenderer::unregisterGraphicsPipeline(PipelineInfo* pipelineInfo)
 {
-	bool removedFromCache = false;
-	for (auto& topMapItr : m_pipeline_info_cache)
-	{
-		auto& subMap = topMapItr.second;
-		for (auto it = subMap.cbegin(); it != subMap.cend();)
-		{
-			if (it->second == pipelineInfo)
-			{
-				subMap.erase(it);
-				removedFromCache = true;
-				break;
-			}
-			++it;
-		}
-		if (removedFromCache)
-			break;
-	}
+	m_pipeline_info_cache.Remove(pipelineInfo->stateHash, pipelineInfo);
 }
 
 // make a guess if a pipeline is not essential
@@ -145,9 +124,7 @@ PipelineInfo* VulkanRenderer::draw_createGraphicsPipeline(uint32 indexCount)
 
 	// register pipeline
 	uint64 vsBaseHash = vertexShader->baseHash;
-	auto it = m_pipeline_info_cache.emplace(vsBaseHash, robin_hood::unordered_flat_map<uint64, PipelineInfo*>());
-	auto& cache_map = it.first->second;
-	cache_map.emplace(pipelineHash, pipelineInfo);
+	m_pipeline_info_cache.Put(pipelineHash, pipelineInfo);
 
 	// init pipeline compiler
 	PipelineCompiler* pipelineCompiler = new PipelineCompiler();

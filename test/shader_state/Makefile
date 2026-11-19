@@ -15,7 +15,7 @@ ifneq (,$(findstring mingw,$(CXX)))
    EXE := .exe
 endif
 
-shader_state_test$(EXE): shader_state_test.cpp $(SRC)/util/helpers/u64_map.c $(SRC)/Cafe/HW/Latte/Core/ShaderStateTable.h $(SRC)/util/helpers/u64_map.h
+shader_state_test$(EXE): shader_state_test.cpp $(SRC)/util/helpers/u64_map.c $(SRC)/Cafe/HW/Latte/Core/ShaderStateTable.h $(SRC)/util/helpers/U64Table.h $(SRC)/util/helpers/u64_map.h
 	$(CC) $(FLAGS) -std=c89 -c $(SRC)/util/helpers/u64_map.c -o u64_map.o
 	$(CXX) $(FLAGS) -std=gnu++20 shader_state_test.cpp u64_map.o $(LIBS) -o $@
 	rm -f u64_map.o

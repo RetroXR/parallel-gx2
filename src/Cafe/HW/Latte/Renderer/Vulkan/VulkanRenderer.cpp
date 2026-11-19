@@ -284,6 +284,7 @@ VulkanRenderer::VulkanRenderer(VkInstance instance, VkPhysicalDevice physDevice,
 	// room for what a scene change destroys at once, made now rather than
 	// while a game plays
 	m_destructionQueue.reserve(4096);
+	m_pipeline_info_cache.Reserve(16384);
 
 	// Use externally provided objects
 	m_instance = instance;
