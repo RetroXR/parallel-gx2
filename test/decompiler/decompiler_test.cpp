@@ -50,7 +50,9 @@
 #ifndef DECOMPILER_COUNT_ALLOCS
 #define DECOMPILER_COUNT_ALLOCS 1
 #endif
-static unsigned long long s_allocs = 0;
+// this thread's: the driver's own threads (lavapipe's, a validation layer's)
+// allocate while a shader is decompiled
+static thread_local unsigned long long s_allocs = 0;
 #if DECOMPILER_COUNT_ALLOCS
 void* operator new(size_t size)
 {
@@ -1258,9 +1260,9 @@ static void SetPSInputs(bool usesGS, bool fragCoord = false, uint32 psControl1 =
 	s_regs[mmSPI_PS_IN_CONTROL_1] = psControl1;
 }
 
-// what a decompile may allocate: each of the shader's uniform lists that has
-// entries, once (the shader comes from its pool, its SPIR-V buffer from those
-// given back - grown only for a module larger than any before, GiveSPIRV)
+// what a decompile may allocate: nothing (the shader and the block of its
+// uniform lists come from pools, its SPIR-V buffer from those given back),
+// but its SPIR-V buffer grown for a module larger than any before (GiveSPIRV)
 static size_t s_spirvCapacity = 0;
 static unsigned long long AllocBound(const LatteDecompilerShader* shader);
 // the shader's SPIR-V buffer back to the decompiler, as the Vulkan shader
@@ -1273,13 +1275,7 @@ static void GiveSPIRV(LatteDecompilerShader* shader)
 }
 static unsigned long long AllocBound(const LatteDecompilerShader* shader)
 {
-	unsigned long long n = shader->spirv.capacity() > s_spirvCapacity;
-	n += !shader->list_remappedUniformEntries.empty();
-	n += !shader->list_remappedUniformEntries_register.empty();
-	n += !shader->list_remappedUniformEntries_bufferGroups.empty();
-	for (auto& group : shader->list_remappedUniformEntries_bufferGroups)
-		n += !group.entries.empty();
-	return n;
+	return shader->spirv.capacity() > s_spirvCapacity;
 }
 
 static Decompiled Decompile(const std::vector<uint32>& program, bool direct, bool strictMul, bool rte)
@@ -1297,7 +1293,7 @@ static Decompiled Decompile(const std::vector<uint32>& program, bool direct, boo
 	LatteDecompilerShader* shader = out.shader;
 	d.allocBound = AllocBound(shader);
 	d.offsets = out.uniformOffsetsVK;
-	d.remapped = shader->list_remappedUniformEntries;
+	d.remapped.assign(shader->list_remappedUniformEntries.begin(), shader->list_remappedUniformEntries.end());
 	d.uniformMode = shader->uniformMode;
 	d.setIndex = out.resourceMappingVK.setIndex;
 	d.binding = out.resourceMappingVK.uniformVarsBufferBindingPoint;
@@ -3875,7 +3871,7 @@ static Decompiled DecompileVertex(const std::vector<uint32>& program, bool direc
 	LatteDecompilerShader* shader = out.shader;
 	d.allocBound = AllocBound(shader);
 	d.offsets = out.uniformOffsetsVK;
-	d.remapped = shader->list_remappedUniformEntries;
+	d.remapped.assign(shader->list_remappedUniformEntries.begin(), shader->list_remappedUniformEntries.end());
 	d.uniformMode = shader->uniformMode;
 	d.setIndex = out.resourceMappingVK.setIndex;
 	d.binding = out.resourceMappingVK.uniformVarsBufferBindingPoint;
@@ -4766,9 +4762,68 @@ static void ScratchListsInterleaved()
 	LatteDecompiler_ResetScratch();
 }
 
+// a shader's uniform lists made in one block: the register uniforms and each
+// uniform buffer's, in the order first read, as the uniform upload walks
+// them; the block back to its pool with the shader, and taken again
+static void UniformListsInOneBlock()
+{
+	std::mt19937 rng(7);
+	for (int round = 0; round < 200; round++)
+	{
+		const uint32 n = round == 0 ? 0 : 1 + rng() % (round < 100 ? 40 : 3000);
+		std::vector<LatteDecompilerRemappedUniformEntry_t> in(n);
+		for (uint32 i = 0; i < n; i++)
+		{
+			in[i].isRegister = rng() % 3 == 0;
+			in[i].kcacheBankId = in[i].isRegister ? 0 : (uint8)(rng() % (round % 2 ? 14 : 3));
+			in[i].index = rng() % 4096;
+			in[i].mappedIndex = i;
+		}
+		LatteDecompilerShader* shader = new LatteDecompilerShader(LatteConst::ShaderType::Pixel);
+		CHECK(LatteDecompiler_SetUniformLists(shader, in.data(), n));
+		CHECK(shader->list_remappedUniformEntries.size() == n);
+		std::vector<uint32> bankOrder;
+		size_t r = 0;
+		for (uint32 i = 0; i < n && shader->list_remappedUniformEntries.size() == n; i++)
+		{
+			CHECK(shader->list_remappedUniformEntries[i].index == in[i].index && shader->list_remappedUniformEntries[i].mappedIndex == i);
+			if (in[i].isRegister)
+			{
+				CHECK(r < shader->list_remappedUniformEntries_register.size());
+				if (r < shader->list_remappedUniformEntries_register.size())
+					CHECK(shader->list_remappedUniformEntries_register[r].indexOffset == in[i].index * 16 &&
+						shader->list_remappedUniformEntries_register[r].mappedIndexOffset == i * 16);
+				r++;
+			}
+			else if (std::find(bankOrder.begin(), bankOrder.end(), in[i].kcacheBankId) == bankOrder.end())
+				bankOrder.push_back(in[i].kcacheBankId);
+		}
+		CHECK(r == shader->list_remappedUniformEntries_register.size());
+		CHECK(bankOrder.size() == shader->list_remappedUniformEntries_bufferGroups.size());
+		for (size_t g = 0; g < bankOrder.size() && g < shader->list_remappedUniformEntries_bufferGroups.size(); g++)
+		{
+			auto& group = shader->list_remappedUniformEntries_bufferGroups[g];
+			CHECK(group.bufferId == bankOrder[g] && group.kcacheBankIdOffset == bankOrder[g] * 28);
+			size_t e = 0;
+			for (uint32 i = 0; i < n; i++)
+			{
+				if (in[i].isRegister || in[i].kcacheBankId != bankOrder[g])
+					continue;
+				CHECK(e < group.entries.size());
+				if (e < group.entries.size())
+					CHECK(group.entries[e].indexOffset == (uint16)(in[i].index * 16) && group.entries[e].mappedIndexOffset == (uint16)(i * 16));
+				e++;
+			}
+			CHECK(e == group.entries.size());
+		}
+		delete shader;
+	}
+}
+
 int main(int argc, char** argv)
 {
 	ScratchListsInterleaved();
+	UniformListsInOneBlock();
 	const char* outDir = argc > 1 ? argv[1] : nullptr;
 	const int count = argc > 2 ? std::atoi(argv[2]) : 400;
 	FillUniformBuffers();

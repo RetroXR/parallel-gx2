@@ -38,6 +38,25 @@ typedef struct
 	uint16	mappedIndexOffset; // index in remapped uniform array
 }LatteFastAccessRemappedUniformEntry_buffer_t;
 
+// a shader's list, in the one block its lists share (LatteDecompiler_SetUniformLists)
+template<typename T>
+struct LatteShaderList
+{
+	T* begin() { return m_data; }
+	T* end() { return m_data + m_count; }
+	const T* begin() const { return m_data; }
+	const T* end() const { return m_data + m_count; }
+	T* data() { return m_data; }
+	const T* data() const { return m_data; }
+	size_t size() const { return m_count; }
+	bool empty() const { return m_count == 0; }
+	T& operator[](size_t i) { return m_data[i]; }
+	const T& operator[](size_t i) const { return m_data[i]; }
+
+	T* m_data{};
+	uint32 m_count{};
+};
+
 typedef struct
 {
 	uint32 texUnit;
@@ -143,6 +162,9 @@ struct LatteDecompilerShaderResourceMapping
 struct LatteDecompilerShader : PoolNew<LatteDecompilerShader>
 {
 	LatteDecompilerShader(LatteConst::ShaderType shaderType) : shaderType(shaderType) {}
+	~LatteDecompilerShader();
+	LatteDecompilerShader(const LatteDecompilerShader&) = delete;
+	LatteDecompilerShader& operator=(const LatteDecompilerShader&) = delete;
 
 	LatteDecompilerShader* next{nullptr};
 	LatteConst::ShaderType shaderType;
@@ -167,7 +189,11 @@ struct LatteDecompilerShader : PoolNew<LatteDecompilerShader>
 	// analyzer stage (uniforms)
 	uint8 uniformMode{0}; // determines how uniforms are managed within the shader (see LATTE_DECOMPILER_UNIFORM_MODE_* constants)
 	uint64 uniformDataHash64[2]{0}; // used to avoid redundant calls to glUniform*
-	std::vector<LatteDecompilerRemappedUniformEntry_t> list_remappedUniformEntries;
+	// the uniforms it reads, and below the same by where they come from: the
+	// lists share one block from a pool, the shader's (m_uniformBlock)
+	LatteShaderList<LatteDecompilerRemappedUniformEntry_t> list_remappedUniformEntries;
+	void* m_uniformBlock{};
+	uint8 m_uniformBlockClass{};
 	// analyzer stage (textures)
 	std::bitset<LATTE_NUM_MAX_TEX_UNITS> textureUnitMask2;
 	uint16 textureUnitSamplerAssignment[LATTE_NUM_MAX_TEX_UNITS]{ 0 }; // LATTE_DECOMPILER_SAMPLER_NONE means undefined
@@ -220,13 +246,12 @@ struct LatteDecompilerShader : PoolNew<LatteDecompilerShader>
 	// fast access
 	struct _RemappedUniformBufferGroup
 	{
-		_RemappedUniformBufferGroup(uint16 bufferId, uint16 _kcacheBankIdOffset) : bufferId(bufferId), kcacheBankIdOffset(_kcacheBankIdOffset) {};
 		uint16 bufferId;
 		uint16 kcacheBankIdOffset;
-		std::vector<LatteFastAccessRemappedUniformEntry_buffer_t> entries;
+		LatteShaderList<LatteFastAccessRemappedUniformEntry_buffer_t> entries;
 	};
-	std::vector<LatteFastAccessRemappedUniformEntry_register_t>	list_remappedUniformEntries_register;
-	std::vector<_RemappedUniformBufferGroup> list_remappedUniformEntries_bufferGroups;
+	LatteShaderList<LatteFastAccessRemappedUniformEntry_register_t> list_remappedUniformEntries_register;
+	LatteShaderList<_RemappedUniformBufferGroup> list_remappedUniformEntries_bufferGroups;
 	// keys in shader state cache
 	std::vector<uint64> m_shaderStateCacheKeys;
 };
@@ -315,6 +340,10 @@ const char* LatteDecompiler_SPIRVBeyondGLSL();
 // made, or the shader done with) is the next shader's, so a shader seen while
 // a game plays allocates none once as many as are ever pending have grown
 RecycledVectors<uint32>& LatteDecompiler_SPIRVBuffers();
+// the shader's uniform lists from the n uniforms it reads: one block for them
+// all, from a pool (SizedBlocks.h), put back when the shader goes; false for
+// no memory
+bool LatteDecompiler_SetUniformLists(LatteDecompilerShader* shader, const LatteDecompilerRemappedUniformEntry_t* entries, uint32 n);
 void LatteDecompiler_DecompilePixelShader(uint64 shaderBaseHash, uint32* contextRegisters, uint8* programData, uint32 programSize, LatteDecompilerOptions& options, LatteDecompilerOutput_t* output);
 
 // specialized shader parsers

@@ -8,6 +8,8 @@
 #include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerInternal.h"
 #include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerInstructions.h"
 #include "Cafe/HW/Latte/Core/FetchShader.h"
+#include "util/helpers/SizedBlocks.h"
+#include <new>
 #include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
 #include "config/ActiveSettings.h"
@@ -1028,54 +1030,107 @@ void LatteDecompiler_ParseClauses(LatteDecompilerShaderContext* shaderContext, u
 	}
 }
 
-void _LatteDecompiler_GenerateDataForFastAccess(LatteDecompilerShader* shader)
+static SizedBlocks& LatteDecompiler_UniformBlocks()
 {
-	if (shader->hasError)
-		return;
-	// each list allocated once, at its size
-	uint32 numRegister = 0;
+	static SizedBlocks s_blocks;
+	return s_blocks;
+}
+
+LatteDecompilerShader::~LatteDecompilerShader()
+{
+	LatteDecompiler_UniformBlocks().Put(m_uniformBlock, m_uniformBlockClass);
+}
+
+static size_t LatteDecompiler_Align8(size_t n)
+{
+	return (n + 7) & ~(size_t)7;
+}
+
+bool LatteDecompiler_SetUniformLists(LatteDecompilerShader* shader, const LatteDecompilerRemappedUniformEntry_t* entries, uint32 n)
+{
+	using Group = LatteDecompilerShader::_RemappedUniformBufferGroup;
+	cemu_assert_debug(!shader->m_uniformBlock);
+	if (n == 0)
+		return true;
+	// the uniform buffers' groups in the order each is first read, and how
+	// many of its uniforms each has
+	uint8 groupOf[256];
+	uint32 perGroup[256];
+	uint8 bankOf[256];
 	uint32 numGroups = 0;
-	uint32 perBank[LATTE_NUM_MAX_UNIFORM_BUFFERS] = {};
-	for (const LatteDecompilerRemappedUniformEntry_t& entry : shader->list_remappedUniformEntries)
+	uint32 numRegister = 0;
+	std::fill(groupOf, groupOf + 256, (uint8)0xFF);
+	for (uint32 i = 0; i < n; i++)
 	{
-		if (entry.isRegister)
-			numRegister++;
-		else if (entry.kcacheBankId < LATTE_NUM_MAX_UNIFORM_BUFFERS && perBank[entry.kcacheBankId]++ == 0)
-			numGroups++;
-	}
-	shader->list_remappedUniformEntries_register.reserve(numRegister);
-	shader->list_remappedUniformEntries_bufferGroups.reserve(numGroups);
-	for (size_t i = 0; i < shader->list_remappedUniformEntries.size(); i++)
-	{
-		LatteDecompilerRemappedUniformEntry_t* entry = shader->list_remappedUniformEntries.data() + i;
-		if (entry->isRegister)
+		if (entries[i].isRegister)
 		{
-			LatteFastAccessRemappedUniformEntry_register_t entryReg;
-			entryReg.indexOffset = entry->index * 16;
-			entryReg.mappedIndexOffset = entry->mappedIndex * 16;
-			shader->list_remappedUniformEntries_register.push_back(entryReg);
+			numRegister++;
+			continue;
+		}
+		const uint8 bank = entries[i].kcacheBankId;
+		if (groupOf[bank] == 0xFF)
+		{
+			groupOf[bank] = (uint8)numGroups;
+			bankOf[numGroups] = bank;
+			perGroup[numGroups] = 0;
+			numGroups++;
+		}
+		perGroup[groupOf[bank]]++;
+	}
+	const uint32 numBuffer = n - numRegister;
+	// one block: the groups, the uniforms, the register ones, the buffer ones
+	const size_t groupsAt = 0;
+	const size_t remappedAt = groupsAt + LatteDecompiler_Align8(numGroups * sizeof(Group));
+	const size_t registerAt = remappedAt + LatteDecompiler_Align8(n * sizeof(LatteDecompilerRemappedUniformEntry_t));
+	const size_t bufferAt = registerAt + LatteDecompiler_Align8(numRegister * sizeof(LatteFastAccessRemappedUniformEntry_register_t));
+	const size_t size = bufferAt + numBuffer * sizeof(LatteFastAccessRemappedUniformEntry_buffer_t);
+	uint8 cls = 0;
+	uint8* block = (uint8*)LatteDecompiler_UniformBlocks().Get(size, &cls);
+	if (!block)
+		return false;
+	shader->m_uniformBlock = block;
+	shader->m_uniformBlockClass = cls;
+	auto* remapped = (LatteDecompilerRemappedUniformEntry_t*)(block + remappedAt);
+	std::copy(entries, entries + n, remapped);
+	shader->list_remappedUniformEntries.m_data = remapped;
+	shader->list_remappedUniformEntries.m_count = n;
+	// the fast access lists, as the uniform upload reads them
+	auto* regs = (LatteFastAccessRemappedUniformEntry_register_t*)(block + registerAt);
+	auto* bufs = (LatteFastAccessRemappedUniformEntry_buffer_t*)(block + bufferAt);
+	Group* groups = (Group*)(block + groupsAt);
+	uint32 start = 0;
+	for (uint32 g = 0; g < numGroups; g++)
+	{
+		new (&groups[g]) Group();
+		groups[g].bufferId = bankOf[g];
+		groups[g].kcacheBankIdOffset = (uint16)(bankOf[g] * (7 * 4));
+		groups[g].entries.m_data = bufs + start;
+		groups[g].entries.m_count = 0;
+		start += perGroup[g];
+	}
+	uint32 r = 0;
+	for (uint32 i = 0; i < n; i++)
+	{
+		const LatteDecompilerRemappedUniformEntry_t& entry = entries[i];
+		if (entry.isRegister)
+		{
+			regs[r].indexOffset = entry.index * 16;
+			regs[r].mappedIndexOffset = entry.mappedIndex * 16;
+			r++;
 		}
 		else
 		{
-			LatteFastAccessRemappedUniformEntry_buffer_t entryBuf;
-			uint32 kcacheBankIdOffset = entry->kcacheBankId * (7 * 4);
-			entryBuf.indexOffset = entry->index * 16;
-			entryBuf.mappedIndexOffset = entry->mappedIndex * 16;
-			// find or create buffer group
-			auto bufferGroup = std::find_if(shader->list_remappedUniformEntries_bufferGroups.begin(), shader->list_remappedUniformEntries_bufferGroups.end(), [kcacheBankIdOffset](const LatteDecompilerShader::_RemappedUniformBufferGroup& v) { return v.kcacheBankIdOffset == kcacheBankIdOffset; });
-			if (bufferGroup != shader->list_remappedUniformEntries_bufferGroups.end())
-			{
-				(*bufferGroup).entries.emplace_back(entryBuf);
-			}
-			else
-			{
-				auto& group = shader->list_remappedUniformEntries_bufferGroups.emplace_back(entry->kcacheBankId, kcacheBankIdOffset);
-				if (entry->kcacheBankId < LATTE_NUM_MAX_UNIFORM_BUFFERS)
-					group.entries.reserve(perBank[entry->kcacheBankId]);
-				group.entries.emplace_back(entryBuf);
-			}
+			Group& group = groups[groupOf[entry.kcacheBankId]];
+			LatteFastAccessRemappedUniformEntry_buffer_t& e = group.entries.m_data[group.entries.m_count++];
+			e.indexOffset = (uint16)(entry.index * 16);
+			e.mappedIndexOffset = (uint16)(entry.mappedIndex * 16);
 		}
 	}
+	shader->list_remappedUniformEntries_register.m_data = regs;
+	shader->list_remappedUniformEntries_register.m_count = numRegister;
+	shader->list_remappedUniformEntries_bufferGroups.m_data = groups;
+	shader->list_remappedUniformEntries_bufferGroups.m_count = numGroups;
+	return true;
 }
 
 // the decompile's list pools emptied, their capacity kept; sized for a large
@@ -1140,8 +1195,6 @@ void _LatteDecompiler_Process(LatteDecompilerShaderContext* shaderContext, uint8
 		}
 	}
 	LatteDecompiler_cleanup(shaderContext);
-	// fast access
-	_LatteDecompiler_GenerateDataForFastAccess(shaderContext->shader);
 }
 
 void LatteDecompiler_InitContext(LatteDecompilerShaderContext& dCtx, const LatteDecompilerOptions& options, LatteDecompilerOutput_t* output, LatteConst::ShaderType shaderType, uint64 shaderBaseHash, uint32* contextRegisters)

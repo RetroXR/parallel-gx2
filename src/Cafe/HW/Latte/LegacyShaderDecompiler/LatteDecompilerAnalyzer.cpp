@@ -841,7 +841,11 @@ void LatteDecompiler_analyze(LatteDecompilerShaderContext* shaderContext, LatteD
 		if (shaderContext->shader->hasError)
 			return;
 	}
-	shader->list_remappedUniformEntries.assign(shaderContext->remappedUniforms.begin(), shaderContext->remappedUniforms.end());
+	if (!LatteDecompiler_SetUniformLists(shader, shaderContext->remappedUniforms.data(), (uint32)shaderContext->remappedUniforms.size()))
+	{
+		shader->hasError = true;
+		return;
+	}
 	// decide which uniform mode to use
 	bool hasAnyDynamicBufferAccess = false;
 	bool hasAnyBufferAccess = false;
