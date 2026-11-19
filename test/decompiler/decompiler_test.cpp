@@ -19,6 +19,7 @@
 #include "Cafe/HW/Latte/ISA/LatteReg.h"
 #include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.h"
 #include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerInstructions.h"
+#include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerInternal.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/RslcGlsl.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
 #include "Cafe/HW/Latte/Core/FetchShader.h"
@@ -35,6 +36,35 @@
 #include <chrono>
 #include <string>
 #include <vector>
+#include <new>
+
+// operator new counted, to hold a decompile's allocations under a ceiling;
+// the sanitizers keep their own
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define DECOMPILER_COUNT_ALLOCS 0
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#define DECOMPILER_COUNT_ALLOCS 0
+#endif
+#endif
+#ifndef DECOMPILER_COUNT_ALLOCS
+#define DECOMPILER_COUNT_ALLOCS 1
+#endif
+static unsigned long long s_allocs = 0;
+#if DECOMPILER_COUNT_ALLOCS
+void* operator new(size_t size)
+{
+	s_allocs++;
+	if (void* p = std::malloc(size ? size : 1))
+		return p;
+	throw std::bad_alloc();
+}
+void* operator new[](size_t size) { return operator new(size); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p, size_t) noexcept { std::free(p); }
+void operator delete[](void* p, size_t) noexcept { std::free(p); }
+#endif
 
 extern LatteShaderPSInputTable g_testPSInputTable;
 extern bool g_testPreventInfiniteLoops;
@@ -1154,6 +1184,8 @@ static uint32 s_regs[LATTE_MAX_REGISTER];
 struct Decompiled
 {
 	std::vector<uint32> spirv;   // the module the renderer gets
+	unsigned long long allocs = 0; // operator new calls the decompile made
+	unsigned long long allocBound = 0; // and the most it may make
 	LatteDecompilerOutputUniformOffsets offsets;
 	std::vector<LatteDecompilerRemappedUniformEntry_t> remapped;
 	uint8 uniformMode = 0;
@@ -1235,8 +1267,12 @@ static Decompiled Decompile(const std::vector<uint32>& program, bool direct, boo
 	options.directSPIRV = direct;
 	options.spirvInstrinsics.hasRoundingModeRTEFloat32 = rte;
 	LatteDecompilerOutput_t out{};
+	const unsigned long long allocsBefore = s_allocs;
 	LatteDecompiler_DecompilePixelShader(0x1234, s_regs, (uint8*)program.data(), (uint32)program.size() * 4, options, &out);
+	d.allocs = s_allocs - allocsBefore;
 	LatteDecompilerShader* shader = out.shader;
+	// the shader, its SPIR-V, its uniform lists and one list per uniform buffer
+	d.allocBound = 5 + shader->list_remappedUniformEntries_bufferGroups.size();
 	d.offsets = out.uniformOffsetsVK;
 	d.remapped = shader->list_remappedUniformEntries;
 	d.uniformMode = shader->uniformMode;
@@ -4679,8 +4715,32 @@ static VSCase MakeVertexCase(Gen& gen, bool allowDeclined, bool forceStreamoutOf
 	return k;
 }
 
+// two lists of one pool appended to in turn (the decompiler fills one at a
+// time): each keeps its own items, in order
+void LatteDecompiler_ResetScratch();
+static void ScratchListsInterleaved()
+{
+	LatteDecompiler_ResetScratch();
+	LatteScratchList<LatteDecompilerTEXInstruction> a, b;
+	for (uint32 i = 0; i < 6; i++)
+	{
+		(i & 1 ? b : a).emplace_back().opcode = 100 + i;
+		LatteDecompilerTEXInstruction t;
+		t.opcode = 200 + i;
+		(i & 1 ? a : b).push_back(t);
+	}
+	CHECK(a.size() == 6 && b.size() == 6);
+	const uint32 wantA[6] = { 100, 201, 102, 203, 104, 205 };
+	const uint32 wantB[6] = { 200, 101, 202, 103, 204, 105 };
+	for (uint32 i = 0; i < 6 && a.size() == 6 && b.size() == 6; i++)
+		CHECK(a[i].opcode == wantA[i] && b[i].opcode == wantB[i]);
+	CHECK(&a.back() == &a[5] && a.rbegin()->opcode == 205);
+	LatteDecompiler_ResetScratch();
+}
+
 int main(int argc, char** argv)
 {
+	ScratchListsInterleaved();
 	const char* outDir = argc > 1 ? argv[1] : nullptr;
 	const int count = argc > 2 ? std::atoi(argv[2]) : 400;
 	FillUniformBuffers();
@@ -4717,6 +4777,7 @@ int main(int argc, char** argv)
 	// the shaders written directly: the time to decompile each the GLSL way
 	// (GLSL, then rslc) and directly, the analysis both share included
 	double secondsGlsl = 0.0, secondsDirect = 0.0;
+	unsigned long long allocsDirect = 0;
 	int timed = 0;
 	const std::vector<Program> directed = DirectedPrograms();
 	// the pixel shader key's sprite part: none with sprites off, whatever
@@ -4807,6 +4868,13 @@ int main(int argc, char** argv)
 		{
 			secondsGlsl += std::chrono::duration<double>(t1 - t0).count();
 			secondsDirect += std::chrono::duration<double>(t2 - t1).count();
+			allocsDirect += viaSpirv.allocs;
+			// once the per-thread pools are sized (the first decompile)
+			if (DECOMPILER_COUNT_ALLOCS && timed > 0 && viaSpirv.allocs > viaSpirv.allocBound)
+			{
+				std::printf("FAIL: program %d allocates %llu times decompiled directly, over %llu\n", i, viaSpirv.allocs, viaSpirv.allocBound);
+				s_failures++;
+			}
 			timed++;
 		}
 		if (viaSpirv.declined)
@@ -4967,6 +5035,10 @@ int main(int argc, char** argv)
 			std::printf("FAIL: the direct path is %.1f times as fast as the GLSL way, under %.1f\n", ratio, kSpeedFloor);
 			s_failures++;
 		}
+		// and allocating only the shader it returns (above), its instruction
+		// lists from per-thread pools
+		if (DECOMPILER_COUNT_ALLOCS)
+			std::printf("decompiler: %.1f allocations per direct decompile\n", (double)allocsDirect / timed);
 	}
 	std::printf("decompiler: %d random pixel shaders, %d written as SPIR-V directly (%d drawn both ways, %d after a geometry shader, %d differing), %d declined\n",
 		count, direct, drawn, gsDrawn, differing, declined);

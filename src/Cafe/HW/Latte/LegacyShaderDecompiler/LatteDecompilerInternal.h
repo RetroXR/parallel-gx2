@@ -2,6 +2,64 @@
 
 class StringBuf;
 
+// a decompile's list of T, held in a per-thread pool that every list of T of the
+// decompile appends to and LatteDecompiler_ResetScratch empties (its capacity
+// kept): decompiling a shader while a game plays allocates no list storage once
+// the pools have grown to the largest shader. A list is filled in one go, so its
+// items lie together; one appended to after another list it is moved to the end
+template<typename T>
+class LatteScratchList
+{
+public:
+	static std::vector<T>& Pool()
+	{
+		static thread_local std::vector<T> pool;
+		return pool;
+	}
+	T* data() { return m_count ? Pool().data() + m_first : nullptr; }
+	const T* data() const { return m_count ? Pool().data() + m_first : nullptr; }
+	T* begin() { return data(); }
+	T* end() { return data() + m_count; }
+	const T* begin() const { return data(); }
+	const T* end() const { return data() + m_count; }
+	size_t size() const { return m_count; }
+	bool empty() const { return m_count == 0; }
+	T& operator[](size_t i) { return Pool()[m_first + i]; }
+	const T& operator[](size_t i) const { return Pool()[m_first + i]; }
+	T& back() { return Pool()[m_first + m_count - 1]; }
+	T& emplace_back()
+	{
+		std::vector<T>& pool = Pool();
+		if (m_count == 0)
+			m_first = (uint32)pool.size();
+		else if (m_first + m_count != pool.size())
+		{
+			// another list was appended since: this one moved to the end
+			const uint32 from = m_first;
+			m_first = (uint32)pool.size();
+			for (uint32 k = 0; k < m_count; k++)
+			{
+				T item = pool[from + k];
+				pool.push_back(item);
+			}
+		}
+		m_count++;
+		return pool.emplace_back();
+	}
+	T& emplace_back(const T& item)
+	{
+		T copy = item;
+		return emplace_back() = copy;
+	}
+	void push_back(const T& item) { emplace_back(item); }
+	std::reverse_iterator<T*> rbegin() { return std::reverse_iterator<T*>(end()); }
+	std::reverse_iterator<T*> rend() { return std::reverse_iterator<T*>(begin()); }
+	void clear() { m_count = 0; }
+private:
+	uint32 m_first{};
+	uint32 m_count{};
+};
+
 struct LatteDecompilerALUInstruction
 {
 	struct LatteDecompilerCFInstruction* cfInstruction{};
@@ -80,8 +138,8 @@ struct LatteDecompilerCFInstruction
 	uint32 addr{};
 	sint32 count{};
 	// clause contains either ALU or TEX instructions
-	std::vector<LatteDecompilerALUInstruction> instructionsALU;
-	std::vector<LatteDecompilerTEXInstruction> instructionsTEX;
+	LatteScratchList<LatteDecompilerALUInstruction> instructionsALU;
+	LatteScratchList<LatteDecompilerTEXInstruction> instructionsTEX;
 	// for clauses that access uniform buffers
 	uint32 cBank0Index{};
 	uint32 cBank1Index{};
@@ -126,7 +184,7 @@ struct LatteDecompilerCFInstruction
 struct LatteDecompilerSubroutineInfo
 {
 	uint32 cfAddr;
-	std::vector<LatteDecompilerCFInstruction> instructions;
+	LatteScratchList<LatteDecompilerCFInstruction> instructions;
 };
 
 // helper struct to track the highest accessed offset within a buffer
@@ -197,7 +255,10 @@ struct LatteDecompilerShaderContext
 	struct LatteContextRegister* contextRegistersNew;
 	uint64 shaderBaseHash;
 	StringBuf* shaderSource; // the thread's scratch (LatteDecompiler_SourceScratch)
-	std::vector<LatteDecompilerCFInstruction> cfInstructions;
+	LatteScratchList<LatteDecompilerCFInstruction> cfInstructions;
+	// the uniforms the shader reads, gathered here and copied to the shader
+	// once the analyzer has them all
+	LatteScratchList<LatteDecompilerRemappedUniformEntry_t> remappedUniforms;
 	// fetch shader (required for vertex shader)
 	LatteFetchShader* fetchShader{};
 	// geometry copy shader (only present when geometry shader is active)
@@ -263,7 +324,7 @@ struct LatteDecompilerShaderContext
 	struct ALUClauseTemporariesState* aluPVPSState{nullptr};
 	
 	// misc
-	std::vector<LatteDecompilerSubroutineInfo> list_subroutines;
+	LatteScratchList<LatteDecompilerSubroutineInfo> list_subroutines;
 };
 
 void LatteDecompiler_analyze(LatteDecompilerShaderContext* shaderContext, LatteDecompilerShader* shader);

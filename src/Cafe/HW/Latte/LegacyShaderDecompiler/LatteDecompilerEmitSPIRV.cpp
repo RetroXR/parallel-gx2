@@ -43,6 +43,9 @@
 static thread_local const char* s_lastBeyondGLSL;
 namespace
 {
+	// a ternary's sides moved into its branches, sized at the first
+	// decompile (LatteDecompiler_emitSPIRVShader) for the largest a shader has
+	thread_local std::vector<uint32> s_sides;
 	constexpr sint32 DT_F = LATTE_DECOMPILER_DTYPE_FLOAT;
 	constexpr sint32 DT_I = LATTE_DECOMPILER_DTYPE_SIGNED_INT;
 	constexpr sint32 DT_U = LATTE_DECOMPILER_DTYPE_UNSIGNED_INT;
@@ -894,7 +897,6 @@ namespace
 				return Run(Op(SpvOpSelect, TypeOf(type), { cond.id, a.id, b.id }), type);
 			spv_words_t& body = w->sec[SPV_SEC_BODY];
 			const size_t end = body.n;
-			thread_local std::vector<uint32> s_sides;
 			s_sides.assign(body.w + sidesFrom, body.w + end);
 			body.n = sidesFrom;
 			const size_t aWords = aEnd - sidesFrom;
@@ -4732,6 +4734,8 @@ const char* LatteDecompiler_SPIRVBeyondGLSL()
 bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext, LatteDecompilerShader* shader)
 {
 	s_lastBeyondGLSL = nullptr;
+	if (s_sides.capacity() < 4096)
+		s_sides.reserve(4096);
 	thread_local ThreadWriter s_writer;
 	spv_writer_t* w = &s_writer.w;
 	spv_writer_reset(w);

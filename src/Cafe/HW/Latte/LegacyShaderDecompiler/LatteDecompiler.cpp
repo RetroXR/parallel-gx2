@@ -17,7 +17,7 @@
 #include "util/helpers/helpers.h"
 
 // parse instruction and if valid append it to instructionList
-bool LatteDecompiler_ParseCFInstruction(LatteDecompilerShaderContext* shaderContext, uint32 cfIndex, uint32 cfWord0, uint32 cfWord1, bool* endOfProgram, std::vector<LatteDecompilerCFInstruction>& instructionList)
+bool LatteDecompiler_ParseCFInstruction(LatteDecompilerShaderContext* shaderContext, uint32 cfIndex, uint32 cfWord0, uint32 cfWord1, bool* endOfProgram, LatteScratchList<LatteDecompilerCFInstruction>& instructionList)
 {
 	LatteDecompilerShader* shaderObj = shaderContext->shader;
 	uint32 cf_inst23_7 = (cfWord1 >> 23) & 0x7F;
@@ -957,7 +957,7 @@ void LatteDecompiler_ParseTEXClause(LatteDecompilerShader* shaderContext, LatteD
 }
 
 // iterate all CF instructions and parse clause sub-instructions (if present)
-void LatteDecompiler_ParseClauses(LatteDecompilerShaderContext* decompilerContext, uint8* programData, uint32 programSize, std::vector<LatteDecompilerCFInstruction> &list_instructions)
+void LatteDecompiler_ParseClauses(LatteDecompilerShaderContext* decompilerContext, uint8* programData, uint32 programSize, LatteScratchList<LatteDecompilerCFInstruction> &list_instructions)
 {
 	LatteDecompilerShader* shader = decompilerContext->shader;
 	for (auto& cfInstruction : list_instructions)
@@ -1032,6 +1032,19 @@ void _LatteDecompiler_GenerateDataForFastAccess(LatteDecompilerShader* shader)
 {
 	if (shader->hasError)
 		return;
+	// each list allocated once, at its size
+	uint32 numRegister = 0;
+	uint32 numGroups = 0;
+	uint32 perBank[LATTE_NUM_MAX_UNIFORM_BUFFERS] = {};
+	for (const LatteDecompilerRemappedUniformEntry_t& entry : shader->list_remappedUniformEntries)
+	{
+		if (entry.isRegister)
+			numRegister++;
+		else if (entry.kcacheBankId < LATTE_NUM_MAX_UNIFORM_BUFFERS && perBank[entry.kcacheBankId]++ == 0)
+			numGroups++;
+	}
+	shader->list_remappedUniformEntries_register.reserve(numRegister);
+	shader->list_remappedUniformEntries_bufferGroups.reserve(numGroups);
 	for (size_t i = 0; i < shader->list_remappedUniformEntries.size(); i++)
 	{
 		LatteDecompilerRemappedUniformEntry_t* entry = shader->list_remappedUniformEntries.data() + i;
@@ -1056,14 +1069,34 @@ void _LatteDecompiler_GenerateDataForFastAccess(LatteDecompilerShader* shader)
 			}
 			else
 			{
-				shader->list_remappedUniformEntries_bufferGroups.emplace_back(entry->kcacheBankId, kcacheBankIdOffset).entries.emplace_back(entryBuf);
+				auto& group = shader->list_remappedUniformEntries_bufferGroups.emplace_back(entry->kcacheBankId, kcacheBankIdOffset);
+				if (entry->kcacheBankId < LATTE_NUM_MAX_UNIFORM_BUFFERS)
+					group.entries.reserve(perBank[entry->kcacheBankId]);
+				group.entries.emplace_back(entryBuf);
 			}
 		}
 	}
 }
 
+// the decompile's list pools emptied, their capacity kept; sized for a large
+// shader up front, so that one decompiled while a game plays grows none
+void LatteDecompiler_ResetScratch()
+{
+	auto reset = [](auto& pool, size_t reserve) {
+		pool.clear();
+		if (pool.capacity() < reserve)
+			pool.reserve(reserve);
+	};
+	reset(LatteScratchList<LatteDecompilerCFInstruction>::Pool(), 512);
+	reset(LatteScratchList<LatteDecompilerALUInstruction>::Pool(), 4096);
+	reset(LatteScratchList<LatteDecompilerTEXInstruction>::Pool(), 1024);
+	reset(LatteScratchList<LatteDecompilerSubroutineInfo>::Pool(), 32);
+	reset(LatteScratchList<LatteDecompilerRemappedUniformEntry_t>::Pool(), 512);
+}
+
 void _LatteDecompiler_Process(LatteDecompilerShaderContext* shaderContext, uint8* programData, uint32 programSize)
 {
+	LatteDecompiler_ResetScratch();
 	// parse control flow instructions
 	if (shaderContext->shader->hasError == false)
 		LatteDecompiler_ParseCF(shaderContext, programData, programSize);

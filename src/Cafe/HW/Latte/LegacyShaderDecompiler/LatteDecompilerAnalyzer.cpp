@@ -78,7 +78,7 @@ sint32 LatteDecompiler_getColorOutputIndexFromExportIndex(LatteDecompilerShaderC
 
 void _remapUniformAccess(LatteDecompilerShaderContext* shaderContext, bool isRegisterUniform, uint32 kcacheBankId, uint32 uniformIndex)
 {
-	auto& list_uniformMapping = shaderContext->shader->list_remappedUniformEntries;
+	auto& list_uniformMapping = shaderContext->remappedUniforms;
 	for(uint32 i=0; i<list_uniformMapping.size(); i++)
 	{
 		LatteDecompilerRemappedUniformEntry_t* ufMapping = list_uniformMapping.data()+i;
@@ -841,6 +841,7 @@ void LatteDecompiler_analyze(LatteDecompilerShaderContext* shaderContext, LatteD
 		if (shaderContext->shader->hasError)
 			return;
 	}
+	shader->list_remappedUniformEntries.assign(shaderContext->remappedUniforms.begin(), shaderContext->remappedUniforms.end());
 	// decide which uniform mode to use
 	bool hasAnyDynamicBufferAccess = false;
 	bool hasAnyBufferAccess = false;
