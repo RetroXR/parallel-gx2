@@ -1258,11 +1258,22 @@ static void SetPSInputs(bool usesGS, bool fragCoord = false, uint32 psControl1 =
 	s_regs[mmSPI_PS_IN_CONTROL_1] = psControl1;
 }
 
-// what a decompile may allocate: its SPIR-V and each of the shader's
-// uniform lists that has entries, once (the shader comes from its pool)
+// what a decompile may allocate: each of the shader's uniform lists that has
+// entries, once (the shader comes from its pool, its SPIR-V buffer from those
+// given back - grown only for a module larger than any before, GiveSPIRV)
+static size_t s_spirvCapacity = 0;
+static unsigned long long AllocBound(const LatteDecompilerShader* shader);
+// the shader's SPIR-V buffer back to the decompiler, as the Vulkan shader
+// gives it back once its module is made
+static void GiveSPIRV(LatteDecompilerShader* shader)
+{
+	if (shader->spirv.capacity() > s_spirvCapacity)
+		s_spirvCapacity = shader->spirv.capacity();
+	LatteDecompiler_SPIRVBuffers().Give(shader->spirv);
+}
 static unsigned long long AllocBound(const LatteDecompilerShader* shader)
 {
-	unsigned long long n = 1;
+	unsigned long long n = shader->spirv.capacity() > s_spirvCapacity;
 	n += !shader->list_remappedUniformEntries.empty();
 	n += !shader->list_remappedUniformEntries_register.empty();
 	n += !shader->list_remappedUniformEntries_bufferGroups.empty();
@@ -1308,6 +1319,7 @@ static Decompiled Decompile(const std::vector<uint32>& program, bool direct, boo
 	{
 		d.spirv = shader->spirv;
 		d.ok = true;
+		GiveSPIRV(shader);
 	}
 	else
 	{
@@ -3887,6 +3899,7 @@ static Decompiled DecompileVertex(const std::vector<uint32>& program, bool direc
 	{
 		d.spirv = shader->spirv;
 		d.ok = true;
+		GiveSPIRV(shader);
 	}
 	else
 	{

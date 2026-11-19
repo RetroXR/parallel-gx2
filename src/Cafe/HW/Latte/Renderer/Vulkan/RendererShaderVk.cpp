@@ -7,6 +7,7 @@
 #include "util/helpers/MpmcQueue.h"
 #include "util/helpers/EventWake.h"
 #include "Cemu/FileCache/FileCache.h"
+#include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.h"
 
 #include "Cafe/HW/Latte/Renderer/Vulkan/RslcGlsl.h"
 #include <gfx/shaders/rslc.h>
@@ -174,7 +175,8 @@ void RendererShaderVk::FinishCompilation()
 {
 	m_glslCode.clear();
 	m_glslCode.shrink_to_fit();
-	std::vector<uint32>().swap(m_spirv);
+	// the decompiler's, for its next shader
+	LatteDecompiler_SPIRVBuffers().Give(m_spirv);
 }
 
 void RendererShaderVk::CompileInternal(bool isRenderThread)

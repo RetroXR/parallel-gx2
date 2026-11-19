@@ -464,7 +464,7 @@ LatteFetchShader* LatteSHRC_GetOrCreateFetchShader()
 void LatteShader_CleanupAfterCompile(LatteDecompilerShader* shader)
 {
 	std::string().swap(shader->shaderSource);
-	std::vector<uint32>().swap(shader->spirv);
+	LatteDecompiler_SPIRVBuffers().Give(shader->spirv);
 }
 
 void LatteShader_DumpShader(uint64 baseHash, uint64 auxHash, LatteDecompilerShader* shader)

@@ -4731,6 +4731,12 @@ const char* LatteDecompiler_SPIRVBeyondGLSL()
 	return s_lastBeyondGLSL;
 }
 
+RecycledVectors<uint32>& LatteDecompiler_SPIRVBuffers()
+{
+	static RecycledVectors<uint32> s_buffers;
+	return s_buffers;
+}
+
 bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext, LatteDecompilerShader* shader)
 {
 	s_lastBeyondGLSL = nullptr;
@@ -4940,6 +4946,7 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 	const uint32_t* words = spv_writer_finish(w, &count);
 	if (!words)
 		return decline("out of memory");
+	LatteDecompiler_SPIRVBuffers().Take(shader->spirv);
 	shader->spirv.assign(words, words + count);
 	shaderContext->output->uniformOffsetsVK = offsetsVK;
 	shaderContext->output->uniformOffsetsGL = offsetsGL;

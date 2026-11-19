@@ -3,6 +3,7 @@
 #include "Cafe/HW/Latte/Renderer/RendererShader.h"
 #include <boost/container/static_vector.hpp>
 #include "util/helpers/PoolNew.h"
+#include "util/helpers/RecycledBuffers.h"
 
 namespace LatteDecompiler
 {
@@ -190,7 +191,7 @@ struct LatteDecompilerShader : PoolNew<LatteDecompilerShader>
 	// for Vulkan, the SPIR-V written directly when the emitter covers the
 	// shader (LatteDecompilerEmitSPIRV.cpp), moved to the renderer as the
 	// source is; empty when the shader went the GLSL way
-	std::vector<uint32> spirv;
+	std::vector<uint32> spirv; // from LatteDecompiler_SPIRVBuffers, given back once used
 	// separable shaders
 	RendererShader* shader{ nullptr };
 	bool isCustomShader{ false };
@@ -310,6 +311,10 @@ const char* LatteDecompiler_SPIRVDeclineReason();
 // what the last shader written directly has that no GLSL the GLSL emitter
 // writes compiles (a cube shadow compare at level zero); null for none
 const char* LatteDecompiler_SPIRVBeyondGLSL();
+// the buffers shaders' SPIR-V is written into: one given back (its module
+// made, or the shader done with) is the next shader's, so a shader seen while
+// a game plays allocates none once as many as are ever pending have grown
+RecycledVectors<uint32>& LatteDecompiler_SPIRVBuffers();
 void LatteDecompiler_DecompilePixelShader(uint64 shaderBaseHash, uint32* contextRegisters, uint8* programData, uint32 programSize, LatteDecompilerOptions& options, LatteDecompilerOutput_t* output);
 
 // specialized shader parsers

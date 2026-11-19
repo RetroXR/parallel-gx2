@@ -6,12 +6,14 @@
 #include "util/helpers/Semaphore.h"
 #include "util/helpers/AtomicPtrBag.h"
 #include "util/helpers/ClaimTicket.h"
+#include "util/helpers/PoolNew.h"
 #include <atomic>
 
 class RendererShaderVk;
 using ShaderCompileTicket = ClaimTicket<RendererShaderVk>;
 
-class RendererShaderVk : public RendererShader
+// from a pool (PoolNew.h), as the decompiled shader it compiles is
+class RendererShaderVk : public RendererShader, public PoolNew<RendererShaderVk>
 {
 	friend class VulkanRenderer;
 	friend class _ShaderVkThreadPool;
