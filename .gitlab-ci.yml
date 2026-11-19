@@ -818,6 +818,21 @@ test-u64-map:
     - make -C test/u64_map clean
     - SANITIZER=address,undefined ./test/u64_map/run_tests.sh
 
+test-shader-state:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+    CC: gcc-12
+    CXX: g++-12
+  script:
+    - ./test/shader_state/run_tests.sh
+    - make -C test/shader_state clean
+    - SANITIZER=address,undefined ./test/shader_state/run_tests.sh
+    - make -C test/shader_state clean
+    - SANITIZER=thread ./test/shader_state/run_tests.sh
+
 test-pin-table:
   stage: test
   image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports

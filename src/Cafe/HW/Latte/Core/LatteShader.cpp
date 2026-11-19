@@ -16,12 +16,7 @@
 #include "config/ActiveSettings.h"
 #include "Cafe/GameProfile/GameProfile.h"
 #include "util/containers/flat_hash_map.hpp"
-// The shader state cache below is a robin_hood::unordered_flat_map, and this is
-// where that comes from. It used to arrive by accident, through
-// VulkanRenderer.h - which is included above only when Vulkan is built, so a
-// build without it (an iOS or tvOS core, or anyone passing USE_VULKAN=OFF)
-// stopped here on an undeclared robin_hood.
-#include "util/containers/robin_hood.h"
+#include "Cafe/HW/Latte/Core/ShaderStateTable.h"
 #include "util/helpers/StateHasher.h"
 #ifdef ENABLE_METAL
 #include "Cafe/HW/Latte/Renderer/Metal/LatteToMtl.h"
@@ -96,7 +91,7 @@ inline ska::flat_hash_map<uint64, LatteDecompilerShader*>& LatteSHRC_GetCacheByT
 	return sPixelShaders;
 }
 
-void LatteSHRC_RemoveShaderStateCacheEntryByKey(uint64 key);
+bool LatteSHRC_RemoveShaderStateCacheEntryByKey(uint64 key);
 
 // calculate hash from shader binary
 // this algorithm could be more efficient since we could leverage the fact that the size is always aligned to 8 byte
@@ -200,8 +195,12 @@ void LatteSHRC_RemoveFromCaches(LatteDecompilerShader* shader)
 	cemu_assert(removed);
 	// remove from shader state cache
 	// deleting by key means we delete all the other aux variants associated with it too, but it keeps the code simple and cache entries are cheap to recreate anyway
+	// (a key no state has any more is let go, or this would not end)
 	while (!shader->m_shaderStateCacheKeys.empty())
-		LatteSHRC_RemoveShaderStateCacheEntryByKey(shader->m_shaderStateCacheKeys.back());
+	{
+		if (!LatteSHRC_RemoveShaderStateCacheEntryByKey(shader->m_shaderStateCacheKeys.back()))
+			shader->m_shaderStateCacheKeys.pop_back();
+	}
 }
 
 void LatteSHRC_RemoveFromCacheByHash(uint64 shader_base_hash, uint64 shader_aux_hash, LatteConst::ShaderType type)
@@ -1058,24 +1057,13 @@ struct ShaderStateInfo
 	uint64 combinedAuxHash{};
 	uint32 lastAccessFrameCount{};
 	bool shaderError{false};
-	std::vector<ShaderStateInfoAuxVariant> auxVariants;
+	ShaderStateVariants<ShaderStateInfoAuxVariant, 4> auxVariants;
 };
 
-struct ShaderStateDirectHash
-{
-	size_t operator()(uint64 x) const noexcept
-	{
-		return x;
-	}
-};
-
-std::vector<uint64> s_shaderStateCacheKeys;
 size_t s_shaderStateCacheCleanupIndex = 0;
-robin_hood::unordered_flat_map<uint64, ShaderStateInfo, ShaderStateDirectHash> s_shaderStateCache;
-// also benchmarked here but didn't perform better or only marginally better and not worth pulling in an extra library:
-// jg::dense_hash_map<uint64, ShaderStateInfo, FPHDirectHash>
-// folly::F14FastMap<uint64, ShaderStateInfo, FPHDirectHash>
-// robin_hood::unordered_flat_map ended up performing close to best and was choosen because we already have it included in the project anyway
+// up to 6144 states at once (one unused for 5 seconds is let go), in place:
+// nothing allocated as states come and go while a game plays
+static ShaderStateTable<ShaderStateInfo, 8192> s_shaderStateCache;
 
 FORCE_INLINE uint64 CalcCombinedAuxHash(LatteFetchShader* fetchShader, LatteDecompilerShader* vertexShader, LatteDecompilerShader* pixelShader)
 {
@@ -1097,15 +1085,16 @@ FORCE_INLINE uint64 CalcCombinedAuxHash(LatteFetchShader* fetchShader, LatteDeco
 	return combinedAuxHash;
 }
 
-void LatteSHRC_RemoveShaderStateCacheEntryByKey(uint64 key)
+// false when no state has key
+bool LatteSHRC_RemoveShaderStateCacheEntryByKey(uint64 key)
 {
-	auto it = s_shaderStateCache.find(key);
-	if (it == s_shaderStateCache.end())
+	ShaderStateInfo* found = s_shaderStateCache.Find(key);
+	if (!found)
 	{
 		cemu_assert_suspicious(); // shader shouldn't have a key which was already removed
-		return;
+		return false;
 	}
-	ShaderStateInfo& shaderStateInfo = it->second;
+	ShaderStateInfo& shaderStateInfo = *found;
 	if (shaderStateInfo.fetchShader)
 		std::erase(shaderStateInfo.fetchShader->m_shaderStateCacheKeys, key);
 	g_shaderStateCacheSetAuxCount -= shaderStateInfo.auxVariants.size();
@@ -1118,8 +1107,9 @@ void LatteSHRC_RemoveShaderStateCacheEntryByKey(uint64 key)
 		if (auxVariant.geometryShader)
 			std::erase(auxVariant.geometryShader->m_shaderStateCacheKeys, key);
 	}
-	s_shaderStateCache.erase(it);
+	s_shaderStateCache.Remove(key);
 	--g_shaderStateCacheSetCount;
+	return true;
 }
 
 void LatteSHRC_CleanupShaderStateCache()
@@ -1128,34 +1118,27 @@ void LatteSHRC_CleanupShaderStateCache()
 	constexpr sint32 MAX_CHECKS_PER_FRAME = 30;
 	constexpr sint32 MAX_DELETES_PER_FRAME = 8;
 
-	if (s_shaderStateCache.empty())
+	if (s_shaderStateCache.Empty())
 	{
-		s_shaderStateCacheKeys.clear();
 		s_shaderStateCacheCleanupIndex = 0;
 		return;
 	}
 
+	// the table's dense list of keys, a few a frame: a state taken out has
+	// the last key moved into its place, checked next
 	sint32 deleteCount = 0;
-	for (sint32 i = 0; i < MAX_CHECKS_PER_FRAME && !s_shaderStateCacheKeys.empty(); i++)
+	for (sint32 i = 0; i < MAX_CHECKS_PER_FRAME && !s_shaderStateCache.Empty(); i++)
 	{
-		if (s_shaderStateCacheCleanupIndex >= s_shaderStateCacheKeys.size())
+		if (s_shaderStateCacheCleanupIndex >= s_shaderStateCache.Count())
 			s_shaderStateCacheCleanupIndex = 0;
-		uint64 key = s_shaderStateCacheKeys[s_shaderStateCacheCleanupIndex];
-		auto it = s_shaderStateCache.find(key);
-		if (it == s_shaderStateCache.end())
-		{
-			s_shaderStateCacheKeys[s_shaderStateCacheCleanupIndex] = s_shaderStateCacheKeys.back();
-			s_shaderStateCacheKeys.pop_back();
-			continue;
-		}
-		uint32 framesSinceLastAccess = LatteGPUState.frameCounter - it->second.lastAccessFrameCount;
+		uint64 key = s_shaderStateCache.KeyAt(s_shaderStateCacheCleanupIndex);
+		ShaderStateInfo* info = s_shaderStateCache.Find(key);
+		uint32 framesSinceLastAccess = LatteGPUState.frameCounter - info->lastAccessFrameCount;
 		if (framesSinceLastAccess >= NUM_FRAMES_UNTIL_EXPIRE)
 		{
 			if (deleteCount >= MAX_DELETES_PER_FRAME)
 				break;
 			LatteSHRC_RemoveShaderStateCacheEntryByKey(key);
-			s_shaderStateCacheKeys[s_shaderStateCacheCleanupIndex] = s_shaderStateCacheKeys.back();
-			s_shaderStateCacheKeys.pop_back();
 			deleteCount++;
 			continue;
 		}
@@ -1246,12 +1229,9 @@ void LatteSHRC_UpdateActiveShaders()
 
 	LatteGPUState.activeShaderHasError = false;
 
-	ShaderStateInfo* shaderStateInfo = nullptr;
-
-	auto it = s_shaderStateCache.find(h);
-	if (it != s_shaderStateCache.end())
+	ShaderStateInfo* shaderStateInfo = s_shaderStateCache.Find(h);
+	if (shaderStateInfo)
 	{
-		shaderStateInfo = &it->second;
 		shaderStateInfo->lastAccessFrameCount = LatteGPUState.frameCounter;
 		uint64 combinedAuxHash = CalcCombinedAuxHash(shaderStateInfo->fetchShader, shaderStateInfo->vertexShader, shaderStateInfo->pixelShader);
 		if (shaderStateInfo->combinedAuxHash == combinedAuxHash) [[likely]]
@@ -1297,8 +1277,16 @@ void LatteSHRC_UpdateActiveShaders()
 	if (!shaderStateInfo)
 	{
 		// create base entry
-		shaderStateInfo = &s_shaderStateCache[h];
-		s_shaderStateCacheKeys.emplace_back(h);
+		shaderStateInfo = s_shaderStateCache.Add(h);
+		if (!shaderStateInfo)
+		{
+			// the table full: these shaders used, the state not kept
+			_activeFetchShader = fetchShader;
+			_activeVertexShader = vertexShader;
+			_activePixelShader = pixelShader;
+			_activeGeometryShader = geometryShader;
+			return;
+		}
 		shaderStateInfo->shaderError = shaderError;
 		shaderStateInfo->fetchShader = fetchShader;
 		shaderStateInfo->vertexShader = vertexShader;
@@ -1323,8 +1311,25 @@ void LatteSHRC_UpdateActiveShaders()
 		vectorAppendUnique(auxVariant.pixelShader->m_shaderStateCacheKeys, h);
 	if (auxVariant.geometryShader)
 		vectorAppendUnique(auxVariant.geometryShader->m_shaderStateCacheKeys, h);
-	shaderStateInfo->auxVariants.emplace_back(auxVariant);
-	++g_shaderStateCacheSetAuxCount;
+	ShaderStateInfoAuxVariant replaced;
+	if (shaderStateInfo->auxVariants.Add(auxVariant, &replaced))
+	{
+		// its shaders no longer under h, but for those another variant has
+		auto& variants = shaderStateInfo->auxVariants;
+		auto forget = [&](LatteDecompilerShader* s) {
+			if (!s)
+				return;
+			for (auto& v : variants)
+				if (v.vertexShader == s || v.pixelShader == s || v.geometryShader == s)
+					return;
+			std::erase(s->m_shaderStateCacheKeys, h);
+		};
+		forget(replaced.vertexShader);
+		forget(replaced.pixelShader);
+		forget(replaced.geometryShader);
+	}
+	else
+		++g_shaderStateCacheSetAuxCount;
 
 	// set shaders as active
 	_activeFetchShader = shaderStateInfo->fetchShader;
@@ -1352,8 +1357,7 @@ void LatteSHRC_Init()
 	cemu_assert_debug(sVertexShaders.empty());
 	cemu_assert_debug(sGeometryShaders.empty());
 	cemu_assert_debug(sPixelShaders.empty());
-	cemu_assert_debug(s_shaderStateCache.empty());
-	cemu_assert_debug(s_shaderStateCacheKeys.empty());
+	cemu_assert_debug(s_shaderStateCache.Empty());
 	// room for a large game's shaders, so that one first seen while it plays
 	// grows no table
 	sVertexShaders.reserve(4096);
@@ -1372,7 +1376,6 @@ void LatteSHRC_UnloadAll()
     while(!sPixelShaders.empty())
         LatteShader_free(sPixelShaders.begin()->second);
     cemu_assert_debug(sPixelShaders.empty());
-	cemu_assert_debug(s_shaderStateCache.empty());
-	s_shaderStateCacheKeys.clear();
+	cemu_assert_debug(s_shaderStateCache.Empty());
 	s_shaderStateCacheCleanupIndex = 0;
 }

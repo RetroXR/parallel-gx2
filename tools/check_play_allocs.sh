@@ -88,6 +88,8 @@ src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_GetOrCreateVertexShader
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_GetOrCreateGeometryShader
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_GetOrCreatePixelShader
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_UpdateActiveShaders
+src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_CleanupShaderStateCache
+src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_RemoveShaderStateCacheEntryByKey
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_free
 '
 
