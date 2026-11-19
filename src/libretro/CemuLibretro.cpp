@@ -2116,6 +2116,11 @@ static void libretro_nfc_attach()
 	mailbox_init(&s_nfc_save_box);
 	if (!environ_cb)
 		return;
+	// The PR's number, 99 | EXPERIMENTAL, is also what upstream has since given
+	// GET_VIDEO_DECODE_INTERFACE. A RetroArch that has that answers this call as
+	// a video decoder, and only because it refuses any version above its own 4
+	// does asking with 5 come back false rather than fill this struct with a
+	// decoder's pointers. Follow the PR when it is renumbered.
 	s_nfc.version = RETRO_NFC_INTERFACE_VERSION;
 	const bool got = environ_cb(RETRO_ENVIRONMENT_GET_NFC_INTERFACE, &s_nfc);
 	// Version 1 is all this needs: scan, status, tag info, read and write.
