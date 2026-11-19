@@ -1238,23 +1238,19 @@ void VulkanRenderer::draw_updateVertexInput(bool forceUpdate, const PipelineInfo
 {
 	if (!m_featureControl.deviceExtensions.vertex_input_dynamic_state)
 		return;
-	if (!m_state.vertexInput)
-	{
-		m_state.vertexInput = std::make_unique<VulkanVertexInput>();
-		m_state.prevVertexInput = std::make_unique<VulkanVertexInput>();
-	}
-	VulkanVertexInput& input = *m_state.vertexInput;
+	VulkanVertexInput& input = m_state.vertexInputs[m_state.vertexInputBuilding];
+	const VulkanVertexInput& prevInput = m_state.vertexInputs[m_state.vertexInputBuilding ^ 1];
 	const LatteFetchShader* fetchShader = LatteSHRC_GetActiveFetchShader();
 	if (fetchShader)
 		VulkanPipelineKey_VertexInput(*fetchShader, pipelineInfo->vertexShader->resourceMapping.attributeMapping,
 			LatteGPUState.contextNew, input);
 	else
 		input.bindingCount = input.attributeCount = 0;
-	if (!forceUpdate && m_state.prevVertexInputValid && VulkanPipelineKey_SameVertexInput(input, *m_state.prevVertexInput))
+	if (!forceUpdate && m_state.prevVertexInputValid && VulkanPipelineKey_SameVertexInput(input, prevInput))
 		return;
-	std::swap(m_state.vertexInput, m_state.prevVertexInput);
+	m_state.vertexInputBuilding ^= 1; // the one built is now the one set
 	m_state.prevVertexInputValid = true;
-	VulkanPipelineKey_SetVertexInput(m_state.currentCommandBuffer, *m_state.prevVertexInput);
+	VulkanPipelineKey_SetVertexInput(m_state.currentCommandBuffer, input);
 }
 
 // Depth bias enable and rasterizer discard, dynamic in every pipeline with

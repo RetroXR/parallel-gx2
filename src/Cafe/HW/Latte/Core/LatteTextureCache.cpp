@@ -437,13 +437,15 @@ void LatteTC_CleanupUnusedTextures()
 	LatteTexture_RefreshInfoCache(); // find a better place to call this from?
 }
 
-std::vector<LatteTexture*> LatteTC_GetDeleteableTextures()
+size_t LatteTC_GetDeleteableTextures(LatteTexture** out, size_t max)
 {
-	std::vector<LatteTexture*> texList;
+	size_t count = 0;
 	uint32 currentFrameCount = LatteGPUState.frameCounter;
 
 	for (auto& itr : g_allTextures)
 	{
+		if (count == max)
+			break;
 		if(itr->lastAccessFrameCount == 0)
 			continue; // not initialized
 		uint32 framesSinceLastAccess = currentFrameCount - itr->lastAccessFrameCount;
@@ -452,15 +454,15 @@ std::vector<LatteTexture*> LatteTC_GetDeleteableTextures()
 		if (itr->isUpdatedOnGPU)
 		{
 			if (LatteTC_IsTextureDataOverwritten(itr))
-				texList.emplace_back(itr);
+				out[count++] = itr;
 		}
 		else
 		{
-			texList.emplace_back(itr);
+			out[count++] = itr;
 		}
 	}
 
-	return texList;
+	return count;
 }
 
 void LatteTC_UnloadAllTextures()

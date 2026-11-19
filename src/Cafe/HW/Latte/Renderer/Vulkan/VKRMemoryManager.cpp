@@ -572,22 +572,24 @@ void VKRMemoryManager::DeleteBuffer(VkBuffer& buffer, VkDeviceMemory& deviceMem)
 	deviceMem = VK_NULL_HANDLE;
 }
 
+// the heap for a memory type filter, made the first time one is asked for
+VkTextureChunkedHeap* VKRMemoryManager::GetTextureHeap(uint32 typeFilter)
+{
+	auto it = map_textureHeap.find(typeFilter);
+	if (it != map_textureHeap.end())
+		return it->second.get();
+	VkTextureChunkedHeap* texHeap = new VkTextureChunkedHeap(this, typeFilter);
+	map_textureHeap.emplace(typeFilter, texHeap);
+	return texHeap;
+}
+
 VkImageMemAllocation* VKRMemoryManager::imageMemoryAllocate(VkImage image)
 {
 	VkMemoryRequirements memRequirements;
 	vkGetImageMemoryRequirements(m_vkr->GetLogicalDevice(), image, &memRequirements);
 	uint32 typeFilter = memRequirements.memoryTypeBits;
 
-	// get or create heap for this type filter
-	VkTextureChunkedHeap* texHeap;
-	auto it = map_textureHeap.find(typeFilter);
-	if (it == map_textureHeap.end())
-	{
-		texHeap = new VkTextureChunkedHeap(this, typeFilter);
-		map_textureHeap.emplace(typeFilter, texHeap);
-	}
-	else
-		texHeap = it->second.get();
+	VkTextureChunkedHeap* texHeap = GetTextureHeap(typeFilter);
 
 	// alloc mem from heap
 	uint32 allocationSize = (uint32)memRequirements.size;
@@ -595,18 +597,13 @@ VkImageMemAllocation* VKRMemoryManager::imageMemoryAllocate(VkImage image)
 	CHAddr mem = texHeap->allocMem(allocationSize, (uint32)memRequirements.alignment);
 	if (!mem.isValid())
 	{
-		// allocation failed, try to make space by deleting textures
-		// todo - improve this algorithm
-		std::vector<LatteTexture*> deleteableTextures = LatteTC_GetDeleteableTextures();
-		// delete up to 20 textures from the deletable textures list, then retry allocation
-		while (!deleteableTextures.empty())
+		// allocation failed, try to make space by deleting textures: up to
+		// 20 not used for a few frames at a time, then the allocation again
+		LatteTexture* deleteable[20];
+		while (size_t numDelete = LatteTC_GetDeleteableTextures(deleteable, 20))
 		{
-			size_t numDelete = deleteableTextures.size();
-			if (numDelete > 20)
-				numDelete = 20;
 			for (size_t i = 0; i < numDelete; i++)
-				LatteTexture_Delete(deleteableTextures[i]);
-			deleteableTextures.erase(deleteableTextures.begin(), deleteableTextures.begin() + numDelete);
+				LatteTexture_Delete(deleteable[i]);
 			mem = texHeap->allocMem(allocationSize, (uint32)memRequirements.alignment);
 			if (mem.isValid())
 				break;

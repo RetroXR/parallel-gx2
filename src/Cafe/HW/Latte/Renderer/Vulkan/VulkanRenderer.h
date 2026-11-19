@@ -456,9 +456,10 @@ private:
 		VKRObjectRenderPass* prevBlendRenderPass{};
 		// depth bias enable and rasterizer discard (extended dynamic state 2)
 		uint32 prevRasterizerEnables{ 0xFFFFFFFF };
-		// the vertex input (vertex input dynamic state); the one being built
-		// and the one set
-		std::unique_ptr<VulkanVertexInput> vertexInput, prevVertexInput;
+		// the vertex input (vertex input dynamic state), in place: the one
+		// being built and the one set, which swap places as one is set
+		VulkanVertexInput vertexInputs[2]{};
+		uint8 vertexInputBuilding{ 0 };
 		bool prevVertexInputValid{ false };
 		// the primitive topology and restart (dynamic topology)
 		uint32 prevInputAssembly{ 0xFFFFFFFF };

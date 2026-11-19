@@ -26,7 +26,7 @@ void coreinitAsyncCallback_addWithLock(MPTR functionMPTR, uint32 numParameters, 
 	cemu_assert_debug(numParameters <= 8);
 	if (functionMPTR >= 0x10000000)
 	{
-		cemuLog_log(LogType::Force, fmt::format("Suspicious callback address {0:08x} params: {1:08x} {2:08x} {3:08x} {4:08x}", functionMPTR, r3, r4, r5, r6));
+		cemuLog_log(LogType::Force, "Suspicious callback address {0:08x} params: {1:08x} {2:08x} {3:08x} {4:08x}", functionMPTR, r3, r4, r5, r6);
 		cemuLog_waitForFlush();
 	}
 	const async_cb_t cb = { functionMPTR, numParameters, { r3, r4, r5, r6, r7, r8, r9, r10 } };

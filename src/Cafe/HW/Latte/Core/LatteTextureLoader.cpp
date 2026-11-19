@@ -589,6 +589,23 @@ void LatteTextureLoader_loadTextureDataIntoSlice(LatteTexture* hostTexture, sint
 	}
 }
 
+// texture dumping (a debug setting): the slice's pixels kept as RGBA and
+// written out as a .tga once it is loaded, allocating as it goes
+static void LatteTextureLoader_BeginDump(LatteTextureLoaderCtx* textureLoader)
+{
+	uint32 dumpSize = (((textureLoader->width + 4)&~4) * ((textureLoader->height + 4)&~4)) * 4;
+	textureLoader->dumpRGBA = (uint8*)malloc(dumpSize);
+	memset(textureLoader->dumpRGBA, 0x00, dumpSize);
+}
+
+static void LatteTextureLoader_EndDump(LatteTextureLoaderCtx* textureLoader, LatteTexture* tex, MPTR physImagePtr, uint32 sliceIndex, uint32 mipIndex, Latte::E_HWTILEMODE tileMode)
+{
+	fs::path path = ActiveSettings::GetUserDataPath("dump/textures");
+	path /= fmt::format("{:08x}_fmt{:04x}_slice{:d}_mip{:02d}_{:d}x{:d}_tm{:02d}.tga", physImagePtr, (uint32)tex->format, sliceIndex, mipIndex, tex->width, tex->height, tileMode);
+	tga_write_rgba(path, textureLoader->width, textureLoader->height, textureLoader->dumpRGBA);
+	free(textureLoader->dumpRGBA);
+}
+
 void LatteTextureLoader_UpdateTextureSliceData(LatteTexture* tex, uint32 sliceIndex, uint32 mipIndex, MPTR physImagePtr, MPTR physMipPtr, Latte::E_DIM dim, uint32 width, uint32 height, uint32 depth, uint32 mipLevels, uint32 pitch, Latte::E_HWTILEMODE tileMode, uint32 swizzle, bool dumpTex)
 {
 	LatteTextureLoaderCtx textureLoader = { 0 };
@@ -599,11 +616,7 @@ void LatteTextureLoader_UpdateTextureSliceData(LatteTexture* tex, uint32 sliceIn
 	// enable texture dumping
 	textureLoader.dump = ActiveSettings::DumpTexturesEnabled();
 	if (textureLoader.dump)
-	{
-		uint32 dumpSize = (((textureLoader.width + 4)&~4) * ((textureLoader.height + 4)&~4)) * 4;
-		textureLoader.dumpRGBA = (uint8*)malloc(dumpSize);
-		memset(textureLoader.dumpRGBA, 0x00, dumpSize);
-	}
+		LatteTextureLoader_BeginDump(&textureLoader);
 
 	// query texture decoder from renderer
 	TextureDecoder* texDecoder = nullptr;
@@ -683,12 +696,7 @@ void LatteTextureLoader_UpdateTextureSliceData(LatteTexture* tex, uint32 sliceIn
 	LatteTextureLoader_loadTextureDataIntoSlice(tex, textureLoader.width, textureLoader.height, depth, mipLevels, pixelData, sliceIndex, mipIndex, imageSize);
 	// write texture dump
 	if (textureLoader.dump)
-	{
-		fs::path path = ActiveSettings::GetUserDataPath("dump/textures");
-		path /= fmt::format("{:08x}_fmt{:04x}_slice{:d}_mip{:02d}_{:d}x{:d}_tm{:02d}.tga", physImagePtr, (uint32)tex->format, sliceIndex, mipIndex, tex->width, tex->height, tileMode);
-		tga_write_rgba(path, textureLoader.width, textureLoader.height, textureLoader.dumpRGBA);
-		free(textureLoader.dumpRGBA);
-	}
+		LatteTextureLoader_EndDump(&textureLoader, tex, physImagePtr, sliceIndex, mipIndex, tileMode);
 	// clean up
 	g_renderer->texture_releaseTextureUploadBuffer(pixelData);
 	catchOpenGLError();

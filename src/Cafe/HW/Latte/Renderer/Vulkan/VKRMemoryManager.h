@@ -3,6 +3,7 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
 #include "util/ChunkedHeap/ChunkedHeap.h"
 #include "util/helpers/MemoryPool.h"
+#include "util/helpers/PoolNew.h"
 
 enum class VKR_BUFFER_TYPE
 {
@@ -11,7 +12,8 @@ enum class VKR_BUFFER_TYPE
 	STRIDE, // buffer for stride-adjusted vertex data
 };
 
-class VKRBuffer
+// from a pool (PoolNew.h), as a texture's memory allocation below
+class VKRBuffer : public PoolNew<VKRBuffer, 64>
 {
   public:
 	static VKRBuffer* Create(VKR_BUFFER_TYPE bufferType, size_t bufferSize, VkMemoryPropertyFlags properties);
@@ -33,7 +35,8 @@ class VKRBuffer
 	bool m_requiresFlush{false};
 };
 
-struct VkImageMemAllocation
+// one a texture: from a pool (PoolNew.h), not the heap, as textures come and go
+struct VkImageMemAllocation : PoolNew<VkImageMemAllocation>
 {
 	VkImageMemAllocation(uint32 _typeFilter, CHAddr _mem, uint32 _allocationSize) : typeFilter(_typeFilter), mem(_mem), allocationSize(_allocationSize) { };
 
@@ -259,6 +262,7 @@ public:
 
 	// texture memory management
 	std::unordered_map<uint32, std::unique_ptr<VkTextureChunkedHeap>> map_textureHeap; // one heap per memory type
+	VkTextureChunkedHeap* GetTextureHeap(uint32 typeFilter);
 	std::vector<uint8> m_textureUploadBuffer;
 
 	// texture upload buffer
