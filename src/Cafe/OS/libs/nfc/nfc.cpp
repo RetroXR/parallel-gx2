@@ -702,4 +702,23 @@ namespace nfc
 		*nfcError = NFC_TOUCH_TAG_ERROR_NONE;
 		return true;
 	}
+
+	void ReleaseTag()
+	{
+		if (nnNfp_isInitialized())
+		{
+			nnNfp_releaseTouch();
+			return;
+		}
+		// Aged past the two seconds NFCProc keeps a tag for, so it is taken
+		// away there, on the emulated thread, as when the touch runs out.
+		gNFCContexts[0].touchTime = {};
+	}
+
+	bool HasTag()
+	{
+		if (nnNfp_isInitialized())
+			return nnNfp_hasActiveAmiibo();
+		return (gNFCContexts[0].nfcStatus & NFC_STATUS_HAS_TAG) != 0;
+	}
 }

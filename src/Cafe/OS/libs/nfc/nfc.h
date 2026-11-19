@@ -91,4 +91,9 @@ namespace nfc
 	COSModule* GetModule();
 
 	bool TouchTagFromFile(const fs::path& filePath, uint32* nfcError);
+
+	// libretro: lift the tag TouchTagFromFile put down, ahead of its own
+	// timeout, and whether one is down now.
+	void ReleaseTag();
+	bool HasTag();
 }

@@ -381,6 +381,35 @@ struct retro_core_option_v2_definition option_defs_us[] = {
 		"real"
 	},
 	{
+		"cemu_wiimote_motion",
+		"Wii Remote Motion",
+		NULL,
+		"Each Wii Remote's accelerometer, and the gyroscope of a MotionPlus, from the sensors RetroArch reads on that remote's port; a Nunchuk's accelerometer from that port's second sensor, where the frontend has one. Games steered, swung or shaken by the remote need it. Off for the same reason GamePad Motion is: on a phone, RetroArch's sensors are the phone's own. Ports 2-4 only; port 1's sensors are the GamePad's.",
+		NULL,
+		"controller",
+		{
+			{ "disabled", "Disabled" },
+			{ "enabled", "Enabled" },
+			{ NULL, NULL },
+		},
+		"disabled"
+	},
+	{
+		"cemu_wiimote_pointer",
+		"Wii Remote Pointer",
+		NULL,
+		"What a Wii Remote points at. Pointer: the mouse or touchscreen pointer on that remote's port, over the TV picture, as standalone aims a remote with the mouse. IR Camera: the remote's camera image of the sensor bar, sent by a frontend that works it out (up to four lights on that port's pointer indices). Ports 2-4 only; port 1's pointer is the GamePad's touchscreen.",
+		NULL,
+		"controller",
+		{
+			{ "pointer", "Pointer" },
+			{ "ir", "IR Camera" },
+			{ "disabled", "Disabled" },
+			{ NULL, NULL },
+		},
+		"pointer"
+	},
+	{
 		"cemu_number_of_screen_layouts",
 		"# of Screen Layouts",
 		NULL,

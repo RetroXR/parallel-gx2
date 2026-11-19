@@ -877,6 +877,22 @@ bool nnNfp_touchNfcTagFromFile(const fs::path& filePath, uint32* nfcError)
 	return true;
 }
 
+// libretro: the frontend lifted the figure. Aged past the touch nnNfp_update
+// keeps it for, so the deactivate event is signalled there, on the emulated
+// thread, as when the touch runs out by itself.
+void nnNfp_releaseTouch()
+{
+	nnNfpLock();
+	if (nfp_data.hasActiveAmiibo)
+		nfp_data.amiiboTouchTime = GetTickCount() - 1500;
+	nnNfpUnlock();
+}
+
+bool nnNfp_hasActiveAmiibo()
+{
+	return nfp_data.hasActiveAmiibo;
+}
+
 bool nnNfp_writeCurrentAmiibo()
 {
 	nnNfpLock();

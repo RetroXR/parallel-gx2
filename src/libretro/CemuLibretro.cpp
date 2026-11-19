@@ -12,12 +12,15 @@
 #include <cstring>
 #include <cstdarg>
 #include "libretro.h"
+#include "SensorIndex.h"
+#include "AccessoryMediaInterface.h"
 
 #include "config/CemuConfig.h"
 #include "Cafe/Account/Account.h"
 #include "Cafe/OS/libs/swkbd/swkbd.h"
 #include "Common/http_xfer.h"
 #include "Cafe/OS/libs/nlibcurl/nlibcurl.h"
+#include "Cafe/OS/libs/nfc/nfc.h"
 #include <boost/nowide/convert.hpp>
 #include "config/ActiveSettings.h"
 #include "config/LaunchSettings.h"
@@ -1652,6 +1655,15 @@ static uint32_t s_polled_ports = kLibretroMaxPorts;
 #define RETRO_DEVICE_GAMEPAD_WIIMOTE           RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 3)
 #define RETRO_DEVICE_WIIMOTE_SIDEWAYS          RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 4)
 #define RETRO_DEVICE_GAMEPAD_WIIMOTE_SIDEWAYS  RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 5)
+// What is plugged into the remote's extension port is a device type too, and
+// unlike the grip it DOES reach the emulation: padscore reports it to the title
+// (WPADController::get_device_type), and a Nunchuk adds a stick, C and Z and
+// an accelerometer of its own, a MotionPlus a gyroscope. There is no sideways
+// remote with a Nunchuk, because there is no such way to hold one.
+#define RETRO_DEVICE_WIIMOTE_NUNCHUK           RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 6)
+#define RETRO_DEVICE_WIIMOTE_MOTIONPLUS        RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 7)
+#define RETRO_DEVICE_WIIMOTE_MOTIONPLUS_SIDEWAYS RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 8)
+#define RETRO_DEVICE_WIIMOTE_MOTIONPLUS_NUNCHUK RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 9)
 
 // Port 1 is the GamePad; the rest start empty, which is what the core did
 // before any of this was selectable.
@@ -1665,6 +1677,474 @@ static unsigned s_port_device[kLibretroMaxPorts] = {
 bool libretro_gamepad_on_port1()
 {
 	return s_port_device[0] != RETRO_DEVICE_PRO;
+}
+
+// ---- Wii Remotes: motion and pointer ----------------------------------------
+//
+// A Wii Remote on ports 2-4 reads three things from the frontend besides its
+// buttons, each only when the matching option asks for it:
+//
+//   Its accelerometer, and with a MotionPlus fitted its gyroscope, from the
+//   sensor interface on that port (Wii Remote Motion). A Nunchuk's own
+//   accelerometer is the same port's sensor sub-device 1 (SensorIndex.h), the
+//   way RetroXR's Dolphin fork reads it: one player, two accelerometers, and
+//   ports mean players. A frontend that does not know sub-devices refuses
+//   sub-device 1 and the Nunchuk simply lies still.
+//
+//   The frontend sends both in the remote's own frame - the one its report
+//   carries and Dolphin reads - in g and rad/s. Into Cemu's frame they go as
+//   upstream's real-Wiimote reader put them (-x, -z, y). That is a reflection,
+//   so the gyroscope, an axial vector, takes the opposite sign of the same
+//   swap: (x, z, -y). libretro_poll_motion does the same for the GamePad.
+//
+//   Where it points (Wii Remote Pointer), as one of:
+//     pointer - the frontend's pointer over the TV picture: a mouse or a
+//               touchscreen in RetroArch, as standalone aims a remote with the
+//               mouse.
+//     ir      - the IR camera's own view: up to four dots on pointer indices
+//               0-3 of the remote's port, X and Y over the camera's 0..1 field
+//               (the positive half of the pointer range), PRESSED when a dot
+//               is seen. What RetroXR sends its Dolphin fork, unchanged, so a
+//               frontend that projects the sensor bar into a remote's camera
+//               serves both cores. The dots become the cursor the way
+//               upstream's reader for a real remote did it (track a pair, take
+//               its middle, undo the remote's roll), because Cemu's padscore
+//               takes one position, not the dots.
+//
+// Port 1 has none of this: its sensors and its pointer are the GamePad's.
+struct LibretroIrCamera
+{
+	std::array<Vector2f, 4> dots{}, prev_dots{};
+	std::array<bool, 4> visible{};
+	Vector2f position{}, prev_position{}, middle{};
+	float distance = 0.0f;
+	std::pair<int, int> indices{0, 1};
+	PositionVisibility visibility = PositionVisibility::NONE;
+};
+
+struct LibretroRemote
+{
+	// What libretro_setup_controllers put on the port.
+	bool active = false;
+	bool nunchuk = false;
+	bool motion_plus = false;
+	// What the frontend agreed to give.
+	bool accel = false;
+	bool gyro = false;
+	bool nunchuk_accel = false;
+
+	WiiUMotionHandler remote_handler, nunchuk_handler;
+	MotionSample remote_sample, nunchuk_sample;
+	std::chrono::steady_clock::time_point last{};
+	// About the remote's pointing axis, from its accelerometer; turns the IR
+	// dots back upright, as the real remote's reader did.
+	float roll = 0.0f;
+
+	LibretroIrCamera ir;
+};
+
+enum class LibretroRemotePointer { Disabled, Pointer, Ir };
+
+// The frontend's thread alone writes and reads these (retro_run, the options,
+// the ports' setup, unload). The emulation's input threads read what each port
+// last published (s_remotes_out), never this.
+static LibretroRemote s_remotes[kLibretroMaxPorts];
+
+// What padscore's threads read of a remote: one plain value per port, handed over
+// through a SeqlockValue as the GamePad's motion is, so neither side waits.
+struct LibretroRemoteOut
+{
+	bool active = false;
+	bool accel = false;
+	bool nunchuk_accel = false;
+	bool pointer = false;
+	MotionSample remote_sample{}, nunchuk_sample{};
+	Vector2f position{}, prev_position{};
+	PositionVisibility visibility = PositionVisibility::NONE;
+};
+static SeqlockValue<LibretroRemoteOut> s_remotes_out[kLibretroMaxPorts];
+static bool s_remote_motion_wanted = false;
+static LibretroRemotePointer s_remote_pointer = LibretroRemotePointer::Pointer;
+
+static void libretro_publish_remote(uint32_t port)
+{
+	const LibretroRemote& r = s_remotes[port];
+	LibretroRemoteOut out;
+	out.active = r.active;
+	out.accel = r.accel;
+	out.nunchuk_accel = r.nunchuk_accel;
+	out.pointer = s_remote_pointer != LibretroRemotePointer::Disabled;
+	out.remote_sample = r.remote_sample;
+	out.nunchuk_sample = r.nunchuk_sample;
+	out.position = r.ir.position;
+	out.prev_position = r.ir.prev_position;
+	out.visibility = r.ir.visibility;
+	s_remotes_out[port].Store(out);
+}
+
+static void libretro_publish_remotes()
+{
+	for (uint32_t port = 0; port < kLibretroMaxPorts; ++port)
+		libretro_publish_remote(port);
+}
+
+// The sensor interface, asked for once and shared with GamePad Motion.
+static bool libretro_have_sensor_interface()
+{
+	if (s_sensor_interface.set_sensor_state && s_sensor_interface.get_sensor_input)
+		return true;
+	retro_sensor_interface iface{};
+	if (!environ_cb || !environ_cb(RETRO_ENVIRONMENT_GET_SENSOR_INTERFACE, &iface) ||
+		!iface.set_sensor_state || !iface.get_sensor_input)
+		return false;
+	s_sensor_interface = iface;
+	return true;
+}
+
+static bool libretro_remote_sensor(uint32_t port, unsigned sub, bool gyro, bool on)
+{
+	const unsigned action = gyro
+		? (on ? RETRO_SENSOR_GYROSCOPE_ENABLE : RETRO_SENSOR_GYROSCOPE_DISABLE)
+		: (on ? RETRO_SENSOR_ACCELEROMETER_ENABLE : RETRO_SENSOR_ACCELEROMETER_DISABLE);
+	return s_sensor_interface.set_sensor_state(port,
+		static_cast<retro_sensor_action>(RETRO_SENSOR_ID(sub, action)), on ? 200 : 0);
+}
+
+// Turn each remote port's sensors on or off to match what is plugged in and
+// the option. Runs when either changes; asks the frontend only for a change.
+static void libretro_update_remote_sensors()
+{
+	for (uint32_t port = 1; port < kLibretroMaxPorts; ++port)
+	{
+		LibretroRemote& r = s_remotes[port];
+		const bool want = s_remote_motion_wanted && r.active;
+		const bool wantGyro = want && r.motion_plus;
+		const bool wantNunchuk = want && r.nunchuk;
+		if (want == r.accel && wantGyro == r.gyro && wantNunchuk == r.nunchuk_accel)
+			continue;
+
+		bool accel = false, gyro = false, nunchuk = false;
+		const bool iface = libretro_have_sensor_interface();
+		if (iface)
+		{
+			if (r.accel && !want) libretro_remote_sensor(port, 0, false, false);
+			if (r.gyro && !wantGyro) libretro_remote_sensor(port, 0, true, false);
+			if (r.nunchuk_accel && !wantNunchuk) libretro_remote_sensor(port, 1, false, false);
+			accel = want && (r.accel || libretro_remote_sensor(port, 0, false, true));
+			gyro = wantGyro && (r.gyro || libretro_remote_sensor(port, 0, true, true));
+			nunchuk = wantNunchuk && (r.nunchuk_accel || libretro_remote_sensor(port, 1, false, true));
+		}
+
+		r.accel = accel;
+		r.gyro = gyro;
+		r.nunchuk_accel = nunchuk;
+		r.remote_handler = {};
+		r.nunchuk_handler = {};
+		r.remote_sample = {};
+		r.nunchuk_sample = {};
+		r.last = {};
+		r.roll = 0.0f;
+
+		if (!want)
+			continue;
+		const bool missing = !accel || (wantGyro && !gyro) || (wantNunchuk && !nunchuk);
+		libretro_log(missing ? RETRO_LOG_WARN : RETRO_LOG_INFO,
+			"Wii Remote Motion on port %u: sensor interface %s, accelerometer %s, MotionPlus gyroscope %s, Nunchuk accelerometer %s\n",
+			(unsigned)port + 1, iface ? "yes" : "no", accel ? "yes" : "no",
+			wantGyro ? (gyro ? "yes" : "no") : "not fitted",
+			wantNunchuk ? (nunchuk ? "yes" : "no") : "not fitted");
+	}
+	// What is plugged in, and what the frontend gave, as the emulation sees it.
+	libretro_publish_remotes();
+}
+
+static void libretro_set_remote_motion(bool want)
+{
+	if (s_remote_motion_wanted == want)
+		return;
+	s_remote_motion_wanted = want;
+	libretro_update_remote_sensors();
+}
+
+static void libretro_set_remote_pointer(LibretroRemotePointer mode)
+{
+	if (s_remote_pointer == mode)
+		return;
+	s_remote_pointer = mode;
+	for (LibretroRemote& r : s_remotes)
+		r.ir = {};
+	libretro_publish_remotes();
+	libretro_log(RETRO_LOG_INFO, "Wii Remote Pointer: %s\n",
+		mode == LibretroRemotePointer::Ir ? "IR camera" : mode == LibretroRemotePointer::Pointer ? "pointer" : "off");
+}
+
+// Upstream's WiimoteControllerProvider::calculate_ir_position, for the dots
+// the frontend sent: follow the pair it had, or the pair nearest it in angle
+// and spacing; the cursor is their middle, or where one of them alone says the
+// middle moved to.
+static void libretro_ir_position(LibretroIrCamera& ir)
+{
+	ir.prev_position = ir.position;
+
+	std::pair<int, int> indices = ir.indices;
+	if (ir.middle.x != 0)
+	{
+		const float lastAngle = std::atan(ir.middle.y / ir.middle.x);
+		float bestDistance = std::numeric_limits<float>::max();
+		for (int i = 0; i < 4; ++i)
+		{
+			if (!ir.visible[i])
+				continue;
+			for (int j = i + 1; j < 4; ++j)
+			{
+				if (!ir.visible[j])
+					continue;
+				const Vector2f mid = (ir.dots[i] + ir.dots[j]) / 2.0f;
+				if (mid.x == 0)
+					continue;
+				const float angle = std::atan(mid.y / mid.x);
+				if (std::abs(lastAngle - angle) > (10.0f * 3.14159265358979f / 180.0f))
+					continue;
+				const float distance = std::abs(ir.distance - (ir.dots[i] - ir.dots[j]).Length());
+				if (distance > 0.1f && distance > bestDistance)
+					continue;
+				bestDistance = distance;
+				indices = {i, j};
+			}
+		}
+	}
+
+	if (ir.visible[indices.first] && ir.visible[indices.second])
+	{
+		ir.prev_dots[indices.first] = ir.dots[indices.first];
+		ir.prev_dots[indices.second] = ir.dots[indices.second];
+		ir.position = (ir.dots[indices.first] + ir.dots[indices.second]) / 2.0f;
+		ir.middle = ir.position;
+		ir.distance = (ir.dots[indices.first] - ir.dots[indices.second]).Length();
+		ir.indices = indices;
+		ir.visibility = PositionVisibility::FULL;
+	}
+	else if (ir.visible[indices.first])
+	{
+		ir.position = ir.middle + (ir.dots[indices.first] - ir.prev_dots[indices.first]);
+		ir.visibility = PositionVisibility::PARTIAL;
+	}
+	else if (ir.visible[indices.second])
+	{
+		ir.position = ir.middle + (ir.dots[indices.second] - ir.prev_dots[indices.second]);
+		ir.visibility = PositionVisibility::PARTIAL;
+	}
+	else
+		ir.visibility = PositionVisibility::NONE;
+}
+
+// From retro_run, after input_poll_cb: every remote's sensors and pointer.
+static void libretro_poll_remotes(uint32_t polledPorts)
+{
+	const auto now = std::chrono::steady_clock::now();
+	for (uint32_t port = 1; port < polledPorts && port < kLibretroMaxPorts; ++port)
+	{
+		LibretroRemote& r = s_remotes[port];
+		if (!r.active)
+			continue;
+
+		float ax = 0, ay = 0, az = 0, gx = 0, gy = 0, gz = 0, nx = 0, ny = 0, nz = 0;
+		if (r.accel)
+		{
+			auto get = [port](unsigned sub, unsigned id) {
+				return s_sensor_interface.get_sensor_input(port, RETRO_SENSOR_ID(sub, id));
+			};
+			ax = get(0, RETRO_SENSOR_ACCELEROMETER_X);
+			ay = get(0, RETRO_SENSOR_ACCELEROMETER_Y);
+			az = get(0, RETRO_SENSOR_ACCELEROMETER_Z);
+			if (r.gyro)
+			{
+				gx = get(0, RETRO_SENSOR_GYROSCOPE_X);
+				gy = get(0, RETRO_SENSOR_GYROSCOPE_Y);
+				gz = get(0, RETRO_SENSOR_GYROSCOPE_Z);
+			}
+			if (r.nunchuk_accel)
+			{
+				nx = get(1, RETRO_SENSOR_ACCELEROMETER_X);
+				ny = get(1, RETRO_SENSOR_ACCELEROMETER_Y);
+				nz = get(1, RETRO_SENSOR_ACCELEROMETER_Z);
+			}
+		}
+
+		std::array<Vector2f, 4> dots{};
+		std::array<bool, 4> seen{};
+		Vector2f cursor{};
+		bool cursorShown = false;
+		if (s_remote_pointer == LibretroRemotePointer::Ir)
+		{
+			for (unsigned i = 0; i < 4; ++i)
+			{
+				seen[i] = input_state_cb(port, RETRO_DEVICE_POINTER, i, RETRO_DEVICE_ID_POINTER_PRESSED) != 0;
+				const float x = std::clamp(input_state_cb(port, RETRO_DEVICE_POINTER, i, RETRO_DEVICE_ID_POINTER_X) / 32767.0f, 0.0f, 1.0f);
+				const float y = std::clamp(input_state_cb(port, RETRO_DEVICE_POINTER, i, RETRO_DEVICE_ID_POINTER_Y) / 32767.0f, 0.0f, 1.0f);
+				// A light to the right of where the remote points lands high in
+				// the camera's x, so the cursor goes the other way.
+				dots[i] = {1.0f - x, y};
+			}
+		}
+		else if (s_remote_pointer == LibretroRemotePointer::Pointer && LibretroDRC_ShouldRenderScreen(false))
+		{
+			const int32_t px = input_state_cb(port, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_X);
+			const int32_t py = input_state_cb(port, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_Y);
+			const bool offscreen = input_state_cb(port, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_IS_OFFSCREEN) != 0;
+			const int w = (int)libretro_out_width(), h = (int)libretro_out_height();
+			const int canvasX = (int)((px + 0x7fff) * (int64_t)w / (2 * 0x7fff));
+			const int canvasY = (int)((py + 0x7fff) * (int64_t)h / (2 * 0x7fff));
+			int tvX, tvY, tvW, tvH;
+			LibretroDRC_ComputeViewport(false, w, h, tvX, tvY, tvW, tvH);
+			if (!offscreen && tvW > 0 && tvH > 0 && canvasX >= tvX && canvasX < tvX + tvW &&
+				canvasY >= tvY && canvasY < tvY + tvH)
+			{
+				cursor = {(float)(canvasX - tvX) / (float)tvW, (float)(canvasY - tvY) / (float)tvH};
+				cursorShown = true;
+			}
+		}
+
+		if (r.accel)
+		{
+			const float dt = r.last == std::chrono::steady_clock::time_point{}
+				? 1.0f / 60.0f
+				: std::chrono::duration<float>(now - r.last).count();
+			r.last = now;
+			const float step = std::clamp(dt, 0.0001f, 0.25f);
+			r.remote_handler.processMotionSample(step, gx, gz, -gy, -ax, -az, ay);
+			r.remote_sample = r.remote_handler.getMotionSample();
+			if (r.nunchuk_accel)
+			{
+				r.nunchuk_handler.processMotionSample(step, 0.0f, 0.0f, 0.0f, -nx, -nz, ny);
+				r.nunchuk_sample = r.nunchuk_handler.getMotionSample();
+			}
+			// Upstream's roll: zero lying flat, buttons up. Left alone while
+			// the remote is pointed nearly straight up or down, where x and z
+			// say nothing about it.
+			if (std::sqrt(ax * ax + az * az) > 0.5f)
+				r.roll = std::atan2(az, ax) - (3.14159265358979f / 2.0f);
+		}
+
+		LibretroIrCamera& ir = r.ir;
+		if (s_remote_pointer == LibretroRemotePointer::Ir)
+		{
+			const float c = std::cos(r.roll), s = std::sin(r.roll);
+			for (unsigned i = 0; i < 4; ++i)
+			{
+				ir.visible[i] = seen[i];
+				Vector2f d = dots[i] - 0.5f;
+				ir.dots[i] = Vector2f(d.x * c - d.y * s, d.x * s + d.y * c) + 0.5f;
+			}
+			libretro_ir_position(ir);
+		}
+		else if (s_remote_pointer == LibretroRemotePointer::Pointer)
+		{
+			ir.prev_position = ir.position;
+			if (cursorShown)
+				ir.position = cursor;
+			ir.visibility = cursorShown ? PositionVisibility::FULL : PositionVisibility::NONE;
+		}
+		libretro_publish_remote(port);
+	}
+}
+
+// For LibretroController: the remote's motion (sub 0) or its Nunchuk's (sub
+// 1). False when the frontend gives that one none.
+bool libretro_get_remote_motion(uint32_t port, uint32_t sub, MotionSample* out)
+{
+	if (port >= kLibretroMaxPorts)
+		return false;
+	const LibretroRemoteOut r = s_remotes_out[port].Load();
+	const bool have = r.active && (sub == 0 ? r.accel : r.nunchuk_accel);
+	if (have && out)
+		*out = sub == 0 ? r.remote_sample : r.nunchuk_sample;
+	return have;
+}
+
+// For LibretroController: where the remote points. False when Wii Remote
+// Pointer is off, or nothing on the port can point.
+bool libretro_get_remote_pointer(uint32_t port, Vector2f* position, Vector2f* prev,
+	PositionVisibility* visibility)
+{
+	if (port >= kLibretroMaxPorts)
+		return false;
+	const LibretroRemoteOut r = s_remotes_out[port].Load();
+	if (!r.active || !r.pointer)
+		return false;
+	if (position) *position = r.position;
+	if (prev) *prev = r.prev_position;
+	if (visibility) *visibility = r.visibility;
+	return true;
+}
+
+// ---- Amiibo: the GamePad's NFC reader --------------------------------------
+//
+// Offered to the frontend through the accessory media interface
+// (AccessoryMediaInterface.h): one NFC reader, on the GamePad. A figure handed
+// to it goes to nfc::TouchTagFromFile, which is what standalone's "Touch NFC
+// file" menu calls: nn_nfp takes it when the title uses the amiibo library,
+// nfc's own tag otherwise. Both keep a tag for a moment only (1.5 s and 2 s)
+// and let go of it by themselves - what a figure set on the GamePad and lifted
+// again looks like to the title - and both WRITE the figure back to its file
+// when the title saves to it.
+static const retro_accessory_reader s_accessory_readers[] = {
+	{RETRO_ACCESSORY_MEDIA_NFC_TAG, 0,
+	 RETRO_ACCESSORY_READER_MOMENTARY | RETRO_ACCESSORY_READER_WRITES, "Wii U GamePad NFC"},
+};
+
+static bool libretro_accessory_insert(unsigned reader, const char* path)
+{
+	if (reader >= std::size(s_accessory_readers) || !path || !*path)
+	{
+		libretro_log(RETRO_LOG_WARN, "amiibo: refused, reader %u path %s\n", reader, path ? path : "(none)");
+		return false;
+	}
+	if (!s_game_loaded)
+	{
+		libretro_log(RETRO_LOG_WARN, "amiibo: refused %s, no title is running to read it\n", path);
+		return false;
+	}
+	uint32 error = 0;
+	const bool ok = nfc::TouchTagFromFile(_utf8ToPath(path), &error);
+	// nn_nfp's path reports NO_ACCESS on success too, so only a refusal's error says anything.
+	libretro_log(ok ? RETRO_LOG_INFO : RETRO_LOG_WARN, ok ? "amiibo: %s on the GamePad\n" : "amiibo: %s refused (error %u)\n",
+		path, (unsigned)error);
+	return ok;
+}
+
+static bool libretro_accessory_remove(unsigned reader)
+{
+	if (reader >= std::size(s_accessory_readers))
+		return false;
+	if (s_game_loaded && nfc::HasTag())
+	{
+		nfc::ReleaseTag();
+		libretro_log(RETRO_LOG_INFO, "amiibo: lifted off the GamePad\n");
+	}
+	return true;
+}
+
+static bool libretro_accessory_is_present(unsigned reader)
+{
+	return reader < std::size(s_accessory_readers) && s_game_loaded && nfc::HasTag();
+}
+
+static void libretro_publish_accessory_readers(bool on)
+{
+	if (!environ_cb)
+		return;
+	static retro_accessory_media_interface iface{};
+	iface.interface_version = RETRO_ACCESSORY_MEDIA_INTERFACE_VERSION;
+	iface.num_readers = on ? (unsigned)std::size(s_accessory_readers) : 0;
+	iface.readers = on ? s_accessory_readers : nullptr;
+	iface.insert = libretro_accessory_insert;
+	iface.remove = libretro_accessory_remove;
+	iface.is_present = libretro_accessory_is_present;
+	const bool taken = environ_cb(RETRO_ENVIRONMENT_SET_ACCESSORY_MEDIA_INTERFACE, &iface);
+	if (on)
+		libretro_log(RETRO_LOG_INFO, "amiibo: the frontend %s the GamePad's NFC reader\n",
+			taken ? "takes" : "does not know (accessory media interface), so has no way to hand over");
 }
 
 // Defined below, next to the mappings it applies; called from
@@ -3035,6 +3515,14 @@ static void libretro_apply_core_options()
 	if (const char* v = libretro_get_option_value("cemu_gamepad_motion_filter"))
 		libretro_set_motion_exact(libretro_iequals(v, "exact"));
 
+	// Wii Remote Motion and Pointer, likewise
+	if (const char* v = libretro_get_option_value("cemu_wiimote_motion"))
+		libretro_set_remote_motion(libretro_iequals(v, "enabled"));
+	if (const char* v = libretro_get_option_value("cemu_wiimote_pointer"))
+		libretro_set_remote_pointer(libretro_iequals(v, "ir") ? LibretroRemotePointer::Ir
+			: libretro_iequals(v, "disabled") ? LibretroRemotePointer::Disabled
+			: LibretroRemotePointer::Pointer);
+
 	// Console language
 	if (const char* v = libretro_get_option_value("cemu_console_language"))
 	{
@@ -3174,6 +3662,10 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
 			{"None", RETRO_DEVICE_NONE},
 			{"Wii Remote", RETRO_DEVICE_WIIMOTE},
 			{"Wii Remote (sideways)", RETRO_DEVICE_WIIMOTE_SIDEWAYS},
+			{"Wii Remote + Nunchuk", RETRO_DEVICE_WIIMOTE_NUNCHUK},
+			{"Wii Remote + MotionPlus", RETRO_DEVICE_WIIMOTE_MOTIONPLUS},
+			{"Wii Remote + MotionPlus (sideways)", RETRO_DEVICE_WIIMOTE_MOTIONPLUS_SIDEWAYS},
+			{"Wii Remote + MotionPlus + Nunchuk", RETRO_DEVICE_WIIMOTE_MOTIONPLUS_NUNCHUK},
 			{"Wii U Pro Controller", RETRO_DEVICE_PRO},
 			{"Classic Controller", RETRO_DEVICE_CLASSIC},
 		};
@@ -4268,6 +4760,29 @@ static void libretro_map_wiimote(const EmulatedControllerPtr& remote,
 	});
 }
 
+// A Nunchuk on that remote, laid over the upright mapping above. C and Z take
+// the two face buttons 1 and 2 had, X and Y - where RetroXR's Dolphin fork
+// puts them, so one frontend binding serves both cores - and 1 and 2 move to
+// L2 and R2, which a remote held upright leaves free. The Nunchuk's stick is
+// the left stick.
+static void libretro_map_nunchuk(const EmulatedControllerPtr& remote,
+	const std::shared_ptr<LibretroController>& pad)
+{
+	using W = WiimoteController;
+
+	libretro_apply_pad_mappings(remote, pad, {
+		{W::kButtonId_Nunchuck_C, kButton0 + RETRO_DEVICE_ID_JOYPAD_X},
+		{W::kButtonId_Nunchuck_Z, kButton0 + RETRO_DEVICE_ID_JOYPAD_Y},
+		{W::kButtonId_1, kButton0 + RETRO_DEVICE_ID_JOYPAD_L2},
+		{W::kButtonId_2, kButton0 + RETRO_DEVICE_ID_JOYPAD_R2},
+
+		{W::kButtonId_Nunchuck_Up, kAxisYP},
+		{W::kButtonId_Nunchuck_Down, kAxisYN},
+		{W::kButtonId_Nunchuck_Left, kAxisXN},
+		{W::kButtonId_Nunchuck_Right, kAxisXP},
+	});
+}
+
 // A RetroPad as a Wii U Pro Controller. One for one with the GamePad mapping in
 // libretro_poll_input, and for the same reason: the RetroPad is modelled on a
 // SNES pad, and the Pro Controller has that same face layout - A east, B south,
@@ -4368,15 +4883,37 @@ static void libretro_map_classic(const EmulatedControllerPtr& classic,
 // before the user has chosen anything, and the core has always started with no
 // WPAD controllers at all. Treating the default as "a pad is plugged in" would
 // connect three of them to every title that ever asks.
-static EmulatedController::Type libretro_wpad_type(unsigned device, bool* found, bool* sideways)
+struct LibretroRemoteExtension
+{
+	bool nunchuk = false;
+	bool motion_plus = false;
+};
+
+static EmulatedController::Type libretro_wpad_type(unsigned device, bool* found, bool* sideways,
+	LibretroRemoteExtension* extension)
 {
 	*found = true;
 	*sideways = false;
+	*extension = {};
 	switch (device)
 	{
 	case RETRO_DEVICE_WIIMOTE: return EmulatedController::Type::Wiimote;
 	case RETRO_DEVICE_WIIMOTE_SIDEWAYS:
 		*sideways = true;
+		return EmulatedController::Type::Wiimote;
+	case RETRO_DEVICE_WIIMOTE_NUNCHUK:
+		extension->nunchuk = true;
+		return EmulatedController::Type::Wiimote;
+	case RETRO_DEVICE_WIIMOTE_MOTIONPLUS:
+		extension->motion_plus = true;
+		return EmulatedController::Type::Wiimote;
+	case RETRO_DEVICE_WIIMOTE_MOTIONPLUS_SIDEWAYS:
+		*sideways = true;
+		extension->motion_plus = true;
+		return EmulatedController::Type::Wiimote;
+	case RETRO_DEVICE_WIIMOTE_MOTIONPLUS_NUNCHUK:
+		extension->nunchuk = true;
+		extension->motion_plus = true;
 		return EmulatedController::Type::Wiimote;
 	case RETRO_DEVICE_PRO: return EmulatedController::Type::Pro;
 	case RETRO_DEVICE_CLASSIC: return EmulatedController::Type::Classic;
@@ -4423,10 +4960,19 @@ static void libretro_setup_controllers()
 	uint32_t polledPorts = 1;
 	size_t channel = 0;
 
+	// What each port's remote has fitted, filled in below; the sensors follow
+	// once every port is known.
+	for (LibretroRemote& r : s_remotes)
+	{
+		r.active = r.nunchuk = r.motion_plus = false;
+		r.ir = {};
+	}
+
 	for (uint32_t port = 0; port < kLibretroMaxPorts; ++port)
 	{
 		EmulatedController::Type type = EmulatedController::Type::Wiimote;
 		bool sideways = false;
+		LibretroRemoteExtension extension{};
 		if (port == 0)
 		{
 			if (s_port_device[0] == RETRO_DEVICE_PRO)
@@ -4438,7 +4984,7 @@ static void libretro_setup_controllers()
 		else
 		{
 			bool found = false;
-			type = libretro_wpad_type(s_port_device[port], &found, &sideways);
+			type = libretro_wpad_type(s_port_device[port], &found, &sideways, &extension);
 			if (!found)
 				continue;
 			polledPorts = port + 1;
@@ -4456,12 +5002,47 @@ static void libretro_setup_controllers()
 		default: libretro_map_wiimote(emulated, pad, sideways); break;
 		}
 
-		libretro_log(RETRO_LOG_INFO, "%s on RetroPad port %u (WPAD channel %u)\n",
-			libretro_wpad_name(type, sideways), (unsigned)port + 1, (unsigned)channel + 1);
+		// A remote on ports 2-4 reads motion and points (port 1's sensors and
+		// pointer are the GamePad's), and says what is in its extension port.
+		if (type == EmulatedController::Type::Wiimote && port != 0)
+		{
+			if (extension.nunchuk)
+				libretro_map_nunchuk(emulated, pad);
+
+			if (auto remote = std::dynamic_pointer_cast<WiimoteController>(emulated))
+			{
+				remote->set_device_type(extension.motion_plus
+					? (extension.nunchuk ? kWAPDevMPLSFreeStyle : kWAPDevMPLS)
+					: (extension.nunchuk ? kWAPDevFreestyle : kWAPDevCore));
+			}
+
+			// Motion is read only from controllers whose settings allow it
+			// (ControllerBase::use_motion); whether there is any is theirs to say.
+			pad->set_use_motion(true);
+			if (extension.nunchuk)
+			{
+				auto nunchukMotion = std::make_shared<LibretroNunchukMotion>(port);
+				nunchukMotion->set_use_motion(true);
+				emulated->add_controller(nunchukMotion);
+			}
+
+			LibretroRemote& r = s_remotes[port];
+			r.active = true;
+			r.nunchuk = extension.nunchuk;
+			r.motion_plus = extension.motion_plus;
+		}
+
+		libretro_log(RETRO_LOG_INFO, "%s%s%s on RetroPad port %u (WPAD channel %u)\n",
+			libretro_wpad_name(type, sideways),
+			extension.motion_plus ? " + MotionPlus" : "", extension.nunchuk ? " + Nunchuk" : "",
+			(unsigned)port + 1, (unsigned)channel + 1);
 		++channel;
 	}
 
 	s_polled_ports = polledPorts;
+	// The sensors follow what is plugged in: a remote's turn on, a Pro
+	// Controller's - or an empty port's - go off.
+	libretro_update_remote_sensors();
 	if (channel == 0 && log_cb)
 		libretro_log(RETRO_LOG_INFO, "no Wii Remote or Pro/Classic Controller on any port\n");
 }
@@ -5886,6 +6467,11 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game)
 	libretro_update_convert_visibility();
 	libretro_update_pack_visibility();
 
+	// The GamePad's NFC reader, for a title; content that is only installed
+	// runs nothing to read a figure.
+	if (!s_install_content)
+		libretro_publish_accessory_readers(true);
+
 	// Vulkan: context_reset is called by RetroArch after RETRO_HW_CONTEXT_VULKAN is set up
 
 	return true;
@@ -5976,7 +6562,12 @@ static void libretro_stop_system_services()
 
 RETRO_API void retro_unload_game()
 {
+	libretro_publish_accessory_readers(false);
 	libretro_set_motion(false);
+	// Every remote's sensors off; the ports' devices stay as the frontend set them.
+	for (LibretroRemote& r : s_remotes)
+		r.active = false;
+	libretro_update_remote_sensors();
 	// The next content takes the output size afresh from the option.
 	s_out_size_taken = false;
 	// The frontend drops the views map when content unloads; the next content
@@ -6553,6 +7144,8 @@ static void libretro_poll_input()
 		pad.right_x = input_state_cb(port, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_X);
 		pad.right_y = input_state_cb(port, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_Y);
 	}
+
+	libretro_poll_remotes(s_polled_ports);
 
 	auto& state = s_input_state;
 	const auto& pad0 = s_port_state[0];
