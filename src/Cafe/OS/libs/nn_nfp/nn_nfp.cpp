@@ -189,7 +189,7 @@ struct
 	bool hasOpenApplicationArea; // set to true if application area was opened or created
 	// currently active Amiibo
 	std::atomic<bool> hasActiveAmiibo;
-	fs::path amiiboPath;
+	nfc::TagWriter amiiboWriter; // where a save to it goes: its file, or the frontend's NFC reader
 	bool hasInvalidHMAC;
 	std::atomic<uint32> amiiboTouchTime;
 	AmiiboRawNFCData amiiboNFCData; // raw data
@@ -754,7 +754,7 @@ void nnNfpExport_GetAmiiboSettingsArgs(PPCInterpreter_t* hCPU)
 static mailbox_t s_touchMailbox;
 static AmiiboRawNFCData s_touchedRaw;
 static uint8 s_touchedUid[7];
-static fs::path s_touchedPath;
+static nfc::TagWriter s_touchedWriter;
 
 static void nnNfp_takeTouchedTag()
 {
@@ -763,7 +763,7 @@ static void nnNfp_takeTouchedTag()
 	memcpy(&nfp_data.amiiboNFCData, &s_touchedRaw, sizeof(AmiiboRawNFCData));
 	nfp_data.amiiboProcessedData.uidLength = 7;
 	memcpy(nfp_data.amiiboProcessedData.uid, s_touchedUid, 7);
-	nfp_data.amiiboPath = s_touchedPath;
+	nfp_data.amiiboWriter = std::move(s_touchedWriter);
 	mailbox_end_take(&s_touchMailbox);
 	amiiboDecrypt();
 }
@@ -786,19 +786,34 @@ bool nnNfp_isInitialized()
 
 bool nnNfp_touchNfcTagFromFile(const fs::path& filePath, uint32* nfcError)
 {
-	AmiiboRawNFCData rawData = { 0 };
 	MappedFile nfcData(filePath);
 	if (!nfcData.opened())
 	{
 		*nfcError = NFC_ERROR_NO_ACCESS;
 		return false;
 	}
-	if (nfcData.size() < sizeof(AmiiboRawNFCData))
+	return nnNfp_touchNfcTagFromData(std::span<const uint8>(reinterpret_cast<const uint8*>(nfcData.data()), nfcData.size()),
+		[filePath](std::span<const uint8> bytes) {
+			FileStream* fs = FileStream::openFile2(filePath, true);
+			if (!fs)
+				return false;
+			fs->writeData(bytes.data(), bytes.size());
+			delete fs;
+			return true;
+		}, nfcError);
+}
+
+// libretro: the touch above, for a figure the frontend's NFC reader read -
+// its bytes, and where a save to it goes back.
+bool nnNfp_touchNfcTagFromData(std::span<const uint8> data, nfc::TagWriter writer, uint32* nfcError)
+{
+	AmiiboRawNFCData rawData = { 0 };
+	if (data.size() < sizeof(AmiiboRawNFCData))
 	{
 		*nfcError = NFC_ERROR_INVALID_FILE_FORMAT;
 		return false;
 	}
-	memcpy(&rawData, nfcData.data(), sizeof(AmiiboRawNFCData));
+	memcpy(&rawData, data.data(), sizeof(AmiiboRawNFCData));
 
 	// verify if the file is a valid ntag215/amiibo file
 	if (rawData.dynamicLock[0] != 0x01 || rawData.dynamicLock[1] != 0x00 || rawData.dynamicLock[2] != 0x0F || rawData.dynamicLock[3] != 0xBD)
@@ -862,7 +877,7 @@ bool nnNfp_touchNfcTagFromFile(const fs::path& filePath, uint32* nfcError)
 	}
 	memcpy(&s_touchedRaw, &rawData, sizeof(AmiiboRawNFCData));
 	memcpy(s_touchedUid, serialNumber, 7);
-	s_touchedPath = filePath;
+	s_touchedWriter = std::move(writer);
 	mailbox_end_put(&s_touchMailbox);
 	// signal activation event
 	nnNfp_unloadAmiibo();
@@ -907,22 +922,15 @@ bool nnNfp_writeCurrentAmiibo()
 	nfp_data.amiiboInternal.writeCounterLow = writeCounter & 0xFF;
 	nfp_data.amiiboInternal.writeCounterHigh = (writeCounter >> 8) & 0xFF;
 
-	// open file for writing
-	FileStream* fs = FileStream::openFile2(nfp_data.amiiboPath, true);
-	if (!fs)
-	{
-		nnNfpUnlock();
-		return false;
-	}
 	// encrypt Amiibo and convert to NFC format
 	AmiiboRawNFCData nfcData;
 	amiiboEncrypt(&nfcData);
-	// write to file
-	fs->writeData(&nfcData, sizeof(AmiiboRawNFCData));
-	delete fs;
+	// back to where it came from: its file, or the frontend's reader
+	const bool written = nfp_data.amiiboWriter && nfp_data.amiiboWriter(
+		std::span<const uint8>(reinterpret_cast<const uint8*>(&nfcData), sizeof(AmiiboRawNFCData)));
 
 	nnNfpUnlock();
-	return true;
+	return written;
 }
 
 // From the scheduler's system events: a tag touched 1.5 s ago is taken away,

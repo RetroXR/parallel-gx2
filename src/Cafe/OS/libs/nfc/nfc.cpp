@@ -59,7 +59,7 @@ namespace nfc
 
 		SysAllocator<NFCTagInfo> tagInfo;
 
-		fs::path tagPath;
+		TagWriter tagWriter;
 		std::shared_ptr<TagV0> tag;
 
 		ndef::Message writeMessage;
@@ -92,7 +92,7 @@ namespace nfc
 		context->writeCallback = MPTR_NULL;
 		context->writeContext = nullptr;
 
-		context->tagPath = "";
+		context->tagWriter = {};
 		context->tag = {};
 	}
 
@@ -224,20 +224,11 @@ namespace nfc
 				// Update tag NDEF data
 				ctx->tag->SetNDEFData(ctx->writeMessage.ToBytes());
 
-				// open file for writing
-				FileStream* fs = FileStream::openFile2(ctx->tagPath, true);
-				if (!fs)
-				{
-					result = NFC_MAKE_RESULT(NFC_RESULT_BASE_WRITE, 0x22);
-				}
-				else
-				{
-					auto tagBytes = ctx->tag->ToBytes();
-					fs->writeData(tagBytes.data(), tagBytes.size());
-					delete fs;
-
-					result = NFC_RESULT_SUCCESS;
-				}
+				// back to where the tag came from (its file, or the frontend's reader)
+				auto tagBytes = ctx->tag->ToBytes();
+				const bool written = ctx->tagWriter && ctx->tagWriter(std::span(
+					reinterpret_cast<const uint8*>(tagBytes.data()), tagBytes.size()));
+				result = written ? NFC_RESULT_SUCCESS : NFC_MAKE_RESULT(NFC_RESULT_BASE_WRITE, 0x22);
 			}
 			else
 			{
@@ -341,7 +332,7 @@ namespace nfc
 			{
 				ctx->nfcStatus &= ~NFC_STATUS_HAS_TAG;
 				ctx->tag = {};
-				ctx->tagPath = "";
+				ctx->tagWriter = {};
 			}
 		}
 		else
@@ -679,8 +670,6 @@ namespace nfc
 			return nnNfp_touchNfcTagFromFile(filePath, nfcError);
 		}
 
-		NFCContext* ctx = &gNFCContexts[0];
-
 		MappedFile nfcData(filePath);
 		if (!nfcData.opened())
 		{
@@ -688,7 +677,25 @@ namespace nfc
 			return false;
 		}
 
-		ctx->tag = TagV0::FromBytes(std::as_bytes(nfcData.span()));
+		return TouchTagFromData(std::span<const uint8>(reinterpret_cast<const uint8*>(nfcData.data()), nfcData.size()),
+			[filePath](std::span<const uint8> bytes) {
+				FileStream* fs = FileStream::openFile2(filePath, true);
+				if (!fs)
+					return false;
+				fs->writeData(bytes.data(), bytes.size());
+				delete fs;
+				return true;
+			}, nfcError);
+	}
+
+	bool TouchTagFromData(std::span<const uint8> data, TagWriter writer, uint32* nfcError)
+	{
+		if (nnNfp_isInitialized())
+			return nnNfp_touchNfcTagFromData(data, std::move(writer), nfcError);
+
+		NFCContext* ctx = &gNFCContexts[0];
+
+		ctx->tag = TagV0::FromBytes(std::as_bytes(data));
 		if (!ctx->tag)
 		{
 			*nfcError = NFC_TOUCH_TAG_ERROR_INVALID_FILE_FORMAT;
@@ -696,7 +703,7 @@ namespace nfc
 		}
 
 		ctx->nfcStatus |= NFC_STATUS_HAS_TAG;
-		ctx->tagPath = filePath;
+		ctx->tagWriter = std::move(writer);
 		ctx->touchTime = std::chrono::system_clock::now();
 
 		*nfcError = NFC_TOUCH_TAG_ERROR_NONE;

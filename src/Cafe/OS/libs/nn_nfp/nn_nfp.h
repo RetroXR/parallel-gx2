@@ -1,5 +1,6 @@
 #pragma once
 #include "Cafe/OS/RPL/COSModule.h"
+#include "Cafe/OS/libs/nfc/nfc.h"
 
 namespace nn::nfp
 {
@@ -13,6 +14,7 @@ void nnNfp_update();
 
 bool nnNfp_isInitialized();
 bool nnNfp_touchNfcTagFromFile(const fs::path& filePath, uint32* nfcError);
+bool nnNfp_touchNfcTagFromData(std::span<const uint8> data, nfc::TagWriter writer, uint32* nfcError);
 // libretro: lift the amiibo ahead of its 1.5 s touch, and whether one is on
 void nnNfp_releaseTouch();
 bool nnNfp_hasActiveAmiibo();

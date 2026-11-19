@@ -2,6 +2,9 @@
 
 #include "Cafe/OS/RPL/COSModule.h"
 
+#include <functional>
+#include <span>
+
 // CEMU NFC error codes
 #define NFC_TOUCH_TAG_ERROR_NONE			(0)
 #define NFC_TOUCH_TAG_ERROR_NO_ACCESS			(1)
@@ -92,8 +95,17 @@ namespace nfc
 
 	bool TouchTagFromFile(const fs::path& filePath, uint32* nfcError);
 
-	// libretro: lift the tag TouchTagFromFile put down, ahead of its own
-	// timeout, and whether one is down now.
+	// libretro: where a touched tag's bytes go when the title writes to it -
+	// the file it came from, or the frontend's NFC reader. False when they did
+	// not get there.
+	using TagWriter = std::function<bool(std::span<const uint8> bytes)>;
+
+	// libretro: TouchTagFromFile for a tag the frontend's reader read, its
+	// bytes and where they go back.
+	bool TouchTagFromData(std::span<const uint8> data, TagWriter writer, uint32* nfcError);
+
+	// libretro: lift the touched tag ahead of its own timeout, and whether one
+	// is down now.
 	void ReleaseTag();
 	bool HasTag();
 }

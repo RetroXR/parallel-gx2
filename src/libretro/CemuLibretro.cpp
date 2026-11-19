@@ -13,7 +13,7 @@
 #include <cstdarg>
 #include "libretro.h"
 #include "SensorIndex.h"
-#include "AccessoryMediaInterface.h"
+#include "NfcInterface.h"
 
 #include "config/CemuConfig.h"
 #include "Cafe/Account/Account.h"
@@ -89,6 +89,7 @@
 #include "util/crypto/aes128.h"
 #include "util/helpers/helpers.h"
 #include "util/helpers/SeqlockValue.h"
+#include "util/helpers/mailbox.h"
 
 #include "Cafe/Filesystem/FST/FST.h"
 #include "Cafe/Filesystem/FST/KeyCache.h"
@@ -2080,71 +2081,132 @@ bool libretro_get_remote_pointer(uint32_t port, Vector2f* position, Vector2f* pr
 
 // ---- Amiibo: the GamePad's NFC reader --------------------------------------
 //
-// Offered to the frontend through the accessory media interface
-// (AccessoryMediaInterface.h): one NFC reader, on the GamePad. A figure handed
-// to it goes to nfc::TouchTagFromFile, which is what standalone's "Touch NFC
-// file" menu calls: nn_nfp takes it when the title uses the amiibo library,
-// nfc's own tag otherwise. Both keep a tag for a moment only (1.5 s and 2 s)
-// and let go of it by themselves - what a figure set on the GamePad and lifted
-// again looks like to the title - and both WRITE the figure back to its file
-// when the title saves to it.
-static const retro_accessory_reader s_accessory_readers[] = {
-	{RETRO_ACCESSORY_MEDIA_NFC_TAG, 0,
-	 RETRO_ACCESSORY_READER_MOMENTARY | RETRO_ACCESSORY_READER_WRITES, "Wii U GamePad NFC"},
-};
+// Through the frontend's NFC reader (NfcInterface.h: GET_NFC_INTERFACE, the
+// interface proposed upstream in libretro/RetroArch#19754). The frontend IS
+// the reader - a real one, or a virtual one serving amiibo dumps - and the core
+// reads the figure's bytes from it and writes a save back to it.
+//
+// While a title runs the reader scans. When a figure arrives (TAG_PRESENT after
+// anything else, which a swap of figures also reports once) its bytes go to
+// nfc::TouchTagFromData, the touch standalone's Touch NFC File makes: nn_nfp
+// takes it when the title uses the amiibo library, nfc's own tag otherwise.
+// Cemu still keeps a touch only for a moment (1.5 s and 2 s) and lets go by
+// itself, as upstream does; a figure taken off the reader sooner is let go of
+// then. A save to the figure is queued from the emulated thread and written to
+// the reader in the next retro_run, and before the core unloads.
+static retro_nfc_interface s_nfc{};
+static bool s_nfc_have = false;
+static bool s_nfc_scanning = false;
+static retro_nfc_status s_nfc_last = RETRO_NFC_STATUS_UNSUPPORTED;
+// A figure's bytes as read, and a save on its way back: the emulated thread
+// puts the save, retro_run takes it (no lock, nothing allocated in play). An
+// amiibo is 540 bytes; some dumps carry 572, the rest is padding.
+static constexpr unsigned kNfcMaxBytes = 1024;
+static uint8 s_nfc_read_buf[kNfcMaxBytes];
+static mailbox_t s_nfc_save_box;
+static uint8 s_nfc_save[kNfcMaxBytes];
+static unsigned s_nfc_save_size = 0;
 
-static bool libretro_accessory_insert(unsigned reader, const char* path)
+static void libretro_nfc_attach()
 {
-	if (reader >= std::size(s_accessory_readers) || !path || !*path)
-	{
-		libretro_log(RETRO_LOG_WARN, "amiibo: refused, reader %u path %s\n", reader, path ? path : "(none)");
-		return false;
-	}
-	if (!s_game_loaded)
-	{
-		libretro_log(RETRO_LOG_WARN, "amiibo: refused %s, no title is running to read it\n", path);
-		return false;
-	}
-	uint32 error = 0;
-	const bool ok = nfc::TouchTagFromFile(_utf8ToPath(path), &error);
-	// nn_nfp's path reports NO_ACCESS on success too, so only a refusal's error says anything.
-	libretro_log(ok ? RETRO_LOG_INFO : RETRO_LOG_WARN, ok ? "amiibo: %s on the GamePad\n" : "amiibo: %s refused (error %u)\n",
-		path, (unsigned)error);
-	return ok;
-}
-
-static bool libretro_accessory_remove(unsigned reader)
-{
-	if (reader >= std::size(s_accessory_readers))
-		return false;
-	if (s_game_loaded && nfc::HasTag())
-	{
-		nfc::ReleaseTag();
-		libretro_log(RETRO_LOG_INFO, "amiibo: lifted off the GamePad\n");
-	}
-	return true;
-}
-
-static bool libretro_accessory_is_present(unsigned reader)
-{
-	return reader < std::size(s_accessory_readers) && s_game_loaded && nfc::HasTag();
-}
-
-static void libretro_publish_accessory_readers(bool on)
-{
+	s_nfc = {};
+	s_nfc_have = false;
+	s_nfc_scanning = false;
+	s_nfc_last = RETRO_NFC_STATUS_UNSUPPORTED;
+	mailbox_init(&s_nfc_save_box);
 	if (!environ_cb)
 		return;
-	static retro_accessory_media_interface iface{};
-	iface.interface_version = RETRO_ACCESSORY_MEDIA_INTERFACE_VERSION;
-	iface.num_readers = on ? (unsigned)std::size(s_accessory_readers) : 0;
-	iface.readers = on ? s_accessory_readers : nullptr;
-	iface.insert = libretro_accessory_insert;
-	iface.remove = libretro_accessory_remove;
-	iface.is_present = libretro_accessory_is_present;
-	const bool taken = environ_cb(RETRO_ENVIRONMENT_SET_ACCESSORY_MEDIA_INTERFACE, &iface);
-	if (on)
-		libretro_log(RETRO_LOG_INFO, "amiibo: the frontend %s the GamePad's NFC reader\n",
-			taken ? "takes" : "does not know (accessory media interface), so has no way to hand over");
+	s_nfc.version = RETRO_NFC_INTERFACE_VERSION;
+	const bool got = environ_cb(RETRO_ENVIRONMENT_GET_NFC_INTERFACE, &s_nfc);
+	// Version 1 is all this needs: scan, status, tag info, read and write.
+	s_nfc_have = got && s_nfc.version >= 1 && s_nfc.start_scan && s_nfc.stop_scan &&
+		s_nfc.get_status && s_nfc.get_tag_info && s_nfc.read && s_nfc.write;
+	libretro_log(RETRO_LOG_INFO, "amiibo: %s\n", s_nfc_have
+		? fmt::format("the frontend's NFC reader, interface version {}", s_nfc.version).c_str()
+		: got ? "the frontend's NFC interface lacks a call this needs, so there is no reader"
+			  : "the frontend has no NFC interface, so there is no reader");
+}
+
+// The latest save to the figure, written to the reader. From retro_run and at unload.
+static void libretro_nfc_flush()
+{
+	if (!mailbox_begin_take(&s_nfc_save_box))
+		return;
+	if (s_nfc_have)
+	{
+		const int written = s_nfc.write(0, s_nfc_save, s_nfc_save_size);
+		if (written == (int)s_nfc_save_size)
+			libretro_log(RETRO_LOG_INFO, "amiibo: save written to the figure (%d bytes)\n", written);
+		else
+			libretro_log(RETRO_LOG_WARN, "amiibo: the reader did not take the save (%d of %u bytes): the figure is gone or refused it\n",
+				written, s_nfc_save_size);
+	}
+	mailbox_end_take(&s_nfc_save_box);
+}
+
+static void libretro_nfc_poll()
+{
+	if (!s_nfc_have || !s_game_loaded)
+		return;
+	if (!s_nfc_scanning)
+	{
+		s_nfc_scanning = s_nfc.start_scan();
+		libretro_log(s_nfc_scanning ? RETRO_LOG_INFO : RETRO_LOG_WARN, "amiibo: the reader %s\n",
+			s_nfc_scanning ? "scans for a figure" : "would not start scanning");
+		if (!s_nfc_scanning)
+		{
+			s_nfc_have = false;
+			return;
+		}
+	}
+	libretro_nfc_flush();
+
+	const retro_nfc_status status = s_nfc.get_status();
+	if (status == RETRO_NFC_STATUS_TAG_PRESENT && s_nfc_last != RETRO_NFC_STATUS_TAG_PRESENT)
+	{
+		retro_nfc_tag_info info{};
+		size_t size = 0;
+		if (s_nfc.get_tag_info(&info))
+		{
+			const unsigned want = info.mem_size ? std::min(info.mem_size, kNfcMaxBytes) : 540u;
+			const int got = s_nfc.read(0, s_nfc_read_buf, want);
+			size = got > 0 ? (size_t)got : 0;
+		}
+		const std::span<const uint8> bytes(s_nfc_read_buf, size);
+		uint32 error = 0;
+		// The writer runs on the emulated thread: a save waits in the box for
+		// the next retro_run. Refused (the title reports a failed write) only
+		// while the box is being emptied, or for a save larger than a tag.
+		const bool ok = !bytes.empty() && nfc::TouchTagFromData(bytes, [](std::span<const uint8> save) {
+			if (save.size() > kNfcMaxBytes || !mailbox_begin_put(&s_nfc_save_box))
+				return false;
+			memcpy(s_nfc_save, save.data(), save.size());
+			s_nfc_save_size = (unsigned)save.size();
+			mailbox_end_put(&s_nfc_save_box);
+			return true;
+		}, &error);
+		libretro_log(ok ? RETRO_LOG_INFO : RETRO_LOG_WARN, ok
+			? "amiibo: figure on the GamePad (%u bytes, tag type %d)\n"
+			: "amiibo: figure refused (%u bytes, tag type %d, error %u)\n",
+			(unsigned)bytes.size(), (int)info.type, (unsigned)error);
+	}
+	else if (status != RETRO_NFC_STATUS_TAG_PRESENT && s_nfc_last == RETRO_NFC_STATUS_TAG_PRESENT)
+	{
+		if (nfc::HasTag())
+			nfc::ReleaseTag();
+		libretro_log(RETRO_LOG_INFO, "amiibo: figure off the GamePad\n");
+	}
+	s_nfc_last = status;
+}
+
+static void libretro_nfc_detach()
+{
+	libretro_nfc_flush();
+	if (s_nfc_have && s_nfc_scanning)
+		s_nfc.stop_scan();
+	s_nfc = {};
+	s_nfc_have = false;
+	s_nfc_scanning = false;
 }
 
 // Defined below, next to the mappings it applies; called from
@@ -6467,10 +6529,10 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game)
 	libretro_update_convert_visibility();
 	libretro_update_pack_visibility();
 
-	// The GamePad's NFC reader, for a title; content that is only installed
+	// The frontend's NFC reader, for a title; content that is only installed
 	// runs nothing to read a figure.
 	if (!s_install_content)
-		libretro_publish_accessory_readers(true);
+		libretro_nfc_attach();
 
 	// Vulkan: context_reset is called by RetroArch after RETRO_HW_CONTEXT_VULKAN is set up
 
@@ -6562,7 +6624,7 @@ static void libretro_stop_system_services()
 
 RETRO_API void retro_unload_game()
 {
-	libretro_publish_accessory_readers(false);
+	libretro_nfc_detach();
 	libretro_set_motion(false);
 	// Every remote's sensors off; the ports' devices stay as the frontend set them.
 	for (LibretroRemote& r : s_remotes)
@@ -7146,6 +7208,7 @@ static void libretro_poll_input()
 	}
 
 	libretro_poll_remotes(s_polled_ports);
+	libretro_nfc_poll();
 
 	auto& state = s_input_state;
 	const auto& pad0 = s_port_state[0];
