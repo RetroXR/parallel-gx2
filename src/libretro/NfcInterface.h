@@ -9,11 +9,8 @@
 // from libretro.h. The guard below makes that switch-over safe: a libretro.h
 // that already has the call wins. Copies: libretro-godot's src/NfcInterface.hpp (the frontend side).
 //
-// One change from the PR: the number. The PR has 99 | EXPERIMENTAL, which
-// upstream has since given RETRO_ENVIRONMENT_GET_VIDEO_DECODE_INTERFACE, so
-// here it is 113 | EXPERIMENTAL, retroXR's provisional number past every one
-// upstream has assigned or has an open proposal for. Follow the PR when it is
-// renumbered.
+// One change from the PR: 113 here, provisional. The PR's 99 is upstream's
+// RETRO_ENVIRONMENT_GET_VIDEO_DECODE_INTERFACE.
 
 #include <limits.h>
 #include <stdint.h>
