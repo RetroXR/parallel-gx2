@@ -322,12 +322,14 @@ bool MetalPipelineCache::UpdateLoading(uint32& pipelinesLoadedTotal, uint32& pip
 		}
 
 		uint64 fileNameA, fileNameB;
-		std::vector<uint8> fileData;
-		if (s_cache->GetFileByIndex(g_mtlCacheState.pipelineLoadIndex, &fileNameA, &fileNameB, fileData))
+		// a buffer a compile thread gave back, kept here when an entry is not read
+		m_buffers.Take(m_loadBuffer);
+		if (s_cache->GetFileByIndex(g_mtlCacheState.pipelineLoadIndex, &fileNameA, &fileNameB, m_loadBuffer))
 		{
 			// queue for async compilation
 			g_mtlCacheState.pipelinesQueued++;
-			m_compilationQueue.push(std::move(fileData));
+			m_compilationQueue.push(std::move(m_loadBuffer));
+			m_loadBuffer = std::vector<uint8>();
 			g_mtlCacheState.pipelineLoadIndex++;
 			return true;
 		}
@@ -593,6 +595,7 @@ int MetalPipelineCache::CompilerThread()
 		if(pipelineData.empty())
 			continue;
 		LoadPipelineFromCache(pipelineData);
+		m_buffers.Give(pipelineData); // to the loader again
 		++g_mtlCacheState.pipelinesLoaded;
 		LatteGpuWake_Notify(); // the loader is waiting for this, or for room in the queue
 	}

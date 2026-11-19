@@ -111,12 +111,14 @@ bool VulkanPipelineStableCache::UpdateLoading(uint32& pipelinesLoadedTotal, uint
 		}
 
 		uint64 fileNameA, fileNameB;
-		std::vector<uint8> fileData;
-		if (s_cache->GetFileByIndex(g_vkCacheState.pipelineLoadIndex, &fileNameA, &fileNameB, fileData))
+		// a buffer a compile thread gave back, kept here when an entry is not read
+		m_buffers.Take(m_loadBuffer);
+		if (s_cache->GetFileByIndex(g_vkCacheState.pipelineLoadIndex, &fileNameA, &fileNameB, m_loadBuffer))
 		{
 			// queue for async compilation
 			g_vkCacheState.pipelinesQueued++;
-			m_compilationQueue.push(std::move(fileData));
+			m_compilationQueue.push(std::move(m_loadBuffer));
+			m_loadBuffer = std::vector<uint8>();
 			g_vkCacheState.pipelineLoadIndex++;
 			return true;
 		}
@@ -515,6 +517,7 @@ int VulkanPipelineStableCache::CompilerThread()
 		if(pipelineData.empty())
 			continue;
 		LoadPipelineFromCache(pipelineData);
+		m_buffers.Give(pipelineData); // to the loader again
 		++g_vkCacheState.pipelinesLoaded;
 		LatteGpuWake_Notify(); // the loader is waiting for this, or for room in the queue
 

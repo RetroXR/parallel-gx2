@@ -2,6 +2,7 @@
 #include "util/helpers/FixedQueue.h"
 #include "util/helpers/FixedQueue.h"
 #include "util/helpers/MpmcQueue.h"
+#include "util/helpers/RecycledBuffers.h"
 
 struct VulkanPipelineHash
 {
@@ -78,5 +79,9 @@ private:
 
 	std::atomic_uint32_t m_numCompilationThreads{ 0 };
 	MpmcQueue<std::vector<uint8>> m_compilationQueue; // the loader to every compiler thread: no lock
+	// the entries' buffers, back from the compiler threads to the loader: a
+	// load allocates for no more entries than are queued at once
+	RecycledBuffers m_buffers;
+	std::vector<uint8> m_loadBuffer;
 	std::atomic_uint32_t m_compilationCount;
 };

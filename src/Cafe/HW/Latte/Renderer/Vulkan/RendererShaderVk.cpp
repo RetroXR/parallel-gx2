@@ -194,7 +194,8 @@ void RendererShaderVk::CompileInternal(bool isRenderThread)
 		cemu_assert_debug(m_baseHash != 0);
 		uint64 h1, h2;
 		GenerateShaderPrecompiledCacheFilename(m_type, m_baseHash, m_auxHash, h1, h2);
-		std::vector<uint8> cacheFileData;
+		// the thread's, grown to the largest module it has read and kept
+		thread_local std::vector<uint8> cacheFileData;
 		if (s_spirvCache->GetFile({ h1, h2 }, cacheFileData))
 		{
 			// generate shader from cached SPIR-V buffer

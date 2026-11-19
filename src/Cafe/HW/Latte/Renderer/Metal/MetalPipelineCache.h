@@ -2,6 +2,7 @@
 
 #include "Cafe/HW/Latte/Renderer/Metal/MetalPipelineCompiler.h"
 #include "util/helpers/MpmcQueue.h"
+#include "util/helpers/RecycledBuffers.h"
 #include "util/helpers/MpscList.h"
 #include "util/math/vector2.h"
 
@@ -39,6 +40,10 @@ private:
 
 	std::atomic_uint32_t m_numCompilationThreads{ 0 };
 	MpmcQueue<std::vector<uint8>> m_compilationQueue; // the loader to every compiler thread: no lock
+	// the entries' buffers, back from the compiler threads to the loader: a
+	// load allocates for no more entries than are queued at once
+	RecycledBuffers m_buffers;
+	std::vector<uint8> m_loadBuffer;
 	std::atomic_uint32_t m_compilationCount;
 
     static uint64 CalculatePipelineHash(const LatteFetchShader* fetchShader, const LatteDecompilerShader* vertexShader, const LatteDecompilerShader* geometryShader, const LatteDecompilerShader* pixelShader, const class MetalAttachmentsInfo& lastUsedAttachmentsInfo, const class MetalAttachmentsInfo& activeAttachmentsInfo, const LatteContextRegister& lcr);

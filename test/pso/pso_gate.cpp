@@ -64,6 +64,7 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineRecord.h"
 #include "util/helpers/MappedFile.h"
+#include "util/helpers/RecycledBuffers.h"
 #include "util/helpers/StringBuf.h"
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
 
@@ -206,8 +207,11 @@ static void MeasureFileCache()
 		s_failures++;
 		return;
 	}
-	std::vector<uint8> out;
-	cache->GetFile({ 1, 7 }, out); // whatever the first read sets up once
+	// read as the core's shader caches read, into the reading thread's one
+	// buffer: grown on a first pass to the largest entry, then kept
+	std::vector<uint8> data;
+	for (int i = 0; i < ENTRIES; i++)
+		cache->GetFile({ (uint64)i + 1, 7 }, data);
 	s_allocs = 0;
 	s_allocBytes = 0;
 	file_cache_probes_reset();
@@ -215,12 +219,56 @@ static void MeasureFileCache()
 	int read = 0;
 	for (int i = 0; i < ENTRIES; i++)
 	{
-		std::vector<uint8> data;
 		if (cache->GetFile({ (uint64)i + 1, 7 }, data) && data.size() == (size_t)(256 + (i * 37) % 4096))
 			read++;
 	}
 	s_counting = false;
 	s_metrics["filecache table entries looked at to find 1000 entries"] = file_cache_probes();
+	const uint64_t readAllocs = s_allocs.load(), readBytes = s_allocBytes.load();
+	// and as the pipeline caches' loaders hand entries to their compile
+	// threads (VulkanPipelineStableCache::UpdateLoading): each read into a
+	// buffer one gave back, queued up to 50 at a time, given back once used;
+	// a first pass grows the buffers, the second is counted
+	{
+		RecycledBuffers buffers;
+		MpmcQueue<std::vector<uint8>> queue;
+		std::vector<uint8> loadBuffer;
+		int handed = 0;
+		for (int pass = 0; pass < 2; pass++)
+		{
+			if (pass == 1)
+			{
+				s_allocs = 0;
+				s_allocBytes = 0;
+				s_counting = true;
+			}
+			for (int i = 0; i < ENTRIES; i++)
+			{
+				buffers.Take(loadBuffer);
+				if (cache->GetFile({ (uint64)i + 1, 7 }, loadBuffer))
+				{
+					queue.push(std::move(loadBuffer));
+					loadBuffer = std::vector<uint8>();
+				}
+				// a compile thread's turn when 50 wait
+				while (queue.size() >= 50 || (i == ENTRIES - 1 && !queue.empty()))
+				{
+					std::vector<uint8> got;
+					if (!queue.peek2(got))
+						break;
+					handed++;
+					buffers.Give(got);
+				}
+			}
+		}
+		s_counting = false;
+		s_metrics["pipeline cache loads: allocations per 1000 entries handed over"] = s_allocs.load();
+		if (handed != 2 * ENTRIES)
+		{
+			std::fprintf(stderr, "FAIL: handed over %d of %d pipeline cache entries\n", handed, 2 * ENTRIES);
+			s_failures++;
+		}
+	}
 	delete cache;
 	fs::remove(path, ec);
 	if (read != ENTRIES)
@@ -236,8 +284,8 @@ static void MeasureFileCache()
 	const char* platform = "other";
 #endif
 	// per 1000 entries, so a fraction of an allocation per entry still counts
-	s_metrics[std::string("filecache.") + platform + " allocations per 1000 entries read"] = s_allocs.load();
-	s_metrics[std::string("filecache.") + platform + " bytes allocated per 1000 entries read"] = s_allocBytes.load();
+	s_metrics[std::string("filecache.") + platform + " allocations per 1000 entries read"] = readAllocs;
+	s_metrics[std::string("filecache.") + platform + " bytes allocated per 1000 entries read"] = readBytes;
 }
 
 // as LatteShaderCache_readSeparable*Shader inflate an entry's programs
