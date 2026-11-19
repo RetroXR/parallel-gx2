@@ -6933,7 +6933,7 @@ static void libretro_report_game_fps(std::chrono::steady_clock::time_point now)
 {
 	static std::chrono::steady_clock::time_point s_since{};
 	static bool s_have_ext = false, s_checked_ext = false;
-	static std::string s_text;
+	static char s_text[64];
 
 	if (!s_show_game_fps || !environ_cb)
 	{
@@ -6960,14 +6960,14 @@ static void libretro_report_game_fps(std::chrono::steady_clock::time_point now)
 
 	const uint32_t frames = s_game_frames.exchange(0, std::memory_order_relaxed);
 	s_since = now;
-	s_text = fmt::format("Game: {:.1f} FPS", frames / seconds);
+	snprintf(s_text, sizeof(s_text), "Game: %.1f FPS", frames / seconds);
 
 	if (s_have_ext)
 	{
 		// A status message is the frontend's line for figures like this one,
 		// replaced in place rather than stacked up as notifications.
 		struct retro_message_ext message = {};
-		message.msg = s_text.c_str();
+		message.msg = s_text;
 		message.duration = 1500;
 		message.priority = 1;
 		message.level = RETRO_LOG_INFO;
@@ -6978,7 +6978,7 @@ static void libretro_report_game_fps(std::chrono::steady_clock::time_point now)
 	}
 	else
 	{
-		struct retro_message message{s_text.c_str(), 90};
+		struct retro_message message{s_text, 90};
 		environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE, &message);
 	}
 }
@@ -7097,6 +7097,28 @@ static int64_t libretro_thread_cpu_us(std::thread::native_handle_type h)
 #endif
 }
 
+// the line a second of libretro_log_thread_time (a diagnostic option),
+// made as strings
+static void libretro_write_thread_time(const int64_t* cpu, const int64_t* last, size_t cores, int64_t wall)
+{
+	auto busy = [&](size_t i) -> std::string {
+		if (cpu[i] < 0 || last[i] < 0)
+			return "?";
+		return fmt::format("{}%", (cpu[i] - last[i]) * 100 / wall);
+	};
+	std::string line = "threads, % of one host core:";
+	for (size_t i = 0; i < cores; i++)
+		line += fmt::format(" PPC core {} {},", i, busy(i));
+	if (Latte_IsGpuCothread())
+		line += fmt::format(" frontend with the GPU {}", busy(cores + 1));
+	else
+		line += fmt::format(" GPU {}, frontend {}", busy(cores), busy(cores + 1));
+	cemuLog_log(LogType::Force, "{}", line);
+#if defined(__linux__)
+	cemuLog_log(LogType::Force, "{}", libretro_cpu_clocks());
+#endif
+}
+
 static void libretro_log_thread_time(std::chrono::steady_clock::time_point now)
 {
 	// every frame while the option is on: nothing allocated until the line
@@ -7134,22 +7156,7 @@ static void libretro_log_thread_time(std::chrono::steady_clock::time_point now)
 	if (wall < 1000000)
 		return;
 
-	auto busy = [&](size_t i) -> std::string {
-		if (cpu[i] < 0 || s_last[i] < 0)
-			return "?";
-		return fmt::format("{}%", (cpu[i] - s_last[i]) * 100 / wall);
-	};
-	std::string line = "threads, % of one host core:";
-	for (size_t i = 0; i < cores; i++)
-		line += fmt::format(" PPC core {} {},", i, busy(i));
-	if (Latte_IsGpuCothread())
-		line += fmt::format(" frontend with the GPU {}", busy(cores + 1));
-	else
-		line += fmt::format(" GPU {}, frontend {}", busy(cores), busy(cores + 1));
-	cemuLog_log(LogType::Force, "{}", line);
-#if defined(__linux__)
-	cemuLog_log(LogType::Force, "{}", libretro_cpu_clocks());
-#endif
+	libretro_write_thread_time(cpu, s_last, cores, wall);
 	s_since = now;
 	memcpy(s_last, cpu, sizeof(cpu));
 }
@@ -7205,6 +7212,94 @@ static void libretro_finish_run(std::chrono::steady_clock::time_point start,
 	}
 }
 
+// A WUA conversion's progress, while one runs (on its own thread): shown
+// and logged from here, the only place the core can say anything; strings
+// made as it goes, outside the frames of a game
+static void libretro_show_conversion_progress()
+{
+	// The conversion runs on its own thread; this is the only place the
+	// core can say anything to the user, so it repeats where it has got to
+	// rather than leaving them looking at a black screen for minutes.
+	static std::string s_shown;
+	static int s_shown_progress = -2;
+	static bool s_logged_this = false;
+	std::string text;
+	int progress = -1;
+	{
+		const auto status = s_convert_status.Read();
+		text = status->text;
+		progress = status->progress;
+	}
+	if (!text.empty() && environ_cb)
+	{
+		// A progress message rather than a notification, and sent every
+		// frame rather than every sixtieth: a notification is a toast with
+		// a lifetime, so it came and went and hid behind an open menu,
+		// while a progress message is a bar the frontend keeps on screen
+		// and updates in place until the figure reaches 100.
+		unsigned version = 0;
+		const bool have_ext = environ_cb(RETRO_ENVIRONMENT_GET_MESSAGE_INTERFACE_VERSION, &version) && version >= 1;
+		if (have_ext)
+		{
+			s_shown = text;
+			struct retro_message_ext message = {};
+			message.msg = s_shown.c_str();
+			message.duration = 4000;
+			message.priority = 3;
+			message.level = RETRO_LOG_INFO;
+			message.target = RETRO_MESSAGE_TARGET_OSD;
+			message.type = RETRO_MESSAGE_TYPE_PROGRESS;
+			message.progress = (int8_t)((progress < 0) ? -1 : (progress > 100 ? 100 : progress));
+			environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE_EXT, &message);
+		}
+		else if (text != s_shown)
+		{
+			// No message interface: the old call is all there is, and it
+			// takes a frame count rather than a bar, so it stays throttled
+			// to when the text actually changes.
+			s_shown = text;
+			struct retro_message message{s_shown.c_str(), 240};
+			environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE, &message);
+		}
+
+		// Also in the frontend's log, once per distinct message: the OSD is
+		// gone in seconds, and this is the only record of a conversion that
+		// went wrong.
+		if (progress != s_shown_progress || !s_logged_this)
+		{
+			if (progress < 0 || progress / 10 != s_shown_progress / 10)
+			{
+				libretro_log(RETRO_LOG_INFO, "%s\n", text.c_str());
+				s_logged_this = true;
+			}
+			s_shown_progress = progress;
+		}
+	}
+
+	// Finished, one way or the other. The title never stopped, so there is
+	// nothing to close and nothing to return to: the conversion simply
+	// stops being in progress, the submenu comes back, and the last message
+	// stays up its own few seconds.
+	if (s_convert_finished.load())
+	{
+		if (s_convert_thread.joinable())
+			s_convert_thread.join();
+		s_convert_mode.store(false);
+		s_convert_finished = false;
+		libretro_update_convert_visibility();
+		if (s_install_switch_on)
+		{
+			s_install_switch_on = false;
+			libretro_set_option_value("cemu_install_titles", "disabled");
+		}
+		if (s_install_game_switch_on)
+		{
+			s_install_game_switch_on = false;
+			libretro_set_option_value("cemu_install_game", "disabled");
+		}
+	}
+}
+
 RETRO_API void retro_run()
 {
 	// an H.264 decoder the GPU was behind on tries again
@@ -7228,89 +7323,7 @@ RETRO_API void retro_run()
 	}
 
 	if (s_convert_mode.load())
-	{
-		// The conversion runs on its own thread; this is the only place the
-		// core can say anything to the user, so it repeats where it has got to
-		// rather than leaving them looking at a black screen for minutes.
-		static std::string s_shown;
-		static int s_shown_progress = -2;
-		static bool s_logged_this = false;
-		std::string text;
-		int progress = -1;
-		{
-			const auto status = s_convert_status.Read();
-			text = status->text;
-			progress = status->progress;
-		}
-		if (!text.empty() && environ_cb)
-		{
-			// A progress message rather than a notification, and sent every
-			// frame rather than every sixtieth: a notification is a toast with
-			// a lifetime, so it came and went and hid behind an open menu,
-			// while a progress message is a bar the frontend keeps on screen
-			// and updates in place until the figure reaches 100.
-			unsigned version = 0;
-			const bool have_ext = environ_cb(RETRO_ENVIRONMENT_GET_MESSAGE_INTERFACE_VERSION, &version) && version >= 1;
-			if (have_ext)
-			{
-				s_shown = text;
-				struct retro_message_ext message = {};
-				message.msg = s_shown.c_str();
-				message.duration = 4000;
-				message.priority = 3;
-				message.level = RETRO_LOG_INFO;
-				message.target = RETRO_MESSAGE_TARGET_OSD;
-				message.type = RETRO_MESSAGE_TYPE_PROGRESS;
-				message.progress = (int8_t)((progress < 0) ? -1 : (progress > 100 ? 100 : progress));
-				environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE_EXT, &message);
-			}
-			else if (text != s_shown)
-			{
-				// No message interface: the old call is all there is, and it
-				// takes a frame count rather than a bar, so it stays throttled
-				// to when the text actually changes.
-				s_shown = text;
-				struct retro_message message{s_shown.c_str(), 240};
-				environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE, &message);
-			}
-
-			// Also in the frontend's log, once per distinct message: the OSD is
-			// gone in seconds, and this is the only record of a conversion that
-			// went wrong.
-			if (progress != s_shown_progress || !s_logged_this)
-			{
-				if (progress < 0 || progress / 10 != s_shown_progress / 10)
-				{
-					libretro_log(RETRO_LOG_INFO, "%s\n", text.c_str());
-					s_logged_this = true;
-				}
-				s_shown_progress = progress;
-			}
-		}
-
-		// Finished, one way or the other. The title never stopped, so there is
-		// nothing to close and nothing to return to: the conversion simply
-		// stops being in progress, the submenu comes back, and the last message
-		// stays up its own few seconds.
-		if (s_convert_finished.load())
-		{
-			if (s_convert_thread.joinable())
-				s_convert_thread.join();
-			s_convert_mode.store(false);
-			s_convert_finished = false;
-			libretro_update_convert_visibility();
-			if (s_install_switch_on)
-			{
-				s_install_switch_on = false;
-				libretro_set_option_value("cemu_install_titles", "disabled");
-			}
-			if (s_install_game_switch_on)
-			{
-				s_install_game_switch_on = false;
-				libretro_set_option_value("cemu_install_game", "disabled");
-			}
-		}
-	}
+		libretro_show_conversion_progress();
 
 	// The startup handshake, and the reason most of the startup machinery that
 	// used to be here is gone. The title starts on this thread, in this call,
