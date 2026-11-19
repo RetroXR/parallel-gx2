@@ -63,6 +63,32 @@ src/Cafe/HW/Latte/Core/LatteShaderCache.cpp LatteShaderCache_queueSeparableShade
 src/Cafe/HW/Latte/Core/LatteShaderCache.cpp LatteShaderCache_writeSeparableVertexShader
 src/Cafe/HW/Latte/Core/LatteShaderCache.cpp LatteShaderCache_writeSeparableGeometryShader
 src/Cafe/HW/Latte/Core/LatteShaderCache.cpp LatteShaderCache_writeSeparablePixelShader
+src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.cpp LatteDecompiler_DecompileVertexShader
+src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.cpp LatteDecompiler_DecompileGeometryShader
+src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.cpp LatteDecompiler_DecompilePixelShader
+src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.cpp _LatteDecompiler_Process
+src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.cpp LatteDecompiler_ParseCFInstruction
+src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.cpp LatteDecompiler_ParseCFSubroutine
+src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.cpp LatteDecompiler_ParseCF
+src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.cpp LatteDecompiler_ParseClauses
+src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.cpp LatteDecompiler_ResetScratch
+src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.cpp LatteDecompiler_cleanup
+src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerAnalyzer.cpp LatteDecompiler_analyze
+src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerAnalyzer.cpp LatteDecompiler_analyzeALUClause
+src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerAnalyzer.cpp LatteDecompiler_analyzeSubroutine
+src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerAnalyzer.cpp _remapUniformAccess
+src/Cafe/HW/Latte/Core/LatteGSCopyShaderParser.cpp LatteGSCopyShaderParser_parse
+src/Cafe/HW/Latte/Core/LatteGSCopyShaderParser.cpp LatteGSCopyShaderParser_addStreamWrite
+src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_CreateShaderFromDecompilerOutput
+src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_CompileSeparableVertexShader
+src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_CompileSeparableGeometryShader
+src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_CompileSeparablePixelShader
+src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_RegisterShader
+src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_GetOrCreateVertexShader
+src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_GetOrCreateGeometryShader
+src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_GetOrCreatePixelShader
+src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_UpdateActiveShaders
+src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_free
 '
 
 # the body of every definition of $2 in $1 (overloads too), its lines numbered

@@ -1354,6 +1354,11 @@ void LatteSHRC_Init()
 	cemu_assert_debug(sPixelShaders.empty());
 	cemu_assert_debug(s_shaderStateCache.empty());
 	cemu_assert_debug(s_shaderStateCacheKeys.empty());
+	// room for a large game's shaders, so that one first seen while it plays
+	// grows no table
+	sVertexShaders.reserve(4096);
+	sGeometryShaders.reserve(1024);
+	sPixelShaders.reserve(4096);
 }
 
 void LatteSHRC_UnloadAll()

@@ -1258,11 +1258,11 @@ static void SetPSInputs(bool usesGS, bool fragCoord = false, uint32 psControl1 =
 	s_regs[mmSPI_PS_IN_CONTROL_1] = psControl1;
 }
 
-// what a decompile may allocate: the shader, its SPIR-V, and each of its
-// uniform lists that has entries, once
+// what a decompile may allocate: its SPIR-V and each of the shader's
+// uniform lists that has entries, once (the shader comes from its pool)
 static unsigned long long AllocBound(const LatteDecompilerShader* shader)
 {
-	unsigned long long n = 2;
+	unsigned long long n = 1;
 	n += !shader->list_remappedUniformEntries.empty();
 	n += !shader->list_remappedUniformEntries_register.empty();
 	n += !shader->list_remappedUniformEntries_bufferGroups.empty();

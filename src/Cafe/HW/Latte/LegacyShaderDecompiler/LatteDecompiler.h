@@ -2,6 +2,7 @@
 #include "Cafe/HW/Latte/Core/LatteConst.h"
 #include "Cafe/HW/Latte/Renderer/RendererShader.h"
 #include <boost/container/static_vector.hpp>
+#include "util/helpers/PoolNew.h"
 
 namespace LatteDecompiler
 {
@@ -136,7 +137,9 @@ struct LatteDecompilerShaderResourceMapping
 	}
 };
 
-struct LatteDecompilerShader
+// from a pool (PoolNew.h): a shader first seen while a game plays takes a
+// block its predecessors left
+struct LatteDecompilerShader : PoolNew<LatteDecompilerShader>
 {
 	LatteDecompilerShader(LatteConst::ShaderType shaderType) : shaderType(shaderType) {}
 
