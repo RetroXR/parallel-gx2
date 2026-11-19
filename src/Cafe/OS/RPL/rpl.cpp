@@ -2037,14 +2037,14 @@ uint32 RPLLoader_GetHandleByModuleName(const char* name)
 	return RPL_INVALID_HANDLE;
 }
 
-const std::string RPLLoader_GetModuleNameByHandle(uint32 handle)
+std::string_view RPLLoader_GetModuleNameByHandle(uint32 handle)
 {
 	for (auto& dep : s_rplDependencyList)
 	{
 		if (dep->coreinitHandle == handle)
 			return dep->moduleName;
 	}
-	return "";
+	return {};
 }
 
 uint32 RPLLoader_GetMaxTLSModuleIndex()

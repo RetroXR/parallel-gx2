@@ -871,7 +871,7 @@ namespace snd_core
 
 	void AXSetVoiceOffsets(AXVPB* vpb, AXPBOFFSET_t* pbOffset)
 	{
-		cemuLog_log(LogType::SoundAPI, fmt::format("AXSetVoiceOffsets() -> Format: {0:04x} Current: {1:08x} End: {2:08x} Loop: {3:08x}", _swapEndianU16(pbOffset->format), _swapEndianU32(pbOffset->currentOffset), _swapEndianU32(pbOffset->endOffset), _swapEndianU32(pbOffset->loopOffset)));
+		cemuLog_log(LogType::SoundAPI, "AXSetVoiceOffsets() -> Format: {0:04x} Current: {1:08x} End: {2:08x} Loop: {3:08x}", _swapEndianU16(pbOffset->format), _swapEndianU32(pbOffset->currentOffset), _swapEndianU32(pbOffset->endOffset), _swapEndianU32(pbOffset->loopOffset));
 		MPTR sampleBase = _swapEndianU32(pbOffset->samples);
 		if (sampleBase == MPTR_NULL)
 		{

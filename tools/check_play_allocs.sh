@@ -93,6 +93,926 @@ src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_UpdateActiveShaders
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_CleanupShaderStateCache
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_RemoveShaderStateCacheEntryByKey
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_RemoveShaderStatesUsing
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXAcquireVoiceEx
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXFreeVoice
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXGetVoiceCurrentOffsetEx
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXGetVoiceLoopCount
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXGetVoiceOffsets
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXGetVoiceOffsetsEx
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXIsVoiceRunning
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXResetVoiceLoopCount
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXSetVoiceAdpcm
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXSetVoiceAdpcmLoop
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXSetVoiceBiquad
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXSetVoiceBiquadCoefs
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXSetVoiceCurrentOffset
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXSetVoiceCurrentOffsetEx
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXSetVoiceDeviceMix
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXSetVoiceEndOffset
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXSetVoiceEndOffsetEx
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXSetVoiceLoop
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXSetVoiceLoopOffset
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXSetVoiceLoopOffsetEx
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXSetVoiceLpf
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXSetVoiceLpfCoefs
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXSetVoiceOffsets
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXSetVoiceOffsetsEx
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXSetVoiceSamplesAddr
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXSetVoiceSrc
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXSetVoiceSrcRatio
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXSetVoiceSrcType
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXSetVoiceState
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXSetVoiceType
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXSetVoiceVe
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXUserBegin
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXUserEnd
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXVoiceBegin
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXVoiceEnd
+src/Cafe/OS/libs/gx2/GX2_Blit.cpp GX2SetClearDepthStencil
+src/Cafe/OS/libs/gx2/GX2_Blit.cpp GX2SetClearDepth
+src/Cafe/OS/libs/gx2/GX2_Blit.cpp GX2SetClearStencil
+src/Cafe/OS/libs/gx2/GX2_Blit.cpp GX2ClearColor
+src/Cafe/OS/libs/gx2/GX2_Blit.cpp GX2ClearBuffersEx
+src/Cafe/OS/libs/gx2/GX2_Blit.cpp GX2ClearDepthStencilEx
+src/Cafe/OS/libs/gx2/GX2_Blit.cpp GX2BlitInit
+src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2Init_commandBufferPool
+src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2Shutdown_commandBufferPool
+src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2Command_GetPoolGPUReadIndex
+src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2Command_WaitForNextBufferRetired
+src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2Command_SetupCoreCommandBuffer
+src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2Command_StartNewCommandBuffer
+src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2Command_SubmitCommandBuffer
+src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2Command_PadCurrentBuffer
+src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2Command_Flush
+src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2Flush
+src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2GetLastSubmittedTimeStamp
+src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2GetRetiredTimeStamp
+src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2WaitTimeStamp
+src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2ReserveCmdSpace
+src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2WriteGather_beginDisplayList
+src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2WriteGather_getDisplayListWriteDistance
+src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2WriteGather_endDisplayList
+src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2GetCurrentDisplayList
+src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2GetDisplayListWriteStatus
+src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2BeginDisplayList
+src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2BeginDisplayListEx
+src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2EndDisplayList
+src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2CallDisplayList
+src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2DirectCallDisplayList
+src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2CopyDisplayList
+src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2PatchDisplayList
+src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2CommandInit
+src/Cafe/OS/libs/gx2/GX2_ContextState.cpp GX2SetDefaultState
+src/Cafe/OS/libs/gx2/GX2_Draw.cpp GX2SetAttribBuffer
+src/Cafe/OS/libs/gx2/GX2_Draw.cpp GX2DrawIndexedEx
+src/Cafe/OS/libs/gx2/GX2_Draw.cpp GX2DrawIndexedEx2
+src/Cafe/OS/libs/gx2/GX2_Draw.cpp GX2DrawEx
+src/Cafe/OS/libs/gx2/GX2_Draw.cpp GX2DrawIndexedImmediateEx
+src/Cafe/OS/libs/gx2/GX2_Draw.cpp GX2DispatchCompute
+src/Cafe/OS/libs/gx2/GX2_Draw.cpp GX2DrawInit
+src/Cafe/OS/libs/gx2/GX2_Event.cpp GX2SetGPUFence
+src/Cafe/OS/libs/gx2/GX2_Event.cpp GX2SubmitUserTimeStamp
+src/Cafe/OS/libs/gx2/GX2_Event.cpp GX2SetEventCallback
+src/Cafe/OS/libs/gx2/GX2_Event.cpp GX2GetEventCallback
+src/Cafe/OS/libs/gx2/GX2_Event.cpp GX2WaitForVsync
+src/Cafe/OS/libs/gx2/GX2_Event.cpp GX2WaitForFlip
+src/Cafe/OS/libs/gx2/GX2_Event.cpp GX2DrawDone
+src/Cafe/OS/libs/gx2/GX2_Event.cpp GX2Init_event
+src/Cafe/OS/libs/gx2/GX2_Event.cpp GX2EventInit
+src/Cafe/OS/libs/gx2/GX2_Memory.cpp GX2MEMAllocatorsInit
+src/Cafe/OS/libs/gx2/GX2_Memory.cpp GX2MemInit
+src/Cafe/OS/libs/gx2/GX2_Misc.cpp GX2Init
+src/Cafe/OS/libs/gx2/GX2_Misc.cpp GX2Shutdown
+src/Cafe/OS/libs/gx2/GX2_Misc.cpp GX2GetMainCoreId
+src/Cafe/OS/libs/gx2/GX2_Misc.cpp GX2ResetGPU
+src/Cafe/OS/libs/gx2/GX2_Misc.cpp GX2SetTVBuffer
+src/Cafe/OS/libs/gx2/GX2_Misc.cpp GX2SetTVGamma
+src/Cafe/OS/libs/gx2/GX2_Misc.cpp GX2SetDRCGamma
+src/Cafe/OS/libs/gx2/GX2_Misc.cpp GX2GetLastFrame
+src/Cafe/OS/libs/gx2/GX2_Misc.cpp GX2GetLastFrameGammaA
+src/Cafe/OS/libs/gx2/GX2_Misc.cpp GX2GetLastFrameGammaB
+src/Cafe/OS/libs/gx2/GX2_Misc.cpp GX2GPUTimeToCPUTime
+src/Cafe/OS/libs/gx2/GX2_Misc.cpp GX2GetSystemDRCMode
+src/Cafe/OS/libs/gx2/GX2_Misc.cpp GX2IsVideoOutReady
+src/Cafe/OS/libs/gx2/GX2_Misc.cpp GX2Invalidate
+src/Cafe/OS/libs/gx2/GX2_Misc.cpp GX2MiscInit
+src/Cafe/OS/libs/gx2/GX2_Query.cpp GX2QueryBegin
+src/Cafe/OS/libs/gx2/GX2_Query.cpp GX2QueryEnd
+src/Cafe/OS/libs/gx2/GX2_Query.cpp GX2QueryGetOcclusionResult
+src/Cafe/OS/libs/gx2/GX2_Query.cpp GX2QueryBeginConditionalRender
+src/Cafe/OS/libs/gx2/GX2_Query.cpp GX2QueryEndConditionalRender
+src/Cafe/OS/libs/gx2/GX2_Query.cpp GX2QueryInit
+src/Cafe/OS/libs/gx2/GX2_Resource.cpp GX2RSetAllocator
+src/Cafe/OS/libs/gx2/GX2_Resource.cpp GX2RGetBufferAllocationSize
+src/Cafe/OS/libs/gx2/GX2_Resource.cpp GX2RGetBufferAlignment
+src/Cafe/OS/libs/gx2/GX2_Resource.cpp GX2RCreateBuffer
+src/Cafe/OS/libs/gx2/GX2_Resource.cpp GX2RCreateBufferUserMemory
+src/Cafe/OS/libs/gx2/GX2_Resource.cpp GX2RDestroyBufferEx
+src/Cafe/OS/libs/gx2/GX2_Resource.cpp GX2RBufferExists
+src/Cafe/OS/libs/gx2/GX2_Resource.cpp GX2RSetBufferName
+src/Cafe/OS/libs/gx2/GX2_Resource.cpp GX2RLockBufferEx
+src/Cafe/OS/libs/gx2/GX2_Resource.cpp GX2RUnlockBufferEx
+src/Cafe/OS/libs/gx2/GX2_Resource.cpp GX2RInvalidateBuffer
+src/Cafe/OS/libs/gx2/GX2_Resource.cpp GX2RSetAttributeBuffer
+src/Cafe/OS/libs/gx2/GX2_Resource.cpp GX2RSetStreamOutBuffer
+src/Cafe/OS/libs/gx2/GX2_Resource.cpp GX2RCreateSurface
+src/Cafe/OS/libs/gx2/GX2_Resource.cpp GX2RCreateSurfaceUserMemory
+src/Cafe/OS/libs/gx2/GX2_Resource.cpp GX2RDestroySurfaceEx
+src/Cafe/OS/libs/gx2/GX2_Resource.cpp GX2RSurfaceExists
+src/Cafe/OS/libs/gx2/GX2_Resource.cpp GX2RLockSurfaceEx
+src/Cafe/OS/libs/gx2/GX2_Resource.cpp GX2RUnlockSurfaceEx
+src/Cafe/OS/libs/gx2/GX2_Resource.cpp GX2RBeginDisplayListEx
+src/Cafe/OS/libs/gx2/GX2_Resource.cpp GX2REndDisplayList
+src/Cafe/OS/libs/gx2/GX2_Resource.cpp GX2RCallDisplayList
+src/Cafe/OS/libs/gx2/GX2_Resource.cpp GX2RDirectCallDisplayList
+src/Cafe/OS/libs/gx2/GX2_Resource.cpp GX2RDrawIndexed
+src/Cafe/OS/libs/gx2/GX2_Resource.cpp GX2ResourceInit
+src/Cafe/OS/libs/gx2/GX2_Shader.cpp GX2CalcFetchShaderSizeEx
+src/Cafe/OS/libs/gx2/GX2_Shader.cpp GX2InitFetchShaderEx
+src/Cafe/OS/libs/gx2/GX2_Shader.cpp GX2GetVertexShaderGPRs
+src/Cafe/OS/libs/gx2/GX2_Shader.cpp GX2GetVertexShaderStackEntries
+src/Cafe/OS/libs/gx2/GX2_Shader.cpp GX2GetPixelShaderGPRs
+src/Cafe/OS/libs/gx2/GX2_Shader.cpp GX2GetPixelShaderStackEntries
+src/Cafe/OS/libs/gx2/GX2_Shader.cpp GX2SetFetchShader
+src/Cafe/OS/libs/gx2/GX2_Shader.cpp GX2SetVertexShader
+src/Cafe/OS/libs/gx2/GX2_Shader.cpp GX2SetVertexUniformReg
+src/Cafe/OS/libs/gx2/GX2_Shader.cpp GX2SetPixelUniformReg
+src/Cafe/OS/libs/gx2/GX2_Shader.cpp GX2SetShaderModeEx
+src/Cafe/OS/libs/gx2/GX2_Shader.cpp GX2ShaderInit
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2InitAlphaTestReg
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetAlphaTestReg
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetAlphaTest
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2InitColorControlReg
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetColorControlReg
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetColorControl
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetPolygonControlReg
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetCullOnlyControl
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2InitPolygonOffsetReg
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetPolygonOffsetReg
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetPolygonOffset
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetRasterizerClipControlEx
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetRasterizerClipControl
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetRasterizerClipControlHalfZ
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2InitViewportReg
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetViewportReg
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetViewport
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2InitScissorReg
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetScissorReg
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2GetScissorReg
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetScissor
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetDepthOnlyControl
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetDepthStencilControlReg
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2InitStencilMaskReg
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetStencilMask
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetStencilMaskReg
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetPrimitiveRestartIndex
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2InitTargetChannelMasksReg
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetTargetChannelMasksReg
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetTargetChannelMasks
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2InitBlendControlReg
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetBlendControlReg
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetBlendControl
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2InitBlendConstantColorReg
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetBlendConstantColorReg
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetBlendConstantColor
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2InitHiStencilInfoRegs
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2InitPointSizeReg
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetPointSizeReg
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetPointSize
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2InitPointLimitsReg
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetPointLimitsReg
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetPointLimits
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2SetSpecialState
+src/Cafe/OS/libs/gx2/GX2_State.cpp GX2StateInit
+src/Cafe/OS/libs/gx2/GX2_Streamout.cpp GX2SetStreamOutBuffer
+src/Cafe/OS/libs/gx2/GX2_Streamout.cpp GX2SetStreamOutEnable
+src/Cafe/OS/libs/gx2/GX2_Streamout.cpp GX2SetStreamOutContext
+src/Cafe/OS/libs/gx2/GX2_Streamout.cpp GX2SaveStreamOutContext
+src/Cafe/OS/libs/gx2/GX2_Streamout.cpp GX2StreamoutInit
+src/Cafe/OS/libs/gx2/GX2_Surface.cpp GX2GetSurfaceMipPitch
+src/Cafe/OS/libs/gx2/GX2_Surface.cpp GX2GetSurfaceFormatBits
+src/Cafe/OS/libs/gx2/GX2_Surface.cpp GX2GetSurfaceMipSliceSize
+src/Cafe/OS/libs/gx2/GX2_Surface.cpp GX2GetSurfaceSwizzleOffset
+src/Cafe/OS/libs/gx2/GX2_Surface.cpp GX2GetSurfaceSwizzle
+src/Cafe/OS/libs/gx2/GX2_Surface.cpp GX2SurfaceIsCompressed
+src/Cafe/OS/libs/gx2/GX2_Surface.cpp GX2CalcDepthBufferHiZInfo
+src/Cafe/OS/libs/gx2/GX2_Surface.cpp GX2CalcColorBufferAuxInfo
+src/Cafe/OS/libs/gx2/GX2_Surface.cpp GX2CalculateSurfaceInfo
+src/Cafe/OS/libs/gx2/GX2_Surface.cpp GX2CalcSurfaceSizeAndAlignment
+src/Cafe/OS/libs/gx2/GX2_Surface.cpp GX2CheckSurfaceUseVsFormat
+src/Cafe/OS/libs/gx2/GX2_Surface.cpp GX2SetSurfaceSwizzle
+src/Cafe/OS/libs/gx2/GX2_Surface.cpp GX2SurfaceInit
+src/Cafe/OS/libs/gx2/GX2_Surface_Copy.cpp GX2CopySurfaceInternal
+src/Cafe/OS/libs/gx2/GX2_Surface_Copy.cpp GX2SurfaceCopyInit
+src/Cafe/OS/libs/gx2/GX2_Texture.cpp GX2InitTextureRegs
+src/Cafe/OS/libs/gx2/GX2_Texture.cpp GX2SetPixelTexture
+src/Cafe/OS/libs/gx2/GX2_Texture.cpp GX2SetVertexTexture
+src/Cafe/OS/libs/gx2/GX2_Texture.cpp GX2SetGeometryTexture
+src/Cafe/OS/libs/gx2/GX2_Texture.cpp GX2SetComputeTexture
+src/Cafe/OS/libs/gx2/GX2_Texture.cpp GX2InitSampler
+src/Cafe/OS/libs/gx2/GX2_Texture.cpp GX2InitSamplerXYFilter
+src/Cafe/OS/libs/gx2/GX2_Texture.cpp GX2InitSamplerZMFilter
+src/Cafe/OS/libs/gx2/GX2_Texture.cpp GX2InitSamplerLOD
+src/Cafe/OS/libs/gx2/GX2_Texture.cpp GX2InitSamplerClamping
+src/Cafe/OS/libs/gx2/GX2_Texture.cpp GX2InitSamplerBorderType
+src/Cafe/OS/libs/gx2/GX2_Texture.cpp GX2InitSamplerDepthCompare
+src/Cafe/OS/libs/gx2/GX2_Texture.cpp GX2SetPixelSampler
+src/Cafe/OS/libs/gx2/GX2_Texture.cpp GX2SetVertexSampler
+src/Cafe/OS/libs/gx2/GX2_Texture.cpp GX2SetGeometrySampler
+src/Cafe/OS/libs/gx2/GX2_Texture.cpp GX2SetComputeSampler
+src/Cafe/OS/libs/gx2/GX2_Texture.cpp GX2SetSamplerBorderColor
+src/Cafe/OS/libs/gx2/GX2_Texture.cpp GX2SetPixelSamplerBorderColor
+src/Cafe/OS/libs/gx2/GX2_Texture.cpp GX2SetVertexSamplerBorderColor
+src/Cafe/OS/libs/gx2/GX2_Texture.cpp GX2SetGeometrySamplerBorderColor
+src/Cafe/OS/libs/gx2/GX2_Texture.cpp GX2TextureInit
+src/Cafe/OS/libs/gx2/GX2_TilingAperture.cpp GX2TilingAperature_allocateTilingMemory
+src/Cafe/OS/libs/gx2/GX2_TilingAperture.cpp GX2TilingAperature_GenerateHandle
+src/Cafe/OS/libs/gx2/GX2_TilingAperture.cpp GX2TilingAperature_RetileTexture
+src/Cafe/OS/libs/coreinit/coreinit.cpp OSGetCoreId
+src/Cafe/OS/libs/coreinit/coreinit.cpp OSGetCoreCount
+src/Cafe/OS/libs/coreinit/coreinit.cpp OSIsDebuggerInitialized
+src/Cafe/OS/libs/coreinit/coreinit.cpp OSIsDebuggerPresent
+src/Cafe/OS/libs/coreinit/coreinit.cpp OSGetConsoleType
+src/Cafe/OS/libs/coreinit/coreinit.cpp OSGetMainCoreId
+src/Cafe/OS/libs/coreinit/coreinit.cpp OSIsMainCore
+src/Cafe/OS/libs/coreinit/coreinit.cpp OSGetStackPointer
+src/Cafe/OS/libs/coreinit/coreinit.cpp OSIsOffBoot
+src/Cafe/OS/libs/coreinit/coreinit.cpp OSGetBootPMFlags
+src/Cafe/OS/libs/coreinit/coreinit.cpp OSGetSystemMode
+src/Cafe/OS/libs/coreinit/coreinit.cpp OSPanic
+src/Cafe/OS/libs/coreinit/coreinit_Alarm.cpp OSHostAlarmStart
+src/Cafe/OS/libs/coreinit/coreinit_Alarm.cpp OSHostAlarmStop
+src/Cafe/OS/libs/coreinit/coreinit_Alarm.cpp OSInitAlarmQueue
+src/Cafe/OS/libs/coreinit/coreinit_Alarm.cpp OSInitAlarmQueueEx
+src/Cafe/OS/libs/coreinit/coreinit_Alarm.cpp OSCreateAlarm
+src/Cafe/OS/libs/coreinit/coreinit_Alarm.cpp OSCreateAlarmEx
+src/Cafe/OS/libs/coreinit/coreinit_Alarm.cpp __OSFindActiveAlarm
+src/Cafe/OS/libs/coreinit/coreinit_Alarm.cpp __OSEndActiveAlarm
+src/Cafe/OS/libs/coreinit/coreinit_Alarm.cpp __OSIsAlarmInQueue
+src/Cafe/OS/libs/coreinit/coreinit_Alarm.cpp __OSAppendAlarmToQueue
+src/Cafe/OS/libs/coreinit/coreinit_Alarm.cpp __OSRemoveAlarmFromQueue
+src/Cafe/OS/libs/coreinit/coreinit_Alarm.cpp OSCancelAlarm
+src/Cafe/OS/libs/coreinit/coreinit_Alarm.cpp OSCancelAlarms
+src/Cafe/OS/libs/coreinit/coreinit_Alarm.cpp OSSetAlarmTag
+src/Cafe/OS/libs/coreinit/coreinit_Alarm.cpp __OSHostAlarmTriggered
+src/Cafe/OS/libs/coreinit/coreinit_Alarm.cpp __OSInitiateAlarm
+src/Cafe/OS/libs/coreinit/coreinit_Alarm.cpp OSSetAlarm
+src/Cafe/OS/libs/coreinit/coreinit_Alarm.cpp OSSetPeriodicAlarm
+src/Cafe/OS/libs/coreinit/coreinit_Alarm.cpp OSSetAlarmEx
+src/Cafe/OS/libs/coreinit/coreinit_Alarm.cpp OSSetPeriodicAlarmEx
+src/Cafe/OS/libs/coreinit/coreinit_Alarm.cpp OSGetAlarmFromQueue
+src/Cafe/OS/libs/coreinit/coreinit_Alarm.cpp OSSetAlarmUserData
+src/Cafe/OS/libs/coreinit/coreinit_Alarm.cpp OSGetAlarmUserData
+src/Cafe/OS/libs/coreinit/coreinit_Alarm.cpp OSAlarm_Shutdown
+src/Cafe/OS/libs/coreinit/coreinit_Atomic.cpp OSSwapAtomic
+src/Cafe/OS/libs/coreinit/coreinit_Atomic.cpp OSCompareAndSwapAtomic
+src/Cafe/OS/libs/coreinit/coreinit_Atomic.cpp OSCompareAndSwapAtomicEx
+src/Cafe/OS/libs/coreinit/coreinit_Atomic.cpp OSAddAtomic
+src/Cafe/OS/libs/coreinit/coreinit_Atomic.cpp OSSwapAtomic64
+src/Cafe/OS/libs/coreinit/coreinit_Atomic.cpp OSSetAtomic64
+src/Cafe/OS/libs/coreinit/coreinit_Atomic.cpp OSGetAtomic64
+src/Cafe/OS/libs/coreinit/coreinit_Atomic.cpp OSAddAtomic64
+src/Cafe/OS/libs/coreinit/coreinit_Atomic.cpp OSAndAtomic64
+src/Cafe/OS/libs/coreinit/coreinit_Atomic.cpp OSOrAtomic64
+src/Cafe/OS/libs/coreinit/coreinit_Atomic.cpp OSCompareAndSwapAtomic64
+src/Cafe/OS/libs/coreinit/coreinit_Atomic.cpp OSCompareAndSwapAtomicEx64
+src/Cafe/OS/libs/coreinit/coreinit_CodeGen.cpp OSGetCodegenVirtAddrRangeInternal
+src/Cafe/OS/libs/coreinit/coreinit_CodeGen.cpp OSSwitchSecCodeGenMode
+src/Cafe/OS/libs/coreinit/coreinit_DynLoad.cpp OSDynLoad_SetAllocator
+src/Cafe/OS/libs/coreinit/coreinit_DynLoad.cpp OSDynLoad_SetTLSAllocator
+src/Cafe/OS/libs/coreinit/coreinit_DynLoad.cpp OSDynLoad_GetAllocator
+src/Cafe/OS/libs/coreinit/coreinit_DynLoad.cpp OSDynLoad_GetTLSAllocator
+src/Cafe/OS/libs/coreinit/coreinit_DynLoad.cpp OSDynLoad_AllocatorAlloc
+src/Cafe/OS/libs/coreinit/coreinit_DynLoad.cpp OSDynLoad_AllocatorFree
+src/Cafe/OS/libs/coreinit/coreinit_DynLoad.cpp OSDynLoad_AcquireInternal
+src/Cafe/OS/libs/coreinit/coreinit_DynLoad.cpp OSDynLoad_Acquire
+src/Cafe/OS/libs/coreinit/coreinit_DynLoad.cpp OSDynLoad_Release
+src/Cafe/OS/libs/coreinit/coreinit_DynLoad.cpp OSDynLoad_IsModuleLoaded
+src/Cafe/OS/libs/coreinit/coreinit_DynLoad.cpp OSDynLoad_FindExport
+src/Cafe/OS/libs/coreinit/coreinit_DynLoad.cpp OSDynLoad_GetModuleName
+src/Cafe/OS/libs/coreinit/coreinit_DynLoad.cpp OSDynLoad_GetNumberOfRPLs
+src/Cafe/OS/libs/coreinit/coreinit_DynLoad.cpp OSDynLoad_GetRPLInfo
+src/Cafe/OS/libs/coreinit/coreinit_DynLoad.cpp OSDynLoad_AddNotifyCallback
+src/Cafe/OS/libs/coreinit/coreinit_DynLoad.cpp OSDynLoad_DelNotifyCallback
+src/Cafe/OS/libs/coreinit/coreinit_FG.cpp OSGetForegroundBucket
+src/Cafe/OS/libs/coreinit/coreinit_FG.cpp OSGetForegroundBucketFreeArea
+src/Cafe/OS/libs/coreinit/coreinit_FG.cpp __OSClearCopyData
+src/Cafe/OS/libs/coreinit/coreinit_FG.cpp __OSGetCopyDataSize
+src/Cafe/OS/libs/coreinit/coreinit_FG.cpp __OSGetCopyDataPtr
+src/Cafe/OS/libs/coreinit/coreinit_FG.cpp __OSAppendCopyData
+src/Cafe/OS/libs/coreinit/coreinit_FG.cpp __OSResizeCopyData
+src/Cafe/OS/libs/coreinit/coreinit_FG.cpp OSCopyFromClipboard
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSLockMutex
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSUnlockMutex
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSGetMountSourceNext
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSGetMountSource
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSMount
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSBindMount
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSGetClientNum
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSInit
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSShutdown
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSAddClientEx
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSAddClient
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSDelClient
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSInitCmdBlock
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSGetAsyncResult
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSOpenFileAsync
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSOpenFile
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSOpenFileExAsync
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSOpenFileEx
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSCloseFileAsync
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSCloseFile
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSFlushFileAsync
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSFlushFile
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSReadFileAsync
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSReadFile
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSReadFileWithPosAsync
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSReadFileWithPos
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSWriteFileAsync
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSWriteFile
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSWriteFileWithPosAsync
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSWriteFileWithPos
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSSetPosFileAsync
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSSetPosFile
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSGetPosFileAsync
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSGetPosFile
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSOpenDirAsync
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSOpenDir
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSReadDirAsync
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSReadDir
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSCloseDirAsync
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSCloseDir
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSRewindDirAsync
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSRewindDir
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSAppendFileAsync
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSAppendFile
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSTruncateFileAsync
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSTruncateFile
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSRenameAsync
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSRename
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSRemoveAsync
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSRemove
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSMakeDirAsync
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSMakeDir
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSChangeDirAsync
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSChangeDir
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSGetCwdAsync
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSGetCwd
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSFlushQuotaAsync
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSFlushQuota
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSGetStatAsync
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSGetStat
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSGetStatFileAsync
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSGetStatFile
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSGetFreeSpaceSizeAsync
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSGetFreeSpaceSize
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSIsEofAsync
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSIsEof
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSSetUserData
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSGetUserData
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSGetVolumeState
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSGetErrorCodeForViewer
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSGetCurrentCmdBlock
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSGetLastErrorCodeForViewer
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSAAddClientEx
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSAAddClient
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSADelClient
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSAInit
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSAShimCheckClientHandle
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSAShimAllocateBuffer
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSAShimFreeBuffer
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSACloseFile
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSAFlushFile
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSAMakeDir
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSARename
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSAChangeDir
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSAReadDir
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSAOpenDir
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSACloseDir
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSARewindDir
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSAOpenFileEx
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSAGetStatFile
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSASetPosFile
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSATruncateFile
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSARemove
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSAChangeMode
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSAReadFile
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSAWriteFile
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSAGetInfoByQuery
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSAGetStat
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSAGetFreeSpaceSize
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSAGetDeviceInfo
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSAGetStatusStr
+src/Cafe/OS/libs/coreinit/coreinit_FS.cpp FSAMount
+src/Cafe/OS/libs/coreinit/coreinit_HWInterface.cpp OSReadRegister32
+src/Cafe/OS/libs/coreinit/coreinit_HWInterface.cpp OSReadRegister16
+src/Cafe/OS/libs/coreinit/coreinit_HWInterface.cpp OSWriteRegister16
+src/Cafe/OS/libs/coreinit/coreinit_HWInterface.cpp OSWriteRegister32
+src/Cafe/OS/libs/coreinit/coreinit_HWInterface.cpp OSModifyRegister16
+src/Cafe/OS/libs/coreinit/coreinit_HWInterface.cpp __OSReadRegister32Ex
+src/Cafe/OS/libs/coreinit/coreinit_HWInterface.cpp __OSWriteRegister32Ex
+src/Cafe/OS/libs/coreinit/coreinit_Init.cpp OSAllocFromSystem
+src/Cafe/OS/libs/coreinit/coreinit_Init.cpp OSFreeToSystem
+src/Cafe/OS/libs/coreinit/coreinit_Init.cpp coreinit_start
+src/Cafe/OS/libs/coreinit/coreinit_MEM.cpp coreinit_markSysAreaPersistent
+src/Cafe/OS/libs/coreinit/coreinit_MEM.cpp coreinit_releaseSysAreaForTitle
+src/Cafe/OS/libs/coreinit/coreinit_MEM.cpp coreinit_allocFromSysArea
+src/Cafe/OS/libs/coreinit/coreinit_MEM.cpp coreinit_freeToSysArea
+src/Cafe/OS/libs/coreinit/coreinit_MEM.cpp MEMHeapTable_Add
+src/Cafe/OS/libs/coreinit/coreinit_MEM.cpp MEMHeapTable_Remove
+src/Cafe/OS/libs/coreinit/coreinit_MEM.cpp MEMList_ContainsHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM.cpp MEMList_FindContainingHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM.cpp MEMInitHeapBase
+src/Cafe/OS/libs/coreinit/coreinit_MEM.cpp MEMBaseDestroyHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM.cpp MEMGetBaseHeapHandle
+src/Cafe/OS/libs/coreinit/coreinit_MEM.cpp MEMSetBaseHeapHandle
+src/Cafe/OS/libs/coreinit/coreinit_MEM.cpp MEMSetFillValForHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM.cpp MEMGetFillValForHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM.cpp MEMFindContainHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM.cpp MEMCreateUserHeapHandle
+src/Cafe/OS/libs/coreinit/coreinit_MEM.cpp MEMGetFirstListObject
+src/Cafe/OS/libs/coreinit/coreinit_MEM.cpp MEMList_SetSingleObject
+src/Cafe/OS/libs/coreinit/coreinit_MEM.cpp MEMInitList
+src/Cafe/OS/libs/coreinit/coreinit_MEM.cpp MEMAppendListObject
+src/Cafe/OS/libs/coreinit/coreinit_MEM.cpp MEMPrependListObject
+src/Cafe/OS/libs/coreinit/coreinit_MEM.cpp MEMRemoveListObject
+src/Cafe/OS/libs/coreinit/coreinit_MEM.cpp MEMGetNextListObject
+src/Cafe/OS/libs/coreinit/coreinit_MEM.cpp MEMGetPrevListObject
+src/Cafe/OS/libs/coreinit/coreinit_MEM.cpp MEMGetNthListObject
+src/Cafe/OS/libs/coreinit/coreinit_MEM.cpp MEMDefaultHeap_Init
+src/Cafe/OS/libs/coreinit/coreinit_MEM_BlockHeap.cpp MEMInitBlockHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_BlockHeap.cpp MEMDestroyBlockHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_BlockHeap.cpp MEMGetAllocatableSizeForBlockHeapEx
+src/Cafe/OS/libs/coreinit/coreinit_MEM_BlockHeap.cpp MEMAddBlockHeapTracking
+src/Cafe/OS/libs/coreinit/coreinit_MEM_BlockHeap.cpp MEMGetTrackingLeftInBlockHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_BlockHeap.cpp MEMAllocFromBlockHeapEx
+src/Cafe/OS/libs/coreinit/coreinit_MEM_BlockHeap.cpp MEMFreeToBlockHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_BlockHeap.cpp MEMGetTotalFreeSizeForBlockHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_BlockHeap.cpp MEMDumpBlockHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_ExpHeap.cpp MEMCreateExpHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_ExpHeap.cpp MEMAllocFromExpHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_ExpHeap.cpp MEMGetAllocatableSizeForExpHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_ExpHeap.cpp MEMCreateExpHeapEx
+src/Cafe/OS/libs/coreinit/coreinit_MEM_ExpHeap.cpp MEMDestroyExpHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_ExpHeap.cpp MEMAllocFromExpHeapEx
+src/Cafe/OS/libs/coreinit/coreinit_MEM_ExpHeap.cpp MEMFreeToExpHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_ExpHeap.cpp MEMSetAllocModeForExpHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_ExpHeap.cpp MEMGetAllocModeForExpHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_ExpHeap.cpp MEMAdjustExpHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_ExpHeap.cpp MEMResizeForMBlockExpHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_ExpHeap.cpp MEMGetTotalFreeSizeForExpHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_ExpHeap.cpp MEMGetAllocatableSizeForExpHeapEx
+src/Cafe/OS/libs/coreinit/coreinit_MEM_ExpHeap.cpp MEMSetGroupIDForExpHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_ExpHeap.cpp MEMGetGroupIDForExpHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_ExpHeap.cpp MEMVisitAllocatedForExpHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_ExpHeap.cpp MEMGetSizeForMBlockExpHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_ExpHeap.cpp MEMGetGroupIDForMBlockExpHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_ExpHeap.cpp MEMGetAllocDirForMBlockExpHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_ExpHeap.cpp MEMCheckExpHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_ExpHeap.cpp MEMCheckForMBlockExpHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_ExpHeap.cpp MEMInitAllocatorForExpHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_FrmHeap.cpp MEMCreateFrmHeapEx
+src/Cafe/OS/libs/coreinit/coreinit_MEM_FrmHeap.cpp MEMDestroyFrmHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_FrmHeap.cpp MEMGetAllocatableSizeForFrmHeapEx
+src/Cafe/OS/libs/coreinit/coreinit_MEM_FrmHeap.cpp MEMiGetFreeStartForFrmHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_FrmHeap.cpp MEMiGetFreeEndForFrmHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_FrmHeap.cpp MEMAllocFromFrmHeapEx
+src/Cafe/OS/libs/coreinit/coreinit_MEM_FrmHeap.cpp MEMFreeToFrmHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_FrmHeap.cpp MEMRecordStateForFrmHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_FrmHeap.cpp MEMFreeByStateToFrmHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_UnitHeap.cpp MEMCreateUnitHeapEx
+src/Cafe/OS/libs/coreinit/coreinit_MEM_UnitHeap.cpp MEMDestroyUnitHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_UnitHeap.cpp MEMCalcHeapSizeForUnitHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_UnitHeap.cpp MEMCountFreeBlockForUnitHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_UnitHeap.cpp MEMAllocFromUnitHeap
+src/Cafe/OS/libs/coreinit/coreinit_MEM_UnitHeap.cpp MEMFreeToUnitHeap
+src/Cafe/OS/libs/coreinit/coreinit_Memory.cpp DCInvalidateRange
+src/Cafe/OS/libs/coreinit/coreinit_Memory.cpp DCFlushRange
+src/Cafe/OS/libs/coreinit/coreinit_Memory.cpp DCFlushRangeNoSync
+src/Cafe/OS/libs/coreinit/coreinit_Memory.cpp DCStoreRange
+src/Cafe/OS/libs/coreinit/coreinit_Memory.cpp DCStoreRangeNoSync
+src/Cafe/OS/libs/coreinit/coreinit_Memory.cpp DCZeroRange
+src/Cafe/OS/libs/coreinit/coreinit_Memory.cpp OSIsAddressRangeDCValid
+src/Cafe/OS/libs/coreinit/coreinit_Memory.cpp coreinit_memset
+src/Cafe/OS/libs/coreinit/coreinit_Memory.cpp coreinit_memcpy
+src/Cafe/OS/libs/coreinit/coreinit_Memory.cpp coreinit_memmove
+src/Cafe/OS/libs/coreinit/coreinit_Memory.cpp OSBlockMove
+src/Cafe/OS/libs/coreinit/coreinit_Memory.cpp OSBlockSet
+src/Cafe/OS/libs/coreinit/coreinit_Memory.cpp OSEffectiveToPhysical
+src/Cafe/OS/libs/coreinit/coreinit_Memory.cpp OSMemoryBarrier
+src/Cafe/OS/libs/coreinit/coreinit_Memory.cpp OSGetMemBound
+src/Cafe/OS/libs/coreinit/coreinit_MemoryMapping.cpp OSGetAvailPhysAddrRange
+src/Cafe/OS/libs/coreinit/coreinit_MemoryMapping.cpp OSAllocVirtAddr
+src/Cafe/OS/libs/coreinit/coreinit_MemoryMapping.cpp OSFreeVirtAddr
+src/Cafe/OS/libs/coreinit/coreinit_MemoryMapping.cpp OSMapMemory
+src/Cafe/OS/libs/coreinit/coreinit_MemoryMapping.cpp OSUnmapMemory
+src/Cafe/OS/libs/coreinit/coreinit_MessageQueue.cpp OSInitMessageQueueEx
+src/Cafe/OS/libs/coreinit/coreinit_MessageQueue.cpp OSInitMessageQueue
+src/Cafe/OS/libs/coreinit/coreinit_MessageQueue.cpp OSReceiveMessage
+src/Cafe/OS/libs/coreinit/coreinit_MessageQueue.cpp OSPeekMessage
+src/Cafe/OS/libs/coreinit/coreinit_MessageQueue.cpp OSSendMessage
+src/Cafe/OS/libs/coreinit/coreinit_MessageQueue.cpp OSGetSystemMessageQueue
+src/Cafe/OS/libs/coreinit/coreinit_Misc.cpp OSReport
+src/Cafe/OS/libs/coreinit/coreinit_Misc.cpp OSVReport
+src/Cafe/OS/libs/coreinit/coreinit_Misc.cpp OSLogPrintf
+src/Cafe/OS/libs/coreinit/coreinit_Misc.cpp OSConsoleWrite
+src/Cafe/OS/libs/coreinit/coreinit_Misc.cpp OSFatal
+src/Cafe/OS/libs/coreinit/coreinit_Misc.cpp OSIsHomeButtonMenuEnabled
+src/Cafe/OS/libs/coreinit/coreinit_Misc.cpp OSEnableHomeButtonMenu
+src/Cafe/OS/libs/coreinit/coreinit_Misc.cpp OSGetPFID
+src/Cafe/OS/libs/coreinit/coreinit_Misc.cpp OSGetUPID
+src/Cafe/OS/libs/coreinit/coreinit_Misc.cpp OSGetTitleID
+src/Cafe/OS/libs/coreinit/coreinit_Misc.cpp __OSGetProcessSDKVersion
+src/Cafe/OS/libs/coreinit/coreinit_Misc.cpp OSRestartGame
+src/Cafe/OS/libs/coreinit/coreinit_Misc.cpp OSReleaseForeground
+src/Cafe/OS/libs/coreinit/coreinit_Misc.cpp OSDriver_Register
+src/Cafe/OS/libs/coreinit/coreinit_Misc.cpp OSDriver_Deregister
+src/Cafe/OS/libs/coreinit/coreinit_Misc.cpp coreinit_exit
+src/Cafe/OS/libs/coreinit/coreinit_OSScreen.cpp OSScreenInit
+src/Cafe/OS/libs/coreinit/coreinit_OSScreen.cpp OSScreenGetBufferSizeEx
+src/Cafe/OS/libs/coreinit/coreinit_OSScreen.cpp OSScreenSetBufferEx
+src/Cafe/OS/libs/coreinit/coreinit_OSScreen.cpp OSScreenEnableEx
+src/Cafe/OS/libs/coreinit/coreinit_OSScreen.cpp OSScreenClearBufferEx
+src/Cafe/OS/libs/coreinit/coreinit_OSScreen.cpp OSScreenFlipBuffersEx
+src/Cafe/OS/libs/coreinit/coreinit_OSScreen.cpp OSScreenPutPixelEx
+src/Cafe/OS/libs/coreinit/coreinit_OSScreen.cpp OSScreenPutFontEx
+src/Cafe/OS/libs/coreinit/coreinit_OverlayArena.cpp OSIsEnabledOverlayArena
+src/Cafe/OS/libs/coreinit/coreinit_OverlayArena.cpp OSEnableOverlayArena
+src/Cafe/OS/libs/coreinit/coreinit_Scheduler.cpp __OSLockScheduler
+src/Cafe/OS/libs/coreinit/coreinit_Scheduler.cpp __OSHasSchedulerLock
+src/Cafe/OS/libs/coreinit/coreinit_Scheduler.cpp __OSTryLockScheduler
+src/Cafe/OS/libs/coreinit/coreinit_Scheduler.cpp __OSUnlockScheduler
+src/Cafe/OS/libs/coreinit/coreinit_Scheduler.cpp __OSGetSchedulerLockOwnerTid
+src/Cafe/OS/libs/coreinit/coreinit_Scheduler.cpp __OSGetSchedulerLockHeld
+src/Cafe/OS/libs/coreinit/coreinit_Scheduler.cpp __OSGetSchedulerLockLastChangeTick
+src/Cafe/OS/libs/coreinit/coreinit_Scheduler.cpp __OSGetInterruptDisableCount
+src/Cafe/OS/libs/coreinit/coreinit_Scheduler.cpp __OSGetInterruptRestoreCount
+src/Cafe/OS/libs/coreinit/coreinit_Scheduler.cpp __OSGetLastCoreInterruptMask
+src/Cafe/OS/libs/coreinit/coreinit_Scheduler.cpp __OSGetLastRemainingCycles
+src/Cafe/OS/libs/coreinit/coreinit_Scheduler.cpp OSIsInterruptEnabled
+src/Cafe/OS/libs/coreinit/coreinit_Scheduler.cpp OSDisableInterrupts
+src/Cafe/OS/libs/coreinit/coreinit_Scheduler.cpp OSRestoreInterrupts
+src/Cafe/OS/libs/coreinit/coreinit_Scheduler.cpp OSEnableInterrupts
+src/Cafe/OS/libs/coreinit/coreinit_Spinlock.cpp __OSBoostThread
+src/Cafe/OS/libs/coreinit/coreinit_Spinlock.cpp __OSDeboostThread
+src/Cafe/OS/libs/coreinit/coreinit_Spinlock.cpp OSInitSpinLock
+src/Cafe/OS/libs/coreinit/coreinit_Spinlock.cpp OSAcquireSpinLock
+src/Cafe/OS/libs/coreinit/coreinit_Spinlock.cpp OSTryAcquireSpinLock
+src/Cafe/OS/libs/coreinit/coreinit_Spinlock.cpp OSTryAcquireSpinLockWithTimeout
+src/Cafe/OS/libs/coreinit/coreinit_Spinlock.cpp OSReleaseSpinLock
+src/Cafe/OS/libs/coreinit/coreinit_Spinlock.cpp OSUninterruptibleSpinLock_Acquire
+src/Cafe/OS/libs/coreinit/coreinit_Spinlock.cpp OSUninterruptibleSpinLock_TryAcquire
+src/Cafe/OS/libs/coreinit/coreinit_Spinlock.cpp OSUninterruptibleSpinLock_TryAcquireWithTimeout
+src/Cafe/OS/libs/coreinit/coreinit_Spinlock.cpp OSUninterruptibleSpinLock_Release
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSInitEvent
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSInitEventEx
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSResetEvent
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSWaitEventInternal
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSWaitEvent
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSWaitEventWithTimeout
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSSignalEventInternal
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSSignalEvent
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSSignalEventAllInternal
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSSignalEventAll
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSInitRendezvous
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSWaitRendezvous
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSInitMutexEx
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSInitMutex
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSLockMutexInternal
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSLockMutex
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSTryLockMutex
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSUnlockMutexInternal
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSUnlockMutex
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSInitCond
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSInitCondEx
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSSignalCond
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSWaitCond
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSInitSemaphoreEx
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSInitSemaphore
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSWaitSemaphoreInternal
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSWaitSemaphore
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSTryWaitSemaphore
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSSignalSemaphoreInternal
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSSignalSemaphore
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSGetSemaphoreCount
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSFastMutex_Init
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSFastMutex_LockInternal
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSFastMutex_Lock
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSFastMutex_TryLock
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSFastMutex_UnlockInternal
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSFastMutex_Unlock
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSFastCond_Init
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSFastCond_Wait
+src/Cafe/OS/libs/coreinit/coreinit_Synchronization.cpp OSFastCond_Signal
+src/Cafe/OS/libs/coreinit/coreinit_SysHeap.cpp OSAllocFromSystem
+src/Cafe/OS/libs/coreinit/coreinit_SysHeap.cpp OSFreeToSystem
+src/Cafe/OS/libs/coreinit/coreinit_SystemInfo.cpp OSGetSystemInfo
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSFindHostThread
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSDeleteHostThread
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSActivateThread
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSDeactivateThread
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSIsThreadActive
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSetCurrentThread
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSGetCurrentThread
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSInitContext
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSThreadInit
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSCreateThreadOnActiveThreadWorkaround
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSCreateThreadInternal2
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSCreateThreadType
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSCreateThread
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSCreateThreadType
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSRunThread
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSExitThread
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSetThreadSpecific
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSGetThreadSpecific
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSetThreadName
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSGetThreadName
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSYieldThread
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSleepTicks
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSDetachThread
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSJoinThread
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSAddReadyThreadToRunQueue
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSRemoveThreadFromRunQueues
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSCoreShouldSwitchToThread
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSResumeThreadInternal
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSResumeThread
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSContinueThread
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSSuspendThreadInternal
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSuspendThread
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSleepThread
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSWakeupThread
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSetThreadAffinity
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSGetThreadAffinity
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSetThreadDeallocator
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSetThreadCleanupCallback
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSSetThreadBasePriority
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSUpdateThreadEffectivePriority
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSetThreadPriority
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSGetThreadPriority
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSIsThreadTerminated
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSIsThreadSuspended
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSTestThreadCancelInternal
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSTestThreadCancel
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSSwitchToThreadFiber
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSThreadLoadContext
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSThreadStoreContext
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSStoreThread
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSLoadThread
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSThreadStartTimeslice
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSGetNextRunableThread
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSCheckSystemEvents
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSIdleTimeSkip
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSThreadCoreIdle
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSThreadSwitchToNext
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSGetSchedulerThreadIds
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSGetSchedulerThreads
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSchedulerBegin
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSLogActivePPCThreads
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSchedulerEnd
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSchedulerIsActive
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSchedulerGetHeartbeat
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSchedulerGetTimesliceCount
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSchedulerGetHostEnterCount
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSchedulerGetHostAlive
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSchedulerGetIdleLoopCount
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSchedulerGetIdleWaitEnterCount
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSchedulerGetIdleWaitWakeCount
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSchedulerGetSystemEventStage
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSchedulerGetSystemEventCount
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSchedulerGetPpcFiberLoopCount
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSchedulerGetPpcFiberRescheduleCount
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSchedulerGetPpcFiberLastRemainingCycles
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSchedulerGetPpcFiberStage
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSchedulerGetPpcFiberLastInstructionPointer
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSchedulerGetPpcFiberLastLR
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSSchedulerGetPpcFiberInstructionHeartbeatCount
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSIsSchedulerActive
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSGetDefaultThread
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSGetDefaultThreadStack
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSInitThreadQueue
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp OSInitThreadQueueEx
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSTerminatorThreadFunc
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSQueueThreadDeallocation
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSInitTerminatorThreads
+src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp __OSInitDefaultThreads
+src/Cafe/OS/libs/coreinit/coreinit_Time.cpp coreinit_GetMFTB
+src/Cafe/OS/libs/coreinit/coreinit_Time.cpp OSGetSystemTime
+src/Cafe/OS/libs/coreinit/coreinit_Time.cpp OSGetTime
+src/Cafe/OS/libs/coreinit/coreinit_Time.cpp OSGetSystemTick
+src/Cafe/OS/libs/coreinit/coreinit_Time.cpp OSGetTick
+src/Cafe/OS/libs/coreinit/coreinit_Time.cpp OSCalendarTimeToTicks
+src/Cafe/OS/libs/coreinit/coreinit_Time.cpp OSTicksToCalendarTime
+src/Cafe/OS/libs/snd_core/ax_aux.cpp AXAux_GetOutputFrameIndex
+src/Cafe/OS/libs/snd_core/ax_aux.cpp AXAux_GetInputBuffer
+src/Cafe/OS/libs/snd_core/ax_aux.cpp AXAux_GetOutputBuffer
+src/Cafe/OS/libs/snd_core/ax_aux.cpp AXAux_Init
+src/Cafe/OS/libs/snd_core/ax_aux.cpp AXRegisterAuxCallback
+src/Cafe/OS/libs/snd_core/ax_aux.cpp AXGetAuxCallback
+src/Cafe/OS/libs/snd_core/ax_aux.cpp AXAux_Process
+src/Cafe/OS/libs/snd_core/ax_aux.cpp AXAux_incrementBufferIndex
+src/Cafe/OS/libs/snd_core/ax_aux.cpp AXSetAuxReturnVolume
+src/Cafe/OS/libs/snd_core/ax_exports.cpp AXResetToDefaultState
+src/Cafe/OS/libs/snd_core/ax_exports.cpp AXIsInit
+src/Cafe/OS/libs/snd_core/ax_exports.cpp AXGetSwapProfile
+src/Cafe/OS/libs/snd_core/ax_exports.cpp __AXInit
+src/Cafe/OS/libs/snd_core/ax_exports.cpp sndcore2_AXInitWithParams
+src/Cafe/OS/libs/snd_core/ax_exports.cpp sndcore2_AXInit
+src/Cafe/OS/libs/snd_core/ax_exports.cpp sndcore1_AXInit
+src/Cafe/OS/libs/snd_core/ax_exports.cpp sndcore2_AXInitEx
+src/Cafe/OS/libs/snd_core/ax_exports.cpp sndcore1_AXInitEx
+src/Cafe/OS/libs/snd_core/ax_exports.cpp AXQuit
+src/Cafe/OS/libs/snd_core/ax_exports.cpp AXGetMaxVoices
+src/Cafe/OS/libs/snd_core/ax_exports.cpp __AXCalculatePointerHighExtension
+src/Cafe/OS/libs/snd_core/ax_exports.cpp AXGetDeviceFinalOutput
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXSetDeviceUpsampleStage
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXGetDeviceUpsampleStage
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXGetInputSamplesPerFrame
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXGetInputSamplesPerSec
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXUpsampler_Init
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXResetCallbacks
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXRegisterAppFrameCallback
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXDeregisterAppFrameCallback
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXRegisterFrameCallback
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXIst_Init
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXOut_ResetFinalMixCBData
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXGetDeviceFinalMixCallback
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXRegisterDeviceFinalMixCallback
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXSetDeviceRemixMatrix
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXGetDeviceRemixMatrix
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXUpsampleLinear32To48
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXTransferSamples
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXIst_ProcessFinalMixCallback
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXIst_SyncSingleVPB
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXIst_SyncVPB
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXIst_HandleFrameCallbacks
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXIst_ApplyDeviceRemix
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXIst_HandleDeviceRemix
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXIst_InitThread
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXIst_GetThread
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXIst_GenerateFrame
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXIst_ThreadEntry
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXIst_QueueFrame
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXIst_StopThread
+src/Cafe/OS/libs/snd_core/ax_ist.cpp AXIst_IsFrameBeingProcessed
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AXSetDefaultMixerSelect
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AXGetDefaultMixerSelect
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AXMix_Init
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AXMix_DepopVoice
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AX_readADPCMSamples
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AX_DecodeSamplesADPCM_NoSrc
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AX_DecodeSamplesADPCM_Linear
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AX_DecodeSamplesADPCM_Tap
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AX_DecodeSamplesPCM8_Linear
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AX_DecodeSamplesPCM8_Tap
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AX_DecodeSamplesPCM8_NoSrc
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AX_DecodeSamplesPCM16_Linear
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AX_DecodeSamplesPCM16_Tap
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AX_DecodeSamplesPCM16_NoSrc
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AXVoiceMix_DecodeSamples
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AXVoiceMix_MergeInto
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AXVoiceMix_ApplyADSR_NoClamp
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AXVoiceMix_ApplyADSR_Sndcore2
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AXVoiceMix_ApplyADSR
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AXVoiceMix_ApplyBiquad
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AXVoiceMix_ApplyLowPass
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AXVoiceMix_MixIntoBuses
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AXMix_ProcessVoices
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AXMix_MergeBusSamples
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AXAuxMix_StoreAuxSamples
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AXAuxMix_MixProcessedAuxSamplesIntoOutput
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AXMix_mergeTVBuses
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AXMix_mergeDRC0Buses
+src/Cafe/OS/libs/snd_core/ax_mix.cpp AXMix_process
+src/Cafe/OS/libs/snd_core/ax_multivoice.cpp AXMultiVoice_Init
+src/Cafe/OS/libs/snd_core/ax_multivoice.cpp AXAcquireMultiVoice
+src/Cafe/OS/libs/snd_core/ax_multivoice.cpp AXFreeMultiVoice
+src/Cafe/OS/libs/snd_core/ax_multivoice.cpp AXGetMultiVoiceReformatBufferSize
+src/Cafe/OS/libs/snd_core/ax_multivoice.cpp AXSetMultiVoiceType
+src/Cafe/OS/libs/snd_core/ax_multivoice.cpp AXSetMultiVoiceAdpcm
+src/Cafe/OS/libs/snd_core/ax_multivoice.cpp AXSetMultiVoiceSrcType
+src/Cafe/OS/libs/snd_core/ax_multivoice.cpp AXSetMultiVoiceOffsets
+src/Cafe/OS/libs/snd_core/ax_multivoice.cpp AXSetMultiVoiceVe
+src/Cafe/OS/libs/snd_core/ax_multivoice.cpp AXSetMultiVoiceSrcRatio
+src/Cafe/OS/libs/snd_core/ax_multivoice.cpp AXSetMultiVoiceSrc
+src/Cafe/OS/libs/snd_core/ax_multivoice.cpp AXSetMultiVoiceLoop
+src/Cafe/OS/libs/snd_core/ax_multivoice.cpp AXSetMultiVoiceState
+src/Cafe/OS/libs/snd_core/ax_multivoice.cpp AXSetMultiVoiceAdpcmLoop
+src/Cafe/OS/libs/snd_core/ax_multivoice.cpp AXIsMultiVoiceRunning
+src/Cafe/OS/libs/snd_core/ax_out.cpp __AXSetTVMode
+src/Cafe/OS/libs/snd_core/ax_out.cpp __AXSetDeviceMode
+src/Cafe/OS/libs/snd_core/ax_out.cpp AXGetDeviceMode
+src/Cafe/OS/libs/snd_core/ax_out.cpp AXOut_Init
+src/Cafe/OS/libs/snd_core/ax_out.cpp AXOut_SubmitTVFrame
+src/Cafe/OS/libs/snd_core/ax_out.cpp AXOut_SubmitDRCFrame
+src/Cafe/OS/libs/snd_core/ax_out.cpp AXOut_reset
+src/Cafe/OS/libs/snd_core/ax_out.cpp AXOut_updateDevicePlayState
+src/Cafe/OS/libs/snd_core/ax_out.cpp AXOut_NextTick
+src/Cafe/OS/libs/snd_core/ax_out.cpp AXOut_update
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXSetSyncFlag
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXResetSyncFlag
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXVoiceList_Lock
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXVoiceList_Unlock
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXVoiceList_AddFreeVoice
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXVoiceList_GetFreeVoice
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXVoiceList_GetFreeVoices
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXVoiceList_AddVoice
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXVoiceList_RemoveVoice
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXVoiceList_GetLeastRecentVoiceByPriority
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXVoiceList_GetListByPriority
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXUserIsProtected
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXVoiceProtection_IsProtectedByAnyThread
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXVoiceProtection_IsProtectedByCurrentThread
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXVoiceProtection_Acquire
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXVoiceProtection_Release
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXVPB_SetVoiceDefault
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXVPB_DropVoice
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXVPBInit
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXVPB_Init
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXIsValidDevice
+src/Cafe/OS/libs/snd_core/ax_voice.cpp __AXSetVoiceChannelMix
+src/Cafe/OS/libs/snd_core/ax_voice.cpp AXComputeLpfCoefs
+src/Cafe/OS/libs/snd_core/ax_voice.cpp __AXSetVoiceAddr
+src/Cafe/OS/libs/vpad/vpad.cpp _tpRawToResolution
+src/Cafe/OS/libs/vpad/vpad.cpp VPADSetAccParam
+src/Cafe/OS/libs/vpad/vpad.cpp VPADGetAccParam
+src/Cafe/OS/libs/vpad/vpad.cpp VPADRead
+src/Cafe/OS/libs/vpad/vpad.cpp VPADSetBtnRepeat
+src/Cafe/OS/libs/vpad/vpad.cpp VPADSetAccPlayMode
+src/Cafe/OS/libs/vpad/vpad.cpp VPADGetAccPlayMode
+src/Cafe/OS/libs/vpad/vpad.cpp VPADSetSamplingCallback
+src/Cafe/OS/libs/vpad/vpad.cpp VPADCalcTPCalibrationParam
+src/Cafe/OS/libs/vpad/vpad.cpp VPADGetTPCalibrationParam
+src/Cafe/OS/libs/vpad/vpad.cpp VPADSetTPCalibrationParam
+src/Cafe/OS/libs/vpad/vpad.cpp VPADGetTPCalibratedPoint
+src/Cafe/OS/libs/vpad/vpad.cpp VPADGetTPCalibratedPointEx
+src/Cafe/OS/libs/vpad/vpad.cpp VPADSetCrossStickEmulationParamsL
+src/Cafe/OS/libs/vpad/vpad.cpp VPADSetCrossStickEmulationParamsR
+src/Cafe/OS/libs/vpad/vpad.cpp VPADGetCrossStickEmulationParamsL
+src/Cafe/OS/libs/vpad/vpad.cpp VPADGetCrossStickEmulationParamsR
+src/Cafe/OS/libs/vpad/vpad.cpp VPADGetButtonProcMode
+src/Cafe/OS/libs/vpad/vpad.cpp VPADSetButtonProcMode
+src/Cafe/OS/libs/vpad/vpad.cpp VPADEnableStickCrossClamp
+src/Cafe/OS/libs/vpad/vpad.cpp VPADDisableStickCrossClamp
+src/Cafe/OS/libs/vpad/vpad.cpp VPADSetLStickClampThreshold
+src/Cafe/OS/libs/vpad/vpad.cpp VPADSetRStickClampThreshold
+src/Cafe/OS/libs/vpad/vpad.cpp VPADGetLStickClampThreshold
+src/Cafe/OS/libs/vpad/vpad.cpp VPADGetRStickClampThreshold
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADGetAccParam
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADSetAccParam
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADGetAccPlayMode
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADSetAccPlayMode
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADEnableStickCrossClamp
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADDisableStickCrossClamp
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADSetLStickClampThreshold
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADSetRStickClampThreshold
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADGetLStickClampThreshold
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADGetRStickClampThreshold
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADSetCrossStickEmulationParamsL
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADSetCrossStickEmulationParamsR
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADGetCrossStickEmulationParamsL
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADGetCrossStickEmulationParamsR
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADGetButtonProcMode
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADSetButtonProcMode
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADSetLcdMode
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADGetLcdMode
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADControlMotor
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADStopMotor
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADSetTPCalibrationParam
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADGetTPCalibrationParam
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADGetTPCalibratedPoint
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADGetTPCalibratedPointEx
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADSetGyroDirection
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADGetGyroZeroDriftMode
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADSetGyroZeroDriftMode
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADSetGyroDirReviseBase
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADDisableGyroDirRevise
+src/Cafe/OS/libs/vpad/vpad.cpp vpadExport_VPADSetGyroDirReviseParam
+src/Cafe/OS/libs/padscore/padscore.cpp padscoreExport_WPADGetStatus
+src/Cafe/OS/libs/padscore/padscore.cpp padscoreExport_WPADGetBatteryLevel
+src/Cafe/OS/libs/padscore/padscore.cpp padscoreExport_WPADProbe
+src/Cafe/OS/libs/padscore/padscore.cpp padscoreExport_WPADDisconnect
+src/Cafe/OS/libs/padscore/padscore.cpp padscoreExport_WPADGetInfoAsync
+src/Cafe/OS/libs/padscore/padscore.cpp padscoreExport_WPADRead
+src/Cafe/OS/libs/padscore/padscore.cpp padscoreExport_WPADSetDataFormat
+src/Cafe/OS/libs/padscore/padscore.cpp padscoreExport_WPADGetDataFormat
+src/Cafe/OS/libs/padscore/padscore.cpp padscoreExport_WPADGetInfo
+src/Cafe/OS/libs/padscore/padscore.cpp padscoreExport_WPADIsMotorEnabled
+src/Cafe/OS/libs/padscore/padscore.cpp padscoreExport_WPADControlMotor
+src/Cafe/OS/libs/padscore/padscore.cpp padscoreExport_KPADGetUnifiedWpadStatus
+src/Cafe/OS/libs/padscore/padscore.cpp padscoreExport_KPADSetBtnRepeat
+src/Cafe/OS/libs/padscore/padscore.cpp padscoreExport_KPADSetSamplingCallback
+src/Cafe/OS/libs/padscore/padscore.cpp padscoreExport_WPADControlDpd
+src/Cafe/OS/libs/padscore/padscore.cpp padscoreExport_WPADSetExtensionCallback
+src/Cafe/OS/libs/padscore/padscore.cpp padscoreExport_KPADSetConnectCallback
+src/Cafe/OS/libs/padscore/padscore.cpp _KPADRead
+src/Cafe/OS/libs/padscore/padscore.cpp padscoreExport_KPADReadEx
+src/Cafe/OS/libs/padscore/padscore.cpp padscoreExport_KPADRead
+src/Cafe/OS/libs/padscore/padscore.cpp KPADInitEx
+src/Cafe/OS/libs/padscore/padscore.cpp WPADSetCallbackByKPAD
+src/Cafe/OS/libs/padscore/padscore.cpp WPADIsUsedCallbackByKPAD
+src/Cafe/OS/libs/padscore/padscore.cpp WPADSetSamplingCallback
+src/Cafe/OS/libs/padscore/padscore.cpp WPADIsMplsAttached
+src/Cafe/OS/libs/padscore/padscore.cpp WPADGetAccGravityUnit
 src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.cpp LatteDecompiler_SetUniformLists
 src/Cafe/HW/Latte/Core/LatteShader.cpp InitUniformLayoutFromDecompiler
 src/Cafe/HW/Latte/Renderer/OpenGL/OpenGLRenderer.cpp OpenGLRenderer::shader_create
@@ -101,25 +1021,43 @@ src/Cafe/HW/Latte/Renderer/Vulkan/RendererShaderVk.cpp RendererShaderVk::FinishC
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_free
 '
 
-# the body of every definition of $2 in $1 (overloads too), its lines numbered
-bodies() {
-	awk -v name="$2" '
-		BEGIN { n = split(name, parts, "::"); short = parts[n] }
+# Every listed function's body, each line tagged with the function: one awk
+# pass a file for all the functions listed in it (overloads too)
+tmp=$(mktemp -d) || exit 2
+trap 'rm -rf "$tmp"' EXIT
+printf '%s\n' "$list" | awk 'NF == 2' > "$tmp/list"
+: > "$tmp/bodies"
+: > "$tmp/fail"
+for file in $(cut -d' ' -f1 "$tmp/list" | sort -u); do
+	if [ ! -f "$file" ]; then
+		awk -v f="$file" -v me="$0" '$1 == f { print f ": not there (take " $2 " off the list in " me " only when it moved)" }' "$tmp/list" >> "$tmp/fail"
+		continue
+	fi
+	awk -v f="$file" '$1 == f { print $2 }' "$tmp/list" > "$tmp/names"
+	awk '
+		FNR == NR { names[++count] = $0; next }
 		!inside {
 			line = $0
 			sub(/\/\/.*/, "", line)
 			if (line ~ /;[[:space:]]*$/ || line ~ /^[[:space:]]*(return|else|if|while|for)[[:space:](]/)
 				next
-			i = index(line, name "(")
-			if (i == 0)
+			if (index(line, "(") == 0)
 				next
-			before = substr(line, i - 1, 1)
-			if (i > 1 && before ~ /[A-Za-z0-9_:>]/ && substr(line, i - 2, 2) != "::")
-				next
-			inside = 1; depth = 0; started = 0
+			for (k = 1; k <= count; k++)
+			{
+				name = names[k]
+				i = index(line, name "(")
+				if (i == 0)
+					continue
+				before = substr(line, i - 1, 1)
+				if (i > 1 && before ~ /[A-Za-z0-9_:>]/ && substr(line, i - 2, 2) != "::")
+					continue
+				cur = name; inside = 1; depth = 0; started = 0
+				break
+			}
 		}
 		inside {
-			print FILENAME ":" FNR ":" $0
+			print FILENAME " " cur "\t" FILENAME ":" FNR ":" $0
 			t = $0
 			sub(/\/\/.*/, "", t)
 			gsub(/'"'"'[{}]'"'"'/, "", t)
@@ -130,50 +1068,43 @@ bodies() {
 			if (started && depth <= 0)
 				inside = 0
 		}
-	' "$1"
-}
+	' "$tmp/names" "$file" > "$tmp/body"
+	cat "$tmp/body" >> "$tmp/bodies"
+	# a name no definition was found for
+	cut -f1 "$tmp/body" | sort -u > "$tmp/found"
+	while read -r fn; do
+		grep -qxF "$file $fn" "$tmp/found" || echo "$file: no definition of $fn found" >> "$tmp/fail"
+	done < "$tmp/names"
+done
 
-pooled() {
-	grep -rqE "(class|struct)[[:space:]]+$1[[:space:]]*(final[[:space:]]*)?:[^{;]*PoolNew<$1[,>]" src --include='*.h' --include='*.cpp'
-}
-
-out=$(echo "$list" | while read -r file fn; do
-	[ -z "$file" ] && continue
-	if [ ! -f "$file" ]; then
-		echo "$file: not there (take $fn off the list in $0 only when it moved)"
-		echo "#fail"
-		continue
-	fi
-	body=$(bodies "$file" "$fn")
-	if [ -z "$body" ]; then
-		echo "$file: no definition of $fn found"
-		echo "#fail"
-		continue
-	fi
-	# code only: comment lines, logging and assertions out
-	code=$(printf '%s\n' "$body" | grep -v -e ':[0-9]*:[[:space:]]*\(//\|/\*\|\*\)' | grep -v -e 'cemuLog_' -e 'UnrecoverableError' -e 'cemu_assert' -e 'PSO_TRACE')
-	bad=$(printf '%s\n' "$code" | grep -E \
+# code only: comment lines, logging and assertions out
+grep -v -e '	[^	]*:[0-9]*:[[:space:]]*\(//\|/\*\|\*\)' "$tmp/bodies" > "$tmp/nocomment"
+grep -v -e 'cemuLog_' -e 'UnrecoverableError' -e 'cemu_assert' -e 'PSO_TRACE' "$tmp/nocomment" > "$tmp/code"
+{
+	grep -E \
 		-e 'std::(vector|string|wstring|u8string|deque|queue|list|map|multimap|set|unordered_map|unordered_set|function)(<[^;()&]*>)?[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*([;=({]|$)' \
 		-e 'fs::path[[:space:]]+[A-Za-z_]' -e 'fmt::format\(' -e 'std::to_string\(' -e 'make_(unique|shared)<' \
-		-e '(^|[^A-Za-z0-9_])(malloc|calloc|realloc|strdup)\(' -e 'new[[:space:]]+[A-Za-z_][A-Za-z0-9_:<>, ]*\[' | grep -v -e ':[[:space:]]*static[[:space:]]' -e 'thread_local')
-	news=$(printf '%s\n' "$code" | grep -oE 'new[[:space:]]+[A-Za-z_][A-Za-z0-9_:]*[[:space:]]*[({]' | sed -E 's/new[[:space:]]+//; s/[[:space:]]*[({]$//' | sort -u)
-	for t in $news; do
-		if ! pooled "${t##*::}"; then
-			bad="$bad
-$(printf '%s\n' "$code" | grep -E "new[[:space:]]+$t[[:space:]]*[({]") (not from a pool)"
+		-e '(^|[^A-Za-z0-9_])(malloc|calloc|realloc|strdup)\(' -e 'new[[:space:]]+[A-Za-z_][A-Za-z0-9_:<>, ]*\[' "$tmp/code" | grep -v -e ':[[:space:]]*static[[:space:]]' -e 'thread_local'
+	# a log call formats only when its kind of logging is on; one handed a
+	# string formatted beforehand formats it every time, logging on or not
+	grep -E 'cemuLog_[A-Za-z]*\([^;]*(fmt::format\(|std::to_string\(|std::string\()' "$tmp/nocomment" | sed 's/$/ (formatted before the log call, logging on or not)/'
+	# an object new'd that does not come from a pool
+	for t in $(grep -oE 'new[[:space:]]+[A-Za-z_][A-Za-z0-9_:]*[[:space:]]*[({]' "$tmp/code" | sed -E 's/new[[:space:]]+//; s/[[:space:]]*[({]$//' | sort -u); do
+		short=${t##*::}
+		if ! grep -rqE "(class|struct)[[:space:]]+$short[[:space:]]*(final[[:space:]]*)?:[^{;]*PoolNew<$short[,>]" src --include='*.h' --include='*.cpp'; then
+			grep -E "new[[:space:]]+$t[[:space:]]*[({]" "$tmp/code" | sed 's/$/ (not from a pool)/'
 		fi
 	done
-	bad=$(printf '%s\n' "$bad" | grep -v '^$')
-	if [ -n "$bad" ]; then
-		echo "an allocation in $fn, which runs while a game plays:"
-		printf '%s\n' "$bad"
-		echo "#fail"
-	fi
-	echo "#checked"
-done)
-printf '%s\n' "$out" | grep -v '^#'
-n=$(printf '%s\n' "$out" | grep -c '^#checked')
-if printf '%s\n' "$out" | grep -q '^#fail'; then
+} > "$tmp/bad"
+
+# by function, in the list's order
+awk '
+	FNR == NR { tab = index($0, "\t"); key = substr($0, 1, tab - 1); bad[key] = bad[key] substr($0, tab + 1) "\n"; next }
+	!seen[$0]++ && ($0 in bad) { printf "an allocation in %s, which runs while a game plays:\n%s", $2, bad[$0] }
+' "$tmp/bad" "$tmp/list" > "$tmp/report"
+cat "$tmp/fail" "$tmp/report"
+n=$(cut -f1 "$tmp/bodies" | sort -u | wc -l)
+if [ -s "$tmp/fail" ] || [ -s "$tmp/report" ]; then
 	exit 1
 fi
-echo "no allocation in the $n functions listed that run while a game plays"
+echo "no allocation in the $((n)) functions listed that run while a game plays"

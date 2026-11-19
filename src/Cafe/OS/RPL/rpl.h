@@ -37,7 +37,8 @@ void RPLLoader_UpdateDependencies();
 void RPLLoader_LoadCoreinit();
 
 uint32 RPLLoader_GetHandleByModuleName(const char* name);
-const std::string RPLLoader_GetModuleNameByHandle(uint32 handle);
+// the module's own name, as long as it is loaded (empty for none)
+std::string_view RPLLoader_GetModuleNameByHandle(uint32 handle);
 uint32 RPLLoader_GetMaxTLSModuleIndex();
 bool RPLLoader_GetTLSDataByTLSIndex(sint16 tlsModuleIndex, uint8** tlsData, sint32* tlsSize);
 
