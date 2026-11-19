@@ -180,7 +180,7 @@ shader output_vertex instructions 145
 shader output_vertex_upside_down instructions 145
 shader pack_rte_modes instructions 525
 shader rect_geometry instructions 178
-shader sources: allocations per 1000 written 2000
+shader sources: allocations per 1000 written 0
 shader src/Bayonetta2/Enhancements/Contrasty/93bde02ae446a30f_000000000000001c_ps.txt instructions 253
 shader src/Bayonetta2/Enhancements/Contrasty/e39a2a718bc419fe_0000000000001e49_ps.txt instructions 1094
 shader src/Bayonetta2/Graphics/284b1bf9010d4e57_0000000000000079_ps.txt instructions 665

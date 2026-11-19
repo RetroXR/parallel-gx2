@@ -2,8 +2,10 @@
 
 #include "Cafe/HW/Latte/Renderer/RendererShader.h"
 #include "Common/GLInclude/GLInclude.h"
+#include "util/helpers/PoolNew.h"
 
-class RendererShaderGL : public RendererShader
+// from a pool (PoolNew.h), as the decompiled shader it compiles is
+class RendererShaderGL : public RendererShader, public PoolNew<RendererShaderGL>
 {
 public:
 	RendererShaderGL(ShaderType type, uint64 baseHash, uint64 auxHash, bool isGameShader, bool isGfxPackShader, std::string glslSource);

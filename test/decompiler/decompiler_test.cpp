@@ -1264,6 +1264,14 @@ static void SetPSInputs(bool usesGS, bool fragCoord = false, uint32 psControl1 =
 // uniform lists come from pools, its SPIR-V buffer from those given back),
 // but its SPIR-V buffer grown for a module larger than any before (GiveSPIRV)
 static size_t s_spirvCapacity = 0;
+// the GLSL's room back, as RendererShaderVk::FinishCompilation gives it
+static size_t s_sourceCapacity = 0;
+static void GiveSource(LatteDecompilerShader* shader)
+{
+	if (shader->shaderSource.capacity() > s_sourceCapacity)
+		s_sourceCapacity = shader->shaderSource.capacity();
+	LatteDecompiler_SourceBuffers().Give(shader->shaderSource);
+}
 static unsigned long long AllocBound(const LatteDecompilerShader* shader);
 // the shader's SPIR-V buffer back to the decompiler, as the Vulkan shader
 // gives it back once its module is made
@@ -1275,7 +1283,7 @@ static void GiveSPIRV(LatteDecompilerShader* shader)
 }
 static unsigned long long AllocBound(const LatteDecompilerShader* shader)
 {
-	return shader->spirv.capacity() > s_spirvCapacity;
+	return (shader->spirv.capacity() > s_spirvCapacity) + (shader->shaderSource.capacity() > s_sourceCapacity);
 }
 
 static Decompiled Decompile(const std::vector<uint32>& program, bool direct, bool strictMul, bool rte)
@@ -1321,6 +1329,8 @@ static Decompiled Decompile(const std::vector<uint32>& program, bool direct, boo
 	{
 		d.glsl = shader->shaderSource;
 		d.ok = CompileGlsl(shader->shaderSource, d.spirv, rte);
+		// back to the decompiler, as the renderer's shader gives it back
+		GiveSource(shader);
 	}
 	delete shader;
 	return d;
@@ -4860,7 +4870,7 @@ int main(int argc, char** argv)
 	// the shaders written directly: the time to decompile each the GLSL way
 	// (GLSL, then rslc) and directly, the analysis both share included
 	double secondsGlsl = 0.0, secondsDirect = 0.0;
-	unsigned long long allocsDirect = 0;
+	unsigned long long allocsDirect = 0, allocsGlsl = 0;
 	int timed = 0;
 	const std::vector<Program> directed = DirectedPrograms();
 	// the pixel shader key's sprite part: none with sprites off, whatever
@@ -4952,6 +4962,12 @@ int main(int argc, char** argv)
 			secondsGlsl += std::chrono::duration<double>(t1 - t0).count();
 			secondsDirect += std::chrono::duration<double>(t2 - t1).count();
 			allocsDirect += viaSpirv.allocs;
+			allocsGlsl += viaGlsl.allocs;
+			if (DECOMPILER_COUNT_ALLOCS && timed > 0 && viaGlsl.allocs > viaGlsl.allocBound)
+			{
+				std::printf("FAIL: program %d allocates %llu times decompiled to GLSL, over %llu\n", i, viaGlsl.allocs, viaGlsl.allocBound);
+				s_failures++;
+			}
 			// once the per-thread pools are sized (the first decompile)
 			if (DECOMPILER_COUNT_ALLOCS && timed > 0 && viaSpirv.allocs > viaSpirv.allocBound)
 			{
@@ -5121,7 +5137,7 @@ int main(int argc, char** argv)
 		// and allocating only the shader it returns (above), its instruction
 		// lists from per-thread pools
 		if (DECOMPILER_COUNT_ALLOCS)
-			std::printf("decompiler: %.1f allocations per direct decompile\n", (double)allocsDirect / timed);
+			std::printf("decompiler: %.1f allocations per direct decompile, %.1f per GLSL one\n", (double)allocsDirect / timed, (double)allocsGlsl / timed);
 	}
 	std::printf("decompiler: %d random pixel shaders, %d written as SPIR-V directly (%d drawn both ways, %d after a geometry shader, %d differing), %d declined\n",
 		count, direct, drawn, gsDrawn, differing, declined);

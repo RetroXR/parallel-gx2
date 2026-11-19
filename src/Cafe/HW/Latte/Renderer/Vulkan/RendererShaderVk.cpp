@@ -173,9 +173,8 @@ void RendererShaderVk::CreateVkShaderModule(std::span<uint32> spirvBuffer)
 
 void RendererShaderVk::FinishCompilation()
 {
-	m_glslCode.clear();
-	m_glslCode.shrink_to_fit();
 	// the decompiler's, for its next shader
+	LatteDecompiler_SourceBuffers().Give(m_glslCode);
 	LatteDecompiler_SPIRVBuffers().Give(m_spirv);
 }
 

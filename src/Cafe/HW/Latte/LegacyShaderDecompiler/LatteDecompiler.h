@@ -236,7 +236,7 @@ struct LatteDecompilerShader : PoolNew<LatteDecompilerShader>
 		sint32 loc_pointSize; // uf_pointSize
 		sint32 loc_fragCoordScale;
 		sint32 loc_framebufferFetchSize[LATTE_NUM_MAX_TEX_UNITS];
-		std::vector<LatteUniformTextureScaleEntry_t> list_ufTexRescale; // list of mappings for uf_tex*Scale <-> uniform location
+		boost::container::static_vector<LatteUniformTextureScaleEntry_t, LATTE_NUM_MAX_TEX_UNITS> list_ufTexRescale; // list of mappings for uf_tex*Scale <-> uniform location, in place
 		float ufCurrentValueAlphaTestRef;
 		float ufCurrentValueFragCoordScale[2];
 		sint32 loc_verticesPerInstance;
@@ -340,6 +340,9 @@ const char* LatteDecompiler_SPIRVBeyondGLSL();
 // made, or the shader done with) is the next shader's, so a shader seen while
 // a game plays allocates none once as many as are ever pending have grown
 RecycledVectors<uint32>& LatteDecompiler_SPIRVBuffers();
+// the same for the GLSL or MSL source the decompiler writes (or a graphic
+// pack's replacement), given back by the renderer's shader once compiled
+RecycledStrings& LatteDecompiler_SourceBuffers();
 // the shader's uniform lists from the n uniforms it reads: one block for them
 // all, from a pool (SizedBlocks.h), put back when the shader goes; false for
 // no memory

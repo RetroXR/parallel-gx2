@@ -65,6 +65,7 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineRecord.h"
 #include "util/helpers/MappedFile.h"
 #include "util/helpers/RecycledBuffers.h"
+#include "util/helpers/PoolNew.h"
 #include "util/helpers/StringBuf.h"
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
 
@@ -321,8 +322,10 @@ static void MeasureProgramInflate()
 }
 
 // what the renderer does with a shader's source (shader_create, by value,
-// into the RendererShader that keeps it)
-struct KeptSource
+// into the RendererShader that keeps it until compiled, from a pool)
+// the sources' rooms, as LatteDecompiler_SourceBuffers keeps them
+static RecycledStrings s_sourceBuffers;
+struct KeptSource : PoolNew<KeptSource, 64>
 {
 	explicit KeptSource(std::string source) : m_source(std::move(source)) {}
 	std::string m_source;
@@ -342,7 +345,9 @@ static KeptSource* WriteSourceModel(int n, uint32 bufferSize)
 	for (int i = 0; i < 40 + n % 50; i++)
 		src->addFmt("R{}f.x = intBitsToFloat({}) * uf_remapped[{}].y;\r\n", i, n * 31 + i, i % 7);
 	src->add("}\r\n");
+	// into the room of a source a compiled shader gave back
 	std::string shaderSource;
+	s_sourceBuffers.Take(shaderSource);
 	shaderSource.assign(src->c_str(), src->getLen());
 	return ShaderCreateModel(std::move(shaderSource));
 }
@@ -358,19 +363,27 @@ static bool SourceIs(const KeptSource* k, int n)
 
 static void MeasureSourceHandoff()
 {
-	std::vector<KeptSource*> kept;
-	kept.reserve(2000);
-	delete WriteSourceModel(0, 12 * 1024 * 1024); // the thread's buffer, made once
+	// the thread's buffer and a source's room, made once: the longest source
+	KeptSource* first = WriteSourceModel(999, 12 * 1024 * 1024);
+	s_sourceBuffers.Give(first->m_source);
+	delete first;
 	s_allocs = 0;
 	s_allocBytes = 0;
-	s_counting = true;
-	for (int i = 0; i < 1000; i++)
-		kept.push_back(WriteSourceModel(i, 12 * 1024 * 1024));
-	s_counting = false;
-	const uint64_t allocs = s_allocs.load();
 	bool ok = true;
 	for (int i = 0; i < 1000; i++)
-		ok &= SourceIs(kept[i], i);
+	{
+		s_counting = true;
+		KeptSource* k = WriteSourceModel(i, 12 * 1024 * 1024);
+		s_counting = false;
+		ok &= SourceIs(k, i);
+		// compiled: the source back to the decompiler (RendererShaderVk::
+		// FinishCompilation), the shader gone
+		s_counting = true;
+		s_sourceBuffers.Give(k->m_source);
+		delete k;
+		s_counting = false;
+	}
+	const uint64_t allocs = s_allocs.load();
 	// another thread has a buffer of its own: what it writes leaves this
 	// thread's alone, and a buffer smaller than the text grows to take it
 	StringBuf* mine = &StringBuf_ThreadScratch(0, 16);
@@ -387,8 +400,6 @@ static void MeasureSourceHandoff()
 	ok &= theirs != mine && std::string_view(mine->c_str(), mine->getLen()) == "this thread's";
 	// emptied for the next
 	ok &= StringBuf_ThreadScratch(0, 16).getLen() == 0 && &StringBuf_ThreadScratch(0, 16) == mine;
-	for (KeptSource* k : kept)
-		delete k;
 	std::printf("shader sources written and handed to the renderer: %llu allocations per 1000%s\n", (unsigned long long)allocs,
 		ok ? "" : ", NOT AS WRITTEN");
 	s_metrics["shader sources: allocations per 1000 written"] = allocs;

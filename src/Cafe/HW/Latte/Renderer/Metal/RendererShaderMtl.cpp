@@ -1,6 +1,7 @@
 #include "Cafe/HW/Latte/Renderer/Metal/RendererShaderMtl.h"
 #include "Cafe/HW/Latte/Renderer/Metal/MetalRenderer.h"
 #include "Cafe/HW/Latte/Renderer/Metal/MetalCommon.h"
+#include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.h"
 
 //#include "Cemu/FileCache/FileCache.h"
 //#include "config/ActiveSettings.h"
@@ -340,6 +341,6 @@ void RendererShaderMtl::CompileToAIR()
 
 void RendererShaderMtl::FinishCompilation()
 {
-    m_mslCode.clear();
-    m_mslCode.shrink_to_fit();
+    // the MSL's room back to the decompiler, for its next shader
+    LatteDecompiler_SourceBuffers().Give(m_mslCode);
 }

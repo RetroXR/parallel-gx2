@@ -377,10 +377,19 @@ void LatteShader_CreateRendererShader(LatteDecompilerShader* shader, bool compil
 		shader->shader = VulkanRenderer::GetInstance()->shader_createSPIRV(shaderType, shader->baseHash, shader->auxHash, std::move(shader->spirv));
 	else
 #endif
-	// the decompiler's source handed down to where the renderer keeps it,
-	// moved all the way; a graphic pack's, which the pack keeps, copied once
-	shader->shader = g_renderer->shader_create(shaderType, shader->baseHash, shader->auxHash,
-		customShaderSrc ? std::string(*customShaderSrc) : std::move(shader->shaderSource), true, shader->isCustomShader);
+	{
+		// the decompiler's source handed down to where the renderer keeps it,
+		// moved all the way; a graphic pack's, which the pack keeps, copied
+		// once into a recycled source's room (given back once compiled)
+		if (customShaderSrc)
+		{
+			LatteDecompiler_SourceBuffers().Give(shader->shaderSource);
+			LatteDecompiler_SourceBuffers().Take(shader->shaderSource);
+			shader->shaderSource.assign(*customShaderSrc);
+		}
+		shader->shader = g_renderer->shader_create(shaderType, shader->baseHash, shader->auxHash,
+			std::move(shader->shaderSource), true, shader->isCustomShader);
+	}
 	if (shader->shader == nullptr)
 		shader->hasError = true;
 	// after renderer shader creation we can throw away any intermediate info
@@ -463,7 +472,7 @@ LatteFetchShader* LatteSHRC_GetOrCreateFetchShader()
 
 void LatteShader_CleanupAfterCompile(LatteDecompilerShader* shader)
 {
-	std::string().swap(shader->shaderSource);
+	LatteDecompiler_SourceBuffers().Give(shader->shaderSource);
 	LatteDecompiler_SPIRVBuffers().Give(shader->spirv);
 }
 

@@ -1030,6 +1030,12 @@ void LatteDecompiler_ParseClauses(LatteDecompilerShaderContext* shaderContext, u
 	}
 }
 
+RecycledStrings& LatteDecompiler_SourceBuffers()
+{
+	static RecycledStrings s_buffers;
+	return s_buffers;
+}
+
 static SizedBlocks& LatteDecompiler_UniformBlocks()
 {
 	static SizedBlocks s_blocks;

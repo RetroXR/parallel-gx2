@@ -2,6 +2,7 @@
 #include "Cafe/HW/Latte/Renderer/OpenGL/RendererShaderGL.h"
 
 #include "Cemu/FileCache/FileCache.h"
+#include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.h"
 
 #include "config/ActiveSettings.h"
 #include "config/LaunchSettings.h"
@@ -97,8 +98,7 @@ RendererShaderGL::RendererShaderGL(ShaderType type, uint64 baseHash, uint64 auxH
 	{
 		if (loadBinary())
 		{
-			m_glslSource.clear();
-			m_glslSource.shrink_to_fit();
+			LatteDecompiler_SourceBuffers().Give(m_glslSource);
 			return;
 		}
 	}
@@ -141,9 +141,8 @@ RendererShaderGL::RendererShaderGL(ShaderType type, uint64 baseHash, uint64 auxH
 	if (!s_isLoadingShaders)
 		++g_compiled_shaders_total;
 
-	// we can throw away the GLSL code to conserve RAM
-	m_glslSource.clear();
-	m_glslSource.shrink_to_fit();
+	// the GLSL's room back to the decompiler, for its next shader
+	LatteDecompiler_SourceBuffers().Give(m_glslSource);
 }
 
 RendererShaderGL::~RendererShaderGL()

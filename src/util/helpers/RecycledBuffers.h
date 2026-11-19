@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "util/helpers/MpmcQueue.h"
@@ -12,36 +13,43 @@
 // caches' loaders (VulkanPipelineStableCache, MetalPipelineCache) read each
 // entry into one and queue it for a compile thread, which gives it back; the
 // decompiler writes a shader's SPIR-V into one, which the Vulkan shader gives
-// back once its module is made.
-template<typename T>
-class RecycledVectors
+// back once its module is made; and a shader's GLSL or MSL, given back by the
+// renderer's shader once compiled.
+template<typename C>
+class Recycled
 {
 public:
-	// a given-back buffer in out (empty, its capacity kept) when out has none
+	// a given-back one in out (empty, its capacity kept) when out has no room
 	// of its own and one was given back; out as it was if not
-	void Take(std::vector<T>& out)
+	void Take(C& out)
 	{
-		if (out.capacity() != 0)
+		if (out.capacity() > C().capacity())
 			return;
-		std::vector<T> got;
+		C got;
 		if (m_free.peek2(got))
 			out.swap(got);
 	}
 
 	// buf back, for a later Take; buf left empty
-	void Give(std::vector<T>& buf)
+	void Give(C& buf)
 	{
-		if (buf.capacity() == 0)
+		if (buf.capacity() <= C().capacity())
+		{
+			buf.clear();
 			return;
+		}
 		buf.clear();
 		m_free.push(std::move(buf));
-		buf = std::vector<T>();
+		buf = C();
 	}
 
 	size_t Count() const { return m_free.size(); }
 
 private:
-	MpmcQueue<std::vector<T>> m_free;
+	MpmcQueue<C> m_free;
 };
 
+template<typename T>
+using RecycledVectors = Recycled<std::vector<T>>;
 using RecycledBuffers = RecycledVectors<uint8_t>;
+using RecycledStrings = Recycled<std::string>;

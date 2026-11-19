@@ -91,6 +91,8 @@ src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_UpdateActiveShaders
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_CleanupShaderStateCache
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_RemoveShaderStateCacheEntryByKey
 src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.cpp LatteDecompiler_SetUniformLists
+src/Cafe/HW/Latte/Core/LatteShader.cpp InitUniformLayoutFromDecompiler
+src/Cafe/HW/Latte/Renderer/OpenGL/OpenGLRenderer.cpp OpenGLRenderer::shader_create
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.cpp VulkanRenderer::shader_createSPIRV
 src/Cafe/HW/Latte/Renderer/Vulkan/RendererShaderVk.cpp RendererShaderVk::FinishCompilation
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_free

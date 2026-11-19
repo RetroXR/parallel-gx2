@@ -4,6 +4,7 @@
 #include "HW/Latte/Renderer/Metal/CachedFBOMtl.h"
 #include "HW/Latte/Renderer/Metal/MetalRenderer.h"
 #include "util/helpers/ClaimTicket.h"
+#include "util/helpers/PoolNew.h"
 #include "util/helpers/Semaphore.h"
 
 #include <Metal/Metal.hpp>
@@ -11,7 +12,8 @@
 class RendererShaderMtl;
 using ShaderMtlCompileTicket = ClaimTicket<RendererShaderMtl>;
 
-class RendererShaderMtl : public RendererShader
+// from a pool (PoolNew.h), as the decompiled shader it compiles is
+class RendererShaderMtl : public RendererShader, public PoolNew<RendererShaderMtl>
 {
     friend class ShaderMtlThreadPool;
 
