@@ -1,6 +1,7 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineRecord.h"
 
 #include <cstring>
+#include "util/helpers/ThreadOwned.h"
 
 // "GX2PSOR" and the version: a header at the start of each session's
 // entries, a tag before each entry
@@ -86,7 +87,8 @@ uint64 VulkanPipelineRecord_Key(const VulkanPipelineRecordEntry& entry, uint32 d
 {
 	// the fetch shader as the key reads it: its buffers and attribute
 	// offsets, in the thread's one (no allocation per entry once grown)
-	thread_local LatteFetchShader fetchShader;
+	thread_local LatteFetchShader* t_fetchShader;
+	LatteFetchShader& fetchShader = ThreadOwned(t_fetchShader);
 	fetchShader.vkPipelineHashFragment = entry.fetchShaderFragment;
 	fetchShader.bufferGroups.resize(entry.bufferCount);
 	for (uint32 i = 0; i < entry.bufferCount; i++)

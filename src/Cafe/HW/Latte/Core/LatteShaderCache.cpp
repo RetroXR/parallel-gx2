@@ -36,6 +36,7 @@
 #if BOOST_OS_WINDOWS
 #include <psapi.h>
 #endif
+#include "util/helpers/ThreadOwned.h"
 
 // Defined at global scope by the libretro glue (src/libretro/CemuLibretro.cpp).
 bool libretro_gpu_context_gone();
@@ -413,7 +414,8 @@ static void LatteShaderCache_queueSeparableShader(uint32 type, uint64 shaderBase
 	if (!s_shaderCacheGeneric)
 		return;
 	using Latte::ShaderCacheEntryInputs;
-	thread_local std::vector<uint8> s_inputs;
+	thread_local std::vector<uint8>* t_inputs;
+	std::vector<uint8>& s_inputs = ThreadOwned(t_inputs);
 	s_inputs.resize(sizeof(ShaderCacheEntryInputs) + (size_t)size0 + size1);
 	ShaderCacheEntryInputs* in = (ShaderCacheEntryInputs*)s_inputs.data();
 	in->versionAndType = (uint8)(1 | (type << 4));

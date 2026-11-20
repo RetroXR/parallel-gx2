@@ -3,6 +3,7 @@
 #include "IMLScratch.h"
 
 #include <new>
+#include "util/helpers/ThreadOwned.h"
 
 // the compiling thread's segments, freed with it
 struct IMLSegmentPool
@@ -17,8 +18,8 @@ struct IMLSegmentPool
 
 static IMLSegmentPool& SegmentPool()
 {
-	thread_local IMLSegmentPool s_pool;
-	return s_pool;
+	thread_local IMLSegmentPool* t_pool;
+	return ThreadOwned(t_pool);
 }
 
 IMLSegment* IMLSegment_New()

@@ -1112,6 +1112,23 @@ test-note-log:
     - make -C test/note_log clean
     - SANITIZER=thread ./test/note_log/run_tests.sh
 
+# Objects a thread made for itself destroyed once, intact, as it ends, with
+# no thread_local destructor (thread_end.h).
+test-thread-end:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+    CC: gcc-12
+    CXX: g++-12
+  script:
+    - ./test/thread_end/run_tests.sh
+    - make -C test/thread_end clean
+    - SANITIZER=address,undefined ./test/thread_end/run_tests.sh
+    - make -C test/thread_end clean
+    - SANITIZER=thread ./test/thread_end/run_tests.sh
+
 # A USB device's transfers never wait and never see its handle being opened
 # or closed.
 test-use-gate:
@@ -1483,6 +1500,17 @@ test-play-allocs:
     GIT_SUBMODULE_STRATEGY: none
   script:
     - ./tools/check_play_allocs.sh
+
+# No thread_local holds anything to free: MinGW runs its destructor on
+# storage already freed (thread_end.h).
+test-thread-locals:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+  script:
+    - ./tools/check_thread_locals.sh
 
 # An idle GPU thread sleeps until the CPU submits, and the waits between
 # loading a title and its first frame sleep until notified, not by the clock.

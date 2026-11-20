@@ -28,7 +28,7 @@ LRC_SRCS := $(LRC)/gfx/shaders/rslc_front.c $(LRC)/gfx/shaders/rslc_ir.c $(LRC)/
 	$(LRC)/features/features_cpu.c $(LRC)/compat/compat_strl.c $(LRC)/time/rtime.c \
 	$(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c \
 	$(LRC)/encodings/encoding_rzstd.c $(LRC)/encodings/encoding_xxh64.c \
-	$(SRC)/util/helpers/obj_pool.c $(SRC)/util/helpers/lf_ring.c
+	$(SRC)/util/helpers/obj_pool.c $(SRC)/util/helpers/lf_ring.c $(SRC)/util/helpers/thread_end.c
 include ../file_io.mk
 LRC_SRCS += $(FILE_IO_C)
 FLAGS += $(FILE_IO_FLAGS)

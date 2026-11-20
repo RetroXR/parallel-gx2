@@ -1,6 +1,7 @@
 #include "Cafe/HW/Latte/Common/ShaderSerializer.h"
 #include <boost/container/small_vector.hpp>
 #include <encodings/rzstd.h>
+#include "util/helpers/ThreadOwned.h"
 
 // compression dictionary for Latte shader code, made by InitShaderSerializer.
 // The entries are Zstandard frames made with it, as standalone Cemu makes them,
@@ -17,8 +18,8 @@ namespace
 			rzstd_decoder_t* decoder = rzstd_decoder_new();
 			~Holder() { rzstd_decoder_free(decoder); }
 		};
-		thread_local Holder s_holder;
-		return s_holder.decoder;
+		thread_local Holder* t_holder;
+		return ThreadOwned(t_holder).decoder;
 	}
 }
 
@@ -26,8 +27,8 @@ namespace Latte
 {
 	std::vector<uint8>& ShaderProgramScratch(int slot)
 	{
-		thread_local std::vector<uint8> s_scratch[3];
-		return s_scratch[slot];
+		thread_local std::vector<uint8>* t_scratch[3];
+		return ThreadOwned(t_scratch[slot]);
 	}
 
 	void* BuildShaderCacheEntry(const void* inputs, size_t size, size_t* outSize)

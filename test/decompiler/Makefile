@@ -27,7 +27,8 @@ ifneq (,$(or $(findstring mingw,$(CXX)),$(filter Windows_NT,$(OS))))
 endif
 DEC := $(SRC)/Cafe/HW/Latte/LegacyShaderDecompiler
 LRC_SRCS := $(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c $(LRC)/gfx/shaders/rslc_front.c $(LRC)/gfx/shaders/rslc_ir.c $(LRC)/gfx/shaders/rslc_dxbc.c \
-	$(LRC)/compat/compat_strl.c $(SRC)/util/helpers/obj_pool.c $(SRC)/util/helpers/lf_ring.c $(SRC)/util/spirv/spirv_writer.c
+	$(LRC)/compat/compat_strl.c $(SRC)/util/helpers/obj_pool.c $(SRC)/util/helpers/lf_ring.c $(SRC)/util/spirv/spirv_writer.c \
+	$(SRC)/util/helpers/thread_end.c
 SRCS := decompiler_test.cpp stubs.cpp $(DEC)/LatteDecompiler.cpp $(DEC)/LatteDecompilerAnalyzer.cpp \
 	$(DEC)/LatteDecompilerEmitGLSL.cpp $(DEC)/LatteDecompilerEmitGLSLAttrDecoder.cpp $(DEC)/LatteDecompilerEmitSPIRV.cpp \
 	$(DEC)/LatteDecompilerRegisterDataTypeTracker.cpp $(SRC)/Cafe/HW/Latte/Core/LatteGSCopyShaderParser.cpp \

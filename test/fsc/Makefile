@@ -27,7 +27,7 @@ FLAGS += $(FILE_IO_FLAGS)
 C_SRCS := $(FILE_IO_C) $(LRC)/time/rtime.c $(LRC)/compat/compat_strl.c \
 	$(LRC)/formats/zar/zar.c $(LRC)/formats/zar/zar_write.c $(LRC)/encodings/encoding_rzstd.c \
 	$(LRC)/encodings/encoding_xxh64.c $(LRC)/hash/lrc_hash.c $(LRC)/features/features_cpu.c \
-	$(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c
+	$(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c $(SRC)/util/helpers/thread_end.c
 CXX_SRCS := fsc_test.cpp $(SRC)/Cafe/Filesystem/fsc.cpp $(SRC)/Cafe/Filesystem/fscDeviceHostFS.cpp \
 	$(SRC)/Cafe/Filesystem/fscDeviceWuhb.cpp $(SRC)/Cafe/Filesystem/fscDeviceWua.cpp $(FILE_IO_CXX)
 # the bundle and archive readers, the file reader under them, the cell

@@ -6,6 +6,7 @@
 
 #include "config/ActiveSettings.h"
 #include "config/LaunchSettings.h"
+#include "util/helpers/ThreadOwned.h"
 
 extern std::atomic_int g_compiled_shaders_total;
 extern std::atomic_int g_compiled_shaders_async;
@@ -25,7 +26,8 @@ bool RendererShaderGL::loadBinary()
 	uint64 h1, h2;
 	GenerateShaderPrecompiledCacheFilename(m_type, m_baseHash, m_auxHash, h1, h2);
 	// the thread's, grown to the largest binary it has read and kept
-	thread_local std::vector<uint8> cacheFileData;
+	thread_local std::vector<uint8>* t_cacheFileData;
+	std::vector<uint8>& cacheFileData = ThreadOwned(t_cacheFileData);
 	if (!s_programBinaryCache->GetFile({h1, h2 }, cacheFileData))
 		return false;
 	if (cacheFileData.size() <= sizeof(uint32))

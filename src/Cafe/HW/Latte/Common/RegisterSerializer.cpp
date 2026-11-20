@@ -4,6 +4,7 @@
 #include "Common/FileStream.h"
 
 #include <encodings/rzstd.h>
+#include "util/helpers/ThreadOwned.h"
 
 // compression dictionary for pipeline Latte register data, made by
 // InitRegisterSerializer. The entries are Zstandard frames made with it, as standalone Cemu
@@ -20,8 +21,8 @@ namespace
 			rzstd_decoder_t* decoder = rzstd_decoder_new();
 			~Holder() { rzstd_decoder_free(decoder); }
 		};
-		thread_local Holder s_holder;
-		return s_holder.decoder;
+		thread_local Holder* t_holder;
+		return ThreadOwned(t_holder).decoder;
 	}
 }
 
@@ -138,11 +139,10 @@ namespace Latte
 
 	LatteContextRegister& LoadGPURegisterStateScratch(const GPUCompactedRegisterState& registerState)
 	{
-		thread_local std::unique_ptr<LatteContextRegister> s_scratch;
-		if (!s_scratch)
-			s_scratch = std::make_unique<LatteContextRegister>();
-		LoadGPURegisterState(*s_scratch, registerState);
-		return *s_scratch;
+		thread_local LatteContextRegister* t_scratch;
+		LatteContextRegister& scratch = ThreadOwned(t_scratch);
+		LoadGPURegisterState(scratch, registerState);
+		return scratch;
 	}
 
 	void LoadGPURegisterState(LatteContextRegister& contextRegisterOut, const GPUCompactedRegisterState& registerState)

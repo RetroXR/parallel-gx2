@@ -14,7 +14,8 @@
 //  - the mount table read without a lock: threads open, read, look up and
 //    list while another unmounts and mounts the update over and over; each
 //    sees the update or not, never half of it, and every table replaced is
-//    freed once nothing reads it;
+//    freed once nothing reads it; 600 threads, more than the hazard slots,
+//    each reading once and ending, each slot given back as its thread ends;
 //  - a directory listed through both mounts has every name once, with the
 //    sizes and types the host's directory read gave;
 //  - a homebrew bundle (.wuhb) mounted: its directories list their
@@ -433,6 +434,22 @@ int main()
 		CHECK(bad == 0);
 		CHECK(sawBase > 0 && sawPatch > 0);
 		// nothing reads now: the next change frees every table but its own
+		CHECK(fsc_unmount("/t/", FSC_PRIORITY_PATCH));
+		CHECK(fsc_liveMountTables() == 1);
+	}
+
+	// more threads than hazard slots (256), one after another, each reading:
+	// each thread's slot given back as it ends (thread_end.h), where MinGW
+	// ran the slot's owner's destructor on storage already freed
+	{
+		int ok = 0;
+		for (int t = 0; t < 600; t++)
+			std::thread([&ok] {
+				if (fsc_getFilePriority("/t/code/base.bin") == FSC_PRIORITY_BASE)
+					ok++;
+			}).join();
+		CHECK(ok == 600);
+		CHECK(FSCDeviceHostFS_Mount("/t/", _pathToUtf8(patch) + "/", FSC_PRIORITY_PATCH));
 		CHECK(fsc_unmount("/t/", FSC_PRIORITY_PATCH));
 		CHECK(fsc_liveMountTables() == 1);
 	}

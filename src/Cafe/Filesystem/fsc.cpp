@@ -4,6 +4,7 @@
 #include "util/helpers/lf_ring.h"
 
 #include <atomic>
+#include "util/helpers/thread_end.h"
 
 // The mount table: a tree of mount points for each priority. A table is
 // never changed once it is published: a mount or an unmount builds a new one
@@ -121,34 +122,33 @@ static constexpr sint32 FSC_HAZARD_SLOTS = 256;
 static std::atomic<const FSCMountTable*> s_fscHazard[FSC_HAZARD_SLOTS];
 static std::atomic<bool> s_fscHazardTaken[FSC_HAZARD_SLOTS];
 
-struct FSCHazardSlotOwner
+// the thread's slot, given back as the thread ends (thread_end.h: by the
+// slot handed over, never from the thread_local, which MinGW may have freed)
+static thread_local std::atomic<const FSCMountTable*>* t_fscHazard;
+
+static void fsc_hazardGiveBack(void* slot)
 {
-	sint32 index{-1};
-	~FSCHazardSlotOwner()
-	{
-		if (index < 0)
-			return;
-		s_fscHazard[index].store(nullptr, std::memory_order_release);
-		s_fscHazardTaken[index].store(false, std::memory_order_release);
-	}
-};
-static thread_local FSCHazardSlotOwner t_fscHazard;
+	const sint32 index = (sint32)((std::atomic<const FSCMountTable*>*)slot - s_fscHazard);
+	s_fscHazard[index].store(nullptr, std::memory_order_release);
+	s_fscHazardTaken[index].store(false, std::memory_order_release);
+}
 
 static std::atomic<const FSCMountTable*>& fsc_hazardSlot()
 {
-	if (t_fscHazard.index < 0)
+	if (!t_fscHazard)
 	{
 		for (sint32 i = 0; i < FSC_HAZARD_SLOTS; i++)
 		{
 			if (!s_fscHazardTaken[i].load(std::memory_order_relaxed) && !s_fscHazardTaken[i].exchange(true, std::memory_order_acquire))
 			{
-				t_fscHazard.index = i;
+				t_fscHazard = &s_fscHazard[i];
+				thread_end_register(fsc_hazardGiveBack, t_fscHazard, (void**)&t_fscHazard);
 				break;
 			}
 		}
-		cemu_assert(t_fscHazard.index >= 0); // more threads reading the file system than slots
+		cemu_assert(t_fscHazard); // more threads reading the file system than slots
 	}
-	return s_fscHazard[t_fscHazard.index];
+	return *t_fscHazard;
 }
 
 // The table, held for as long as this lives. Held already on this thread

@@ -13,6 +13,7 @@
 #include <gfx/shaders/rslc.h>
 #include "util/helpers/helpers.h"
 #include "Cafe/HW/Latte/Core/PsoTrace.h"
+#include "util/helpers/ThreadOwned.h"
 
 bool s_isLoadingShadersVk{ false };
 class FileCache* s_spirvCache{nullptr};
@@ -188,8 +189,8 @@ void RendererShaderVk::FinishCompilation()
 // they start (WarmCompileScratch)
 static RslcScratch& RslcScratchOfThread()
 {
-	thread_local RslcScratch scratch;
-	return scratch;
+	thread_local RslcScratch* t_scratch;
+	return ThreadOwned(t_scratch);
 }
 
 void RendererShaderVk::WarmCompileScratch()
@@ -215,7 +216,8 @@ void RendererShaderVk::CompileInternal(bool isRenderThread)
 		uint64 h1, h2;
 		GenerateShaderPrecompiledCacheFilename(m_type, m_baseHash, m_auxHash, h1, h2);
 		// the thread's, grown to the largest module it has read and kept
-		thread_local std::vector<uint8> cacheFileData;
+		thread_local std::vector<uint8>* t_cacheFileData;
+		std::vector<uint8>& cacheFileData = ThreadOwned(t_cacheFileData);
 		if (s_spirvCache->GetFile({ h1, h2 }, cacheFileData))
 		{
 			// generate shader from cached SPIR-V buffer

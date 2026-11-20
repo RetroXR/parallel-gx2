@@ -529,7 +529,9 @@ namespace coreinit
 
 	// a line being put together, one per host thread: the threads running
 	// guest code write to it with no lock, and a line from one is not cut
-	// into by another's
+	// into by another's; nothing to free as the thread ends
+	// (tools/check_thread_locals.sh)
+	static_assert(std::is_trivially_destructible_v<CafeLogBuffer>);
 	thread_local CafeLogBuffer g_logBuffer_OSReport;
 
 	CafeLogBuffer& getLogBuffer(CafeLogType cafeLogType)

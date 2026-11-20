@@ -2,6 +2,7 @@
 #include "../PPCRecompiler.h" // todo - get rid of dependency
 
 #include "x86Emitter.h"
+#include "util/helpers/ThreadOwned.h"
 
 struct x64RelocEntry_t
 {
@@ -36,8 +37,8 @@ struct x64GenContext_t
 
 	static x86Assembler64& ThreadEmitter()
 	{
-		thread_local x86Assembler64 s_emitter;
-		return s_emitter;
+		thread_local x86Assembler64* t_emitter;
+		return ThreadOwned(t_emitter);
 	}
 
 	IMLInstruction* GetNextInstruction(sint32 relativeIndex = 1)

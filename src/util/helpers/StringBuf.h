@@ -2,6 +2,8 @@
 
 #include <memory>
 
+#include "util/helpers/ThreadOwned.h"
+
 class StringBuf
 {
 public:
@@ -94,33 +96,18 @@ private:
 	bool	allocated;
 };
 
-// The calling thread's own StringBufs: pointers, freed by
-// StringBuf_ReleaseThreadScratch rather than as the thread ends (MinGW runs a
-// thread_local's destructor on its storage already freed)
+// The calling thread's own StringBufs, freed as it ends (ThreadOwned.h)
 inline thread_local StringBuf* t_stringBufScratch[4]{};
 
 // The calling thread's own StringBuf in slot (0 to 3), emptied: bufferSize
 // set aside the first time the thread asks for that slot, then kept and
 // reused, grown by add(string_view) past it - so a thread writing one text
 // after another (the decompiler, a shader's source each) allocates for none
-// but the first. Valid until the thread's next call for the same slot or
-// StringBuf_ReleaseThreadScratch.
+// but the first. Valid until the thread's next call for the same slot.
 inline StringBuf& StringBuf_ThreadScratch(uint32 slot, uint32 bufferSize)
 {
 	cemu_assert_debug(slot < 4);
-	StringBuf*& buf = t_stringBufScratch[slot & 3];
-	if (!buf)
-		buf = new StringBuf(bufferSize);
-	buf->reset();
-	return *buf;
-}
-
-// the calling thread's StringBufs freed, before it ends
-inline void StringBuf_ReleaseThreadScratch()
-{
-	for (StringBuf*& buf : t_stringBufScratch)
-	{
-		delete buf;
-		buf = nullptr;
-	}
+	StringBuf& buf = ThreadOwned(t_stringBufScratch[slot & 3], bufferSize);
+	buf.reset();
+	return buf;
 }

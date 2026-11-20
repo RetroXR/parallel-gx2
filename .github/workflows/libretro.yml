@@ -131,6 +131,11 @@ jobs:
         # or per guest call allocate nothing; the list only grows
         run: ./tools/check_play_allocs.sh
 
+      - name: "No thread_local with something to free"
+        # MinGW runs a thread_local's destructor on storage already freed:
+        # what a thread keeps for itself goes through thread_end.h
+        run: ./tools/check_thread_locals.sh
+
       - name: "GPU thread waits woken, not timed or spun"
         # an idle GPU thread sleeps until the CPU submits; the GPU thread's
         # start, the title start, the graphic packs, the GPU's init, GX2Init
@@ -791,6 +796,16 @@ jobs:
           SANITIZER=address,undefined ./test/note_log/run_tests.sh
           make -C test/note_log clean
           SANITIZER=thread ./test/note_log/run_tests.sh
+      - name: "What a thread keeps, freed as it ends"
+        # objects a thread made for itself destroyed once, intact, as it
+        # ends, with no thread_local destructor (thread_end.h); plain, under
+        # ASan + UBSan and under TSan
+        run: |
+          ./test/thread_end/run_tests.sh
+          make -C test/thread_end clean
+          SANITIZER=address,undefined ./test/thread_end/run_tests.sh
+          make -C test/thread_end clean
+          SANITIZER=thread ./test/thread_end/run_tests.sh
       - name: "A handle used while it may close"
         # a USB device's transfers never wait and never see its handle being
         # opened or closed; plain, under ASan + UBSan and under TSan
@@ -1048,11 +1063,16 @@ jobs:
         # Windows' own fibers, started over for the next guest thread
         run: FIBER=win EXE=.exe ./test/fiber/run_tests.sh
 
+      - name: "What a thread keeps, freed as it ends"
+        # on Windows' own threads, where MinGW frees a thread_local's
+        # storage before its destructor runs (thread_end.h)
+        run: CC=gcc CXX=g++ EXE=.exe ./test/thread_end/run_tests.sh
+
       - name: "Shader decompiler on several threads"
         # shaders decompiled on four threads at once as on one, each thread
         # ending with its storage freed (LatteDecompiler_ReleaseThread):
         # MinGW runs a thread_local's destructor on storage already freed
-        run: DECOMPILER_TOGETHER_ONLY=1 DECOMPILER_COUNT=30 EXE=.exe ./test/decompiler/run_tests.sh
+        run: CC=gcc CXX=g++ DECOMPILER_TOGETHER_ONLY=1 DECOMPILER_COUNT=30 EXE=.exe ./test/decompiler/run_tests.sh
 
       - name: "Upload artifact"
         uses: actions/upload-artifact@v6

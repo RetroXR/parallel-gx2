@@ -1,5 +1,7 @@
 #pragma once
 
+#include "util/helpers/ThreadOwned.h"
+
 class StringBuf;
 
 // a decompile's list of T, held in a per-thread pool that every list of T of the
@@ -12,19 +14,8 @@ class LatteScratchList
 {
 public:
 	// the thread's, made at its first decompile (or LatteDecompiler_PrepareThread)
-	// and gone with LatteDecompiler_ReleaseThread: a pointer, not an object, as
-	// MinGW runs a thread_local's destructor on its storage already freed
-	static std::vector<T>& Pool()
-	{
-		if (!s_pool) [[unlikely]]
-			s_pool = new std::vector<T>();
-		return *s_pool;
-	}
-	static void ReleasePool()
-	{
-		delete s_pool;
-		s_pool = nullptr;
-	}
+	// and freed as the thread ends (ThreadOwned.h)
+	static std::vector<T>& Pool() { return ThreadOwned(s_pool); }
 	T* data() { return m_count ? Pool().data() + m_first : nullptr; }
 	const T* data() const { return m_count ? Pool().data() + m_first : nullptr; }
 	T* begin() { return data(); }
@@ -345,7 +336,6 @@ void LatteDecompiler_emitGLSLShader(LatteDecompilerShaderContext* shaderContext,
 bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext, LatteDecompilerShader* shader);
 // the emitters' own storage of the calling thread, made (LatteDecompiler_PrepareThread)
 void LatteDecompiler_PrepareSPIRVThread();
-void LatteDecompiler_ReleaseSPIRVThread();
 void LatteDecompiler_PrepareGLSLThread();
 #ifdef ENABLE_METAL
 void LatteDecompiler_emitMSLShader(LatteDecompilerShaderContext* shaderContext, LatteDecompilerShader* shader);

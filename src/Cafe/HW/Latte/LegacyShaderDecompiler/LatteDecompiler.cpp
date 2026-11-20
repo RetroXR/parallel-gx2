@@ -1162,17 +1162,6 @@ void LatteDecompiler_PrepareThread()
 	LatteDecompiler_PrepareGLSLThread();
 }
 
-void LatteDecompiler_ReleaseThread()
-{
-	LatteScratchList<LatteDecompilerCFInstruction>::ReleasePool();
-	LatteScratchList<LatteDecompilerALUInstruction>::ReleasePool();
-	LatteScratchList<LatteDecompilerTEXInstruction>::ReleasePool();
-	LatteScratchList<LatteDecompilerSubroutineInfo>::ReleasePool();
-	LatteScratchList<LatteDecompilerRemappedUniformEntry_t>::ReleasePool();
-	LatteDecompiler_ReleaseSPIRVThread();
-	StringBuf_ReleaseThreadScratch();
-}
-
 void _LatteDecompiler_Process(LatteDecompilerShaderContext* shaderContext, uint8* programData, uint32 programSize)
 {
 	LatteDecompiler_ResetScratch();

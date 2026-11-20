@@ -45,8 +45,7 @@ namespace
 {
 	// the thread's writer and a ternary's sides moved into its branches, made
 	// at its first shader written (or LatteDecompiler_PrepareThread) for a
-	// large one, freed by LatteDecompiler_ReleaseThread: a pointer, as MinGW
-	// runs a thread_local's destructor on its storage already freed
+	// large one, freed as the thread ends (ThreadOwned.h)
 	struct SpirvThreadState
 	{
 		spv_writer_t w;
@@ -59,13 +58,8 @@ namespace
 		}
 		~SpirvThreadState() { spv_writer_free(&w); }
 	};
-	thread_local SpirvThreadState* s_thread{};
-	SpirvThreadState& ThreadState()
-	{
-		if (!s_thread) [[unlikely]]
-			s_thread = new SpirvThreadState();
-		return *s_thread;
-	}
+	thread_local SpirvThreadState* t_state;
+	SpirvThreadState& ThreadState() { return ThreadOwned(t_state); }
 	constexpr sint32 DT_F = LATTE_DECOMPILER_DTYPE_FLOAT;
 	constexpr sint32 DT_I = LATTE_DECOMPILER_DTYPE_SIGNED_INT;
 	constexpr sint32 DT_U = LATTE_DECOMPILER_DTYPE_UNSIGNED_INT;
@@ -4755,12 +4749,6 @@ RecycledVectors<uint32>& LatteDecompiler_SPIRVBuffers()
 void LatteDecompiler_PrepareSPIRVThread()
 {
 	ThreadState();
-}
-
-void LatteDecompiler_ReleaseSPIRVThread()
-{
-	delete s_thread;
-	s_thread = nullptr;
 }
 
 bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext, LatteDecompilerShader* shader)

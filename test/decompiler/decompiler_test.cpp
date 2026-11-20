@@ -4866,8 +4866,9 @@ static DecompileResult DecompileOn(bool vertex, const std::vector<uint32>& progr
 // (LatteShader_DecompileTogether): two of each, three times over, every
 // shader the same as decompiled alone - the lists and the SPIR-V writer
 // each thread's own, the buffers, blocks and shaders shared lock-free (TSan
-// in CI), each thread freeing its storage as it ends (MinGW's thread_local
-// teardown frees it before destroying it: the Windows CI job runs this). A
+// in CI), each thread's storage freed as it ends (thread_end.h; MinGW's
+// thread_local teardown frees it before destroying it: the Windows CI job
+// runs this). A
 // thread prepared first (LatteDecompiler_PrepareThread) decompiles with
 // none of that storage allocated.
 static uint32 s_regsBefore[LATTE_MAX_REGISTER];
@@ -4913,7 +4914,6 @@ static void DecompiledTogether(int rounds)
 					std::this_thread::yield();
 				for (int n = 0; n < 3; n++)
 					got[t][n] = DecompileOn((t & 1) == 0, (t & 1) == 0 ? vsWords : psWords, (t & 1) == 0 ? vsOptions : psOptions);
-				LatteDecompiler_ReleaseThread();
 			});
 		}
 		for (auto& th : threads)
@@ -4942,7 +4942,6 @@ static void DecompiledTogether(int rounds)
 				LatteDecompiler_SPIRVBuffers().Give(shader->spirv);
 				LatteDecompiler_SourceBuffers().Give(shader->shaderSource);
 				delete shader;
-				LatteDecompiler_ReleaseThread();
 			}).join();
 			prepared += allocs == 0;
 		}

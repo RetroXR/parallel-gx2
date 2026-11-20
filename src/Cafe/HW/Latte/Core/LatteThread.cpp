@@ -11,6 +11,7 @@
 #include "Cafe/HW/Latte/Core/LatteDraw.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
 #include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.h"
+#include "util/helpers/thread_end.h"
 #include "Cafe/HW/Latte/Core/LatteAsyncCommands.h"
 #include "Cafe/GameProfile/GameProfile.h"
 #include "Cafe/GraphicPack/GraphicPack2.h"
@@ -804,7 +805,6 @@ void LatteThread_Exit()
 	// this finds nothing left to give; on a reset the context never went away
 	// and this is where it all happens.
 	Latte_TeardownGpuState("the title is stopping");
-	LatteDecompiler_ReleaseThread();
 	// reset GPU7 state
 	std::memset(&LatteGPUState, 0, sizeof(LatteGPUState));
 	if (Latte_IsOnGpuCothread())
@@ -816,6 +816,9 @@ void LatteThread_Exit()
 	// so every title left one reference behind and a libretro core's DLL was
 	// never unloaded (NNshi's module trace: one more after each game, with
 	// none of the threads still running).
+	// what the thread keeps for itself freed first: past _endthreadex
+	// nothing of this thread's runs (thread_end.h)
+	thread_end_run();
 	_endthreadex(0);
 	cemu_assert_unimplemented();
 	#else

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include "util/helpers/ThreadOwned.h"
 
 // Storage the recompiler reuses from one compile to the next on the thread
 // that compiles, so a compile allocates nothing once the first few have grown
@@ -26,8 +27,8 @@ struct IMLScratchVector
 private:
 	static std::vector<T>& Spare()
 	{
-		thread_local std::vector<T> s_spare;
-		return s_spare;
+		thread_local std::vector<T>* t_spare;
+		return ThreadOwned(t_spare);
 	}
 };
 

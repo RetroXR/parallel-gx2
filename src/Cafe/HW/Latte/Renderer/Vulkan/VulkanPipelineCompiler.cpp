@@ -14,6 +14,7 @@
 #include "util/helpers/Serializer.h"
 #include "Cafe/HW/Latte/Common/RegisterSerializer.h"
 #include "HW/Latte/Renderer/RendererCore.h"
+#include "util/helpers/ThreadOwned.h"
 
 // The source of the rect emulation geometry shader for a vertex shader and
 // the pixel shader's inputs, written into gsSrc (emptied first)
@@ -135,7 +136,8 @@ RectEmulationGS rectsEmulationGS_generate(LatteDecompilerShader* vertexShader, c
 {
 	// a source a compiled shader gave back; moved into the shader made, or
 	// given back again
-	thread_local std::string gsSrc;
+	thread_local std::string* t_gsSrc;
+	std::string& gsSrc = ThreadOwned(t_gsSrc);
 	LatteDecompiler_SourceBuffers().Take(gsSrc);
 	rectsEmulationGS_write(gsSrc, vertexShader, latteRegister);
 	const uint64 key = RectGSHash(gsSrc, 0xcbf29ce484222325ull, 0x100000001b3ull) | 1;
@@ -1261,7 +1263,6 @@ static void compilePipeline_thread(sint32 threadIndex)
 			request->Compile(true, false, true);
 		delete request;
 	}
-	LatteDecompiler_ReleaseThread();
 }
 
 void PipelineCompiler::CompileThreadPool_Start()

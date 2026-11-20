@@ -2,6 +2,7 @@
 // Routes video/audio/input through libretro frontend callbacks
 
 #include <algorithm>
+#include "util/helpers/thread_end.h"
 #include <cmath>
 #include <thread>
 #include <chrono>
@@ -3762,6 +3763,9 @@ RETRO_API void retro_init()
 		return;
 	}
 
+	// what the core's threads keep for themselves, freed as each ends
+	thread_end_init();
+
 	// Breadcrumbs through the frontend's log rather than Cemu's. Cemu's log.txt
 	// does not exist until the paths below are set up, so a core that dies in
 	// here leaves nothing behind at all - which is exactly what jacklavin saw
@@ -6221,6 +6225,10 @@ RETRO_API void retro_deinit()
 
 	rumble_queue_free(s_vpad_rumble);
 	s_vpad_rumble = nullptr;
+
+	// last: this thread's own freed, and no thread's end runs into the
+	// library once it is unloaded
+	thread_end_deinit();
 
 	s_initialized = false;
 }

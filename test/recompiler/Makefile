@@ -34,7 +34,7 @@ CXX_SRCS := recompiler_test.cpp stubs.cpp \
 	$(REC)/PPCRecompilerIntermediate.cpp $(REC)/PPCRecompilerWorkQueue.cpp \
 	$(wildcard $(REC)/IML/*.cpp) $(wildcard $(REC)/BackendX64/*.cpp) \
 	$(wildcard $(ITP)/*.cpp) $(SRC)/Common/cpu_features.cpp $(MEMMAPPER)
-C_SRCS := $(REC)/rec_store.c $(SRC)/util/helpers/lf_ring.c \
+C_SRCS := $(REC)/rec_store.c $(SRC)/util/helpers/lf_ring.c $(SRC)/util/helpers/thread_end.c \
 	$(LRC)/rthreads/rthreads.c $(LRC)/rthreads/retro_eventcount.c
 OBJS := $(addprefix obj/,$(notdir $(CXX_SRCS:.cpp=.o)) $(notdir $(C_SRCS:.c=.o)))
 vpath %.cpp . $(REC) $(REC)/IML $(REC)/BackendX64 $(ITP) $(SRC)/Common $(SRC)/util/MemMapper

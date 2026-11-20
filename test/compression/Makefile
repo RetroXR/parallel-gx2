@@ -29,7 +29,7 @@ endif
 LRC_SRCS := $(LRC)/encodings/encoding_deflate.c $(LRC)/encodings/encoding_crc32.c \
 	$(LRC)/encodings/encoding_rzstd.c $(LRC)/encodings/encoding_xxh64.c \
 	$(LRC)/features/features_cpu.c $(LRC)/compat/compat_strl.c $(LRC)/time/rtime.c \
-	$(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c
+	$(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c $(SRC)/util/helpers/thread_end.c
 include ../file_io.mk
 LRC_SRCS += $(FILE_IO_C)
 FLAGS += $(FILE_IO_FLAGS)
