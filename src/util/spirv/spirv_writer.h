@@ -62,6 +62,10 @@ void spv_writer_init(spv_writer_t *w);
 /* empty for the next module; the buffers stay */
 void spv_writer_reset(spv_writer_t *w);
 void spv_writer_free(spv_writer_t *w);
+/* room made ahead for a module of up to body words of the function body,
+ * other words of each other section and globals types and constants, so
+ * that writing one allocates nothing; 0 out of memory */
+int spv_writer_reserve(spv_writer_t *w, size_t body, size_t other, size_t globals);
 
 uint32_t spv_id(spv_writer_t *w);
 

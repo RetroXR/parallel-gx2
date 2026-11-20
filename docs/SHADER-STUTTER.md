@@ -343,6 +343,17 @@ thread making it do the same, the other compile threads helping, so it is
 skipped for that much less. `test/prepared_pipeline` checks the builds overlap with
 compile threads free and run one after the other here with none.
 
+A draw whose vertex and pixel shaders are both new has them decompiled
+together: the pixel shader's handed to a compile thread while the GPU
+thread does the vertex shader's, then taken as the parts are
+(`LatteShader_DecompileTogether`), so the wait is for the longer decompile
+rather than their sum. The decompiler runs on any thread at once with any
+other - its lists and writer each thread's own, made as the thread starts
+and freed as it ends, what threads share lock-free; `test/decompiler`
+decompiles on four threads at once under TSan, each shader the same as
+alone. The decompile itself is still at the draw: next, on the compile
+threads as soon as the guest sets a new program, ahead of the draw.
+
 Next: the draws async skips while the parts are made.
 
 - **Graphics pipeline libraries** where the device has them

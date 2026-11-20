@@ -346,6 +346,16 @@ RecycledStrings& LatteDecompiler_SourceBuffers();
 // no memory
 bool LatteDecompiler_SetUniformLists(LatteDecompilerShader* shader, const LatteDecompilerRemappedUniformEntry_t* entries, uint32 n);
 void LatteDecompiler_DecompilePixelShader(uint64 shaderBaseHash, uint32* contextRegisters, uint8* programData, uint32 programSize, LatteDecompilerOptions& options, LatteDecompilerOutput_t* output);
+// The calling thread's decompile storage - its lists, its SPIR-V writer, its
+// source - sized for a large shader, so that it decompiles one while a game
+// plays with none allocated: for a thread made at load that decompiles later
+// (the GPU thread, the compile threads it hands decompiles to). Any thread
+// may decompile at once with any other; what they share is lock-free.
+void LatteDecompiler_PrepareThread();
+// That storage freed, for a thread about to end that has decompiled: it is
+// held by pointers, not freed as the thread ends (MinGW frees a
+// thread_local's storage before running its destructor)
+void LatteDecompiler_ReleaseThread();
 
 // specialized shader parsers
 

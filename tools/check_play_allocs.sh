@@ -86,9 +86,9 @@ src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_CompileSeparableVertexShader
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_CompileSeparableGeometryShader
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_CompileSeparablePixelShader
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_RegisterShader
-src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_GetOrCreateVertexShader
+src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_GetOrCreateVertexAndPixelShader
+src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_DecompileTogether
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_GetOrCreateGeometryShader
-src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_GetOrCreatePixelShader
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_UpdateActiveShaders
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_CleanupShaderStateCache
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_RemoveShaderStateCacheEntryByKey

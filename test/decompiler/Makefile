@@ -20,7 +20,8 @@ ifneq (,$(findstring undefined,$(SANITIZER)))
    FLAGS += -fno-sanitize-recover=shift
 endif
 LIBS := -ldl -lpthread -lm
-ifneq (,$(findstring mingw,$(CXX)))
+# a MinGW compiler, or MSYS2's own g++ on Windows
+ifneq (,$(or $(findstring mingw,$(CXX)),$(filter Windows_NT,$(OS))))
    LIBS := -static
    EXE := .exe
 endif

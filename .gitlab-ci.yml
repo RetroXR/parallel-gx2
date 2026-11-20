@@ -337,7 +337,8 @@ test-dynstate:
 # Random R600 pixel shaders decompiled to GLSL for rslc and written as SPIR-V
 # directly, both drawn on lavapipe: every pixel the same, the same uniform
 # layout, the direct module shaped as rslc's and valid to spirv-val; plain,
-# under ASan + UBSan, and under the Khronos validation layer.
+# under ASan + UBSan, and under the Khronos validation layer; and shaders
+# decompiled on four threads at once as on one, under TSan.
 test-decompiler:
   stage: test
   image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
@@ -357,6 +358,8 @@ test-decompiler:
     - SANITIZER=address,undefined DECOMPILER_COUNT=300 ./test/decompiler/run_tests.sh
     - make -C test/decompiler clean
     - VN_VALIDATE=1 DECOMPILER_COUNT=150 ./test/decompiler/run_tests.sh
+    - make -C test/decompiler clean
+    - SANITIZER=thread DECOMPILER_TOGETHER_ONLY=1 DECOMPILER_COUNT=40 ./test/decompiler/run_tests.sh
 
 # The core's XML layer over libretro-common's rxml and the settings files on
 # it. The core's precompiled header wants fmt.

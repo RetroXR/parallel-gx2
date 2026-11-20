@@ -11,10 +11,19 @@ template<typename T>
 class LatteScratchList
 {
 public:
+	// the thread's, made at its first decompile (or LatteDecompiler_PrepareThread)
+	// and gone with LatteDecompiler_ReleaseThread: a pointer, not an object, as
+	// MinGW runs a thread_local's destructor on its storage already freed
 	static std::vector<T>& Pool()
 	{
-		static thread_local std::vector<T> pool;
-		return pool;
+		if (!s_pool) [[unlikely]]
+			s_pool = new std::vector<T>();
+		return *s_pool;
+	}
+	static void ReleasePool()
+	{
+		delete s_pool;
+		s_pool = nullptr;
 	}
 	T* data() { return m_count ? Pool().data() + m_first : nullptr; }
 	const T* data() const { return m_count ? Pool().data() + m_first : nullptr; }
@@ -56,6 +65,7 @@ public:
 	std::reverse_iterator<T*> rend() { return std::reverse_iterator<T*>(begin()); }
 	void clear() { m_count = 0; }
 private:
+	static inline thread_local std::vector<T>* s_pool{};
 	uint32 m_first{};
 	uint32 m_count{};
 };
@@ -333,6 +343,10 @@ void LatteDecompiler_analyzeDataTypes(LatteDecompilerShaderContext* shaderContex
 void LatteDecompiler_emitGLSLShader(LatteDecompilerShaderContext* shaderContext, LatteDecompilerShader* shader);
 // false, with nothing written, for a shader it does not cover yet
 bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext, LatteDecompilerShader* shader);
+// the emitters' own storage of the calling thread, made (LatteDecompiler_PrepareThread)
+void LatteDecompiler_PrepareSPIRVThread();
+void LatteDecompiler_ReleaseSPIRVThread();
+void LatteDecompiler_PrepareGLSLThread();
 #ifdef ENABLE_METAL
 void LatteDecompiler_emitMSLShader(LatteDecompilerShaderContext* shaderContext, LatteDecompilerShader* shader);
 #endif

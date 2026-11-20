@@ -9,6 +9,8 @@
 #include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
 #ifdef ENABLE_VULKAN
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
+#include "Cafe/HW/Latte/Renderer/Vulkan/PreparedPipeline.h"
+#include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.h"
 #endif
 #include "Cafe/GraphicPack/GraphicPack2.h"
 #include "HW/Latte/Core/Latte.h"
@@ -865,19 +867,39 @@ LatteDecompilerShader* LatteShader_CompileSeparableVertexShader2(uint64 baseHash
 	return nullptr;
 }
 
-// compile new vertex shader (relies partially on current state)
-LatteDecompilerShader* LatteShader_CompileSeparableVertexShader(uint64 baseHash, uint64& vsAuxHash, uint8* vertexShaderPtr, uint32 vertexShaderSize, bool usesGeometryShader, LatteFetchShader* fetchShader)
+// A separable shader's decompile, which any thread may run: it reads the
+// context registers, its program and the pixel shader's input table, which
+// the GPU thread leaves as they are until it has the output, and writes only
+// its output (the decompiler's lists and writer each thread's own, what they
+// share lock-free). What follows it - the renderer's shader, the caches - is
+// the GPU thread's.
+struct LatteSeparableDecompile
 {
-	// new decompiler test
-	//LatteShader_CompileSeparableVertexShader2(baseHash, vsAuxHash, vertexShaderPtr, vertexShaderSize, usesGeometryShader, fetchShader);
-
-	// legacy decompiler
+	LatteConst::ShaderType type;
+	uint64 baseHash;
+	uint8* program;
+	uint32 programSize;
+	LatteFetchShader* fetchShader; // a vertex shader's
 	LatteDecompilerOptions options;
-	LatteShader_GetDecompilerOptions(options, LatteConst::ShaderType::Vertex, usesGeometryShader);
+	LatteDecompilerOutput_t output{};
 
-	LatteDecompilerOutput_t decompilerOutput{};
-	PSO_TRACE_SCOPE("decompile vs", baseHash);
-	LatteDecompiler_DecompileVertexShader(_shaderBaseHash_vs, LatteGPUState.contextRegister, vertexShaderPtr, vertexShaderSize, fetchShader, options, &decompilerOutput);
+	LatteSeparableDecompile(LatteConst::ShaderType type, uint64 baseHash, uint8* program, uint32 programSize, bool usesGeometryShader, LatteFetchShader* fetchShader)
+		: type(type), baseHash(baseHash), program(program), programSize(programSize), fetchShader(fetchShader)
+	{
+		LatteShader_GetDecompilerOptions(options, type, usesGeometryShader);
+	}
+	void Run()
+	{
+		if (type == LatteConst::ShaderType::Vertex)
+			LatteDecompiler_DecompileVertexShader(baseHash, LatteGPUState.contextRegister, program, programSize, fetchShader, options, &output);
+		else
+			LatteDecompiler_DecompilePixelShader(baseHash, LatteGPUState.contextRegister, program, programSize, options, &output);
+	}
+};
+
+// new vertex shader from its decompile (relies partially on current state)
+LatteDecompilerShader* LatteShader_CompileSeparableVertexShader(uint64 baseHash, uint64& vsAuxHash, uint8* vertexShaderPtr, uint32 vertexShaderSize, bool usesGeometryShader, LatteDecompilerOutput_t& decompilerOutput)
+{
 	LatteDecompilerShader* vertexShader = LatteShader_CreateShaderFromDecompilerOutput(decompilerOutput, baseHash, true, 0, LatteGPUState.contextRegister);
 	vsAuxHash = vertexShader->auxHash;
 	if (vertexShader->hasError == false)
@@ -911,7 +933,9 @@ LatteDecompilerShader* LatteShader_CompileSeparableGeometryShader(uint64 baseHas
 
 	LatteDecompilerOutput_t decompilerOutput{};
 	PSO_TRACE_SCOPE("decompile gs", baseHash);
+	performanceMonitor.gpuTime_shaderCreate.beginMeasuring();
 	LatteDecompiler_DecompileGeometryShader(_shaderBaseHash_gs, LatteGPUState.contextRegister, geometryShaderPtr, geometryShaderSize, geometryCopyShader, geometryCopyShaderSize, vertexShader->ringParameterCount, options, &decompilerOutput);
+	performanceMonitor.gpuTime_shaderCreate.endMeasuring();
 	LatteDecompilerShader* geometryShader = LatteShader_CreateShaderFromDecompilerOutput(decompilerOutput, baseHash, true, 0, LatteGPUState.contextRegister);
 	if (geometryShader->hasError == false)
 	{
@@ -936,14 +960,8 @@ LatteDecompilerShader* LatteShader_CompileSeparableGeometryShader(uint64 baseHas
 	return geometryShader;
 }
 
-LatteDecompilerShader* LatteShader_CompileSeparablePixelShader(uint64 baseHash, uint64& psAuxHash, uint8* pixelShaderPtr, uint32 pixelShaderSize, bool usesGeometryShader)
+LatteDecompilerShader* LatteShader_CompileSeparablePixelShader(uint64 baseHash, uint64& psAuxHash, uint8* pixelShaderPtr, uint32 pixelShaderSize, bool usesGeometryShader, LatteDecompilerOutput_t& decompilerOutput)
 {
-	LatteDecompilerOptions options;
-	LatteShader_GetDecompilerOptions(options, LatteConst::ShaderType::Pixel, usesGeometryShader);
-
-	LatteDecompilerOutput_t decompilerOutput{};
-	PSO_TRACE_SCOPE("decompile ps", baseHash);
-	LatteDecompiler_DecompilePixelShader(baseHash, LatteGPUState.contextRegister, pixelShaderPtr, pixelShaderSize, options, &decompilerOutput);
 	LatteDecompilerShader* pixelShader = LatteShader_CreateShaderFromDecompilerOutput(decompilerOutput, baseHash, true, 0, LatteGPUState.contextRegister);
 	psAuxHash = pixelShader->auxHash;
 	LatteShader_DumpShader(_shaderBaseHash_ps, psAuxHash, pixelShader);
@@ -968,23 +986,91 @@ LatteDecompilerShader* LatteShader_CompileSeparablePixelShader(uint64 baseHash, 
 	return pixelShader;
 }
 
-LatteDecompilerShader* LatteSHRC_GetOrCreateVertexShader(uint8* vertexShaderPtr, uint32 vertexShaderSize, bool usesGeometryShader, LatteFetchShader* fetchShader)
+// Both decompiled at once where both are new: the pixel shader's handed to
+// a compile thread while this thread does the vertex shader's, then taken -
+// done here as well where no compile thread has started on it, waited for
+// where one has - so that the wait is for the longer of the two rather than
+// their sum. With no compile thread free, the two one after the other here.
+static void LatteShader_DecompileTogether(LatteSeparableDecompile& vs, LatteSeparableDecompile& ps)
+{
+#ifdef ENABLE_VULKAN
+	if (g_renderer->GetType() == RendererAPI::Vulkan)
+	{
+		struct Queued
+		{
+			LatteSeparableDecompile* decompile;
+			PreparedPipeline prepared{[](void* self, bool) {
+				static_cast<Queued*>(self)->decompile->Run();
+				return (VkPipeline)VK_NULL_HANDLE;
+			}, this};
+		} queued{&ps};
+		PipelineCompiler::CompileThreadPool_QueuePrepared(queued.prepared);
+		{
+			PSO_TRACE_SCOPE("decompile vs", vs.baseHash);
+			vs.Run();
+		}
+		PSO_TRACE_SCOPE("decompile ps, with the vertex shader", ps.baseHash);
+		queued.prepared.Take();
+		return;
+	}
+#endif
+	{
+		PSO_TRACE_SCOPE("decompile vs", vs.baseHash);
+		vs.Run();
+	}
+	PSO_TRACE_SCOPE("decompile ps", ps.baseHash);
+	ps.Run();
+}
+
+// The state's vertex and pixel shaders, those not seen before decompiled
+// (both at once where both are new) and made
+static void LatteSHRC_GetOrCreateVertexAndPixelShader(uint8* vertexShaderPtr, uint32 vertexShaderSize, uint8* pixelShaderPtr, uint32 pixelShaderSize,
+	bool usesGeometryShader, LatteFetchShader* fetchShader, LatteDecompilerShader*& vertexShader, LatteDecompilerShader*& pixelShader)
 {
 	// todo - should include VTX_SEMANTIC table in state
 	LatteSHRC_UpdateVSBaseHash(vertexShaderPtr, vertexShaderSize, usesGeometryShader, fetchShader);
 	uint64 vsAuxHash = 0;
-	auto itBaseShader = sVertexShaders.find(_shaderBaseHash_vs);
-	LatteDecompilerShader* vertexShader = nullptr;
-	if (itBaseShader != sVertexShaders.end())
+	vertexShader = nullptr;
+	auto itVertex = sVertexShaders.find(_shaderBaseHash_vs);
+	if (itVertex != sVertexShaders.end())
 	{
-		vsAuxHash = LatteSHRC_CalcVSAuxHash(itBaseShader->second, LatteGPUState.contextRegister);
-		vertexShader = LatteSHRC_GetFromChain(itBaseShader->second, _shaderBaseHash_vs, vsAuxHash);
+		vsAuxHash = LatteSHRC_CalcVSAuxHash(itVertex->second, LatteGPUState.contextRegister);
+		vertexShader = LatteSHRC_GetFromChain(itVertex->second, _shaderBaseHash_vs, vsAuxHash);
 	}
-	if (!vertexShader)
-		vertexShader = LatteShader_CompileSeparableVertexShader(_shaderBaseHash_vs, vsAuxHash, vertexShaderPtr, vertexShaderSize, usesGeometryShader, fetchShader);
-	if (vertexShader->hasError)
+	LatteSHRC_UpdatePSBaseHash(pixelShaderPtr, pixelShaderSize, usesGeometryShader);
+	uint64 psAuxHash = 0;
+	pixelShader = nullptr;
+	auto itPixel = sPixelShaders.find(_shaderBaseHash_ps);
+	if (itPixel != sPixelShaders.end())
+	{
+		psAuxHash = LatteSHRC_CalcPSAuxHash(itPixel->second, LatteGPUState.contextRegister);
+		pixelShader = LatteSHRC_GetFromChain(itPixel->second, _shaderBaseHash_ps, psAuxHash);
+	}
+	if (!vertexShader || !pixelShader)
+	{
+		LatteSeparableDecompile vs(LatteConst::ShaderType::Vertex, _shaderBaseHash_vs, vertexShaderPtr, vertexShaderSize, usesGeometryShader, fetchShader);
+		LatteSeparableDecompile ps(LatteConst::ShaderType::Pixel, _shaderBaseHash_ps, pixelShaderPtr, pixelShaderSize, usesGeometryShader, nullptr);
+		performanceMonitor.gpuTime_shaderCreate.beginMeasuring();
+		if (!vertexShader && !pixelShader)
+			LatteShader_DecompileTogether(vs, ps);
+		else if (!vertexShader)
+		{
+			PSO_TRACE_SCOPE("decompile vs", vs.baseHash);
+			vs.Run();
+		}
+		else
+		{
+			PSO_TRACE_SCOPE("decompile ps", ps.baseHash);
+			ps.Run();
+		}
+		performanceMonitor.gpuTime_shaderCreate.endMeasuring();
+		if (!vertexShader)
+			vertexShader = LatteShader_CompileSeparableVertexShader(_shaderBaseHash_vs, vsAuxHash, vertexShaderPtr, vertexShaderSize, usesGeometryShader, vs.output);
+		if (!pixelShader)
+			pixelShader = LatteShader_CompileSeparablePixelShader(_shaderBaseHash_ps, psAuxHash, pixelShaderPtr, pixelShaderSize, usesGeometryShader, ps.output);
+	}
+	if (vertexShader->hasError || pixelShader->hasError)
 		LatteGPUState.activeShaderHasError = true;
-	return vertexShader;
 }
 
 LatteDecompilerShader* LatteSHRC_GetOrCreateGeometryShader(bool usesGeometryShader, uint8* geometryShaderPtr, uint32 geometryShaderSize, uint8* geometryCopyShader, uint32 geometryCopyShaderSize, LatteDecompilerShader* vertexShader)
@@ -1011,24 +1097,6 @@ LatteDecompilerShader* LatteSHRC_GetOrCreateGeometryShader(bool usesGeometryShad
 	if (geometryShader->hasError)
 		LatteGPUState.activeShaderHasError = true;
 	return geometryShader;
-}
-
-LatteDecompilerShader* LatteSHRC_GetOrCreatePixelShader(uint8* pixelShaderPtr, uint32 pixelShaderSize, bool usesGeometryShader)
-{
-	LatteSHRC_UpdatePSBaseHash(pixelShaderPtr, pixelShaderSize, usesGeometryShader);
-	uint64 psAuxHash = 0;
-	auto itBaseShader = sPixelShaders.find(_shaderBaseHash_ps);
-	LatteDecompilerShader* pixelShader = nullptr;
-	if (itBaseShader != sPixelShaders.end())
-	{
-		psAuxHash = LatteSHRC_CalcPSAuxHash(itBaseShader->second, LatteGPUState.contextRegister);
-		pixelShader = LatteSHRC_GetFromChain(itBaseShader->second, _shaderBaseHash_ps, psAuxHash);
-	}
-	if (!pixelShader)
-		pixelShader = LatteShader_CompileSeparablePixelShader(_shaderBaseHash_ps, psAuxHash, pixelShaderPtr, pixelShaderSize, usesGeometryShader);
-	if (pixelShader->hasError)
-		LatteGPUState.activeShaderHasError = true;
-	return pixelShader;
 }
 
 static inline uint64_t mix64(uint64_t v)
@@ -1272,12 +1340,11 @@ void LatteSHRC_UpdateActiveShaders()
 
 	// check whether shaders have errors
 	bool shaderError = LatteGPUState.activeShaderHasError;
-	LatteDecompilerShader* vertexShader = LatteSHRC_GetOrCreateVertexShader((uint8*)memory_getPointerFromPhysicalOffset(vsProgramAddr), vsProgramSize, geometryShaderUsed, fetchShader);
-	if (vertexShader)
-		shaderError |= vertexShader->hasError;
-	LatteDecompilerShader* pixelShader = LatteSHRC_GetOrCreatePixelShader((uint8*)memory_getPointerFromPhysicalOffset(psProgramAddr), psProgramSize, geometryShaderUsed);
-	if (pixelShader)
-		shaderError |= pixelShader->hasError;
+	LatteDecompilerShader* vertexShader;
+	LatteDecompilerShader* pixelShader;
+	LatteSHRC_GetOrCreateVertexAndPixelShader((uint8*)memory_getPointerFromPhysicalOffset(vsProgramAddr), vsProgramSize,
+		(uint8*)memory_getPointerFromPhysicalOffset(psProgramAddr), psProgramSize, geometryShaderUsed, fetchShader, vertexShader, pixelShader);
+	shaderError |= vertexShader->hasError || pixelShader->hasError;
 	LatteDecompilerShader* geometryShader = LatteSHRC_GetOrCreateGeometryShader(geometryShaderUsed, (uint8*)memory_getPointerFromPhysicalOffset(gsProgramAddr), gsProgramSize, (uint8*)memory_getPointerFromPhysicalOffset(copyProgramAddr), copyProgramSize, vertexShader);
 	if (geometryShader)
 		shaderError |= geometryShader->hasError;

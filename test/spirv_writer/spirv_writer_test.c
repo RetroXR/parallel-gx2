@@ -256,12 +256,58 @@ static void test_growth(void)
    spv_writer_free(&w);
 }
 
+/* room made ahead: a module that fits it written with no buffer moved,
+ * the table of types and constants included */
+static void test_reserve(void)
+{
+   spv_writer_t w;
+   uint32_t words[3];
+   uint32_t *bufs[SPV_SEC_COUNT + 1];
+   uint32_t *dedup;
+   size_t count = 0, i;
+   const uint32_t *m;
+   uint32_t t;
+   int k, stable = 1;
+   spv_writer_init(&w);
+   CHECK(spv_writer_reserve(&w, 3000, 64, 300));
+   for (i = 0; i < SPV_SEC_COUNT; i++)
+      bufs[i] = w.sec[i].w;
+   bufs[SPV_SEC_COUNT] = w.out.w;
+   dedup = w.dedup;
+   CHECK(w.dedup_cap >= 2 * 301);
+   t = spv_type_int(&w, 0);
+   for (k = 0; k < 299; k++)
+      CHECK(spv_const_bits(&w, t, (uint32_t)k) != 0);
+   for (k = 0; k < 700; k++)
+   {
+      words[0] = 1;
+      words[1] = (uint32_t)k;
+      words[2] = 2;
+      spv_inst(&w, SPV_SEC_BODY, SpvOpNop, words, 3);
+   }
+   spv_inst(&w, SPV_SEC_DEBUG, SpvOpNop, words, 3);
+   m = spv_writer_finish(&w, &count);
+   CHECK(m != NULL);
+   for (i = 0; i < SPV_SEC_COUNT; i++)
+      if (w.sec[i].w != bufs[i])
+         stable = 0;
+   if (w.out.w != bufs[SPV_SEC_COUNT] || w.dedup != dedup)
+      stable = 0;
+   CHECK(stable);
+   /* one past it grows */
+   for (k = 0; k < 100; k++)
+      spv_inst(&w, SPV_SEC_BODY, SpvOpNop, words, 3);
+   CHECK(w.sec[SPV_SEC_BODY].cap > 3000 && w.sec[SPV_SEC_BODY].n == 800 * 4);
+   spv_writer_free(&w);
+}
+
 int main(int argc, char **argv)
 {
    test_module(argc > 1 ? argv[1] : NULL);
    test_dedup();
    test_reuse();
    test_growth();
+   test_reserve();
    if (failures)
    {
       fprintf(stderr, "spirv_writer_test: %d failed\n", failures);

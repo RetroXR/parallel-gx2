@@ -10,6 +10,7 @@
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/HW/Latte/Core/LatteDraw.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
+#include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.h"
 #include "Cafe/HW/Latte/Core/LatteAsyncCommands.h"
 #include "Cafe/GameProfile/GameProfile.h"
 #include "Cafe/GraphicPack/GraphicPack2.h"
@@ -457,6 +458,8 @@ int Latte_ThreadEntry()
 			}
 		}
 	}
+	// this thread's decompile storage, sized before the game plays
+	LatteDecompiler_PrepareThread();
 	// load disk shader cache
 	LatteThread_SetPhase("loading the shader cache");
 	if (Latte_GetStopSignal())
@@ -801,6 +804,7 @@ void LatteThread_Exit()
 	// this finds nothing left to give; on a reset the context never went away
 	// and this is where it all happens.
 	Latte_TeardownGpuState("the title is stopping");
+	LatteDecompiler_ReleaseThread();
 	// reset GPU7 state
 	std::memset(&LatteGPUState, 0, sizeof(LatteGPUState));
 	if (Latte_IsOnGpuCothread())

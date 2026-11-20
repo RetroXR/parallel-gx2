@@ -4,6 +4,7 @@
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
 #include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.h"
+#include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "Cemu/FileCache/FileCache.h"
 #include "Cafe/GameProfile/GameProfile.h"
@@ -514,7 +515,9 @@ bool LatteShaderCache_readSeparableVertexShader(MemStreamReader& streamReader, u
 	LatteShader_GetDecompilerOptions(options, LatteConst::ShaderType::Vertex, usesGeometryShader);
 	// decompile vertex shader
 	LatteDecompilerOutput_t decompilerOutput{};
+	performanceMonitor.gpuTime_shaderCreate.beginMeasuring();
 	LatteDecompiler_DecompileVertexShader(shaderBaseHash, lcr->GetRawView(), vertexShaderData.data(), vertexShaderData.size(), fetchShader, options, &decompilerOutput);
+	performanceMonitor.gpuTime_shaderCreate.endMeasuring();
 	LatteDecompilerShader* vertexShader = LatteShader_CreateShaderFromDecompilerOutput(decompilerOutput, shaderBaseHash, false, shaderAuxHash, lcr->GetRawView());
 	// compile
 	LatteShader_DumpShader(shaderBaseHash, shaderAuxHash, vertexShader);
@@ -555,7 +558,9 @@ bool LatteShaderCache_readSeparableGeometryShader(MemStreamReader& streamReader,
 	LatteShader_GetDecompilerOptions(options, LatteConst::ShaderType::Geometry, true);
 	// decompile geometry shader
 	LatteDecompilerOutput_t decompilerOutput{};
+	performanceMonitor.gpuTime_shaderCreate.beginMeasuring();
 	LatteDecompiler_DecompileGeometryShader(shaderBaseHash, lcr->GetRawView(), geometryShaderData.data(), geometryShaderData.size(), geometryCopyShaderData.data(), geometryCopyShaderData.size(), vsRingParameterCount, options, &decompilerOutput);
+	performanceMonitor.gpuTime_shaderCreate.endMeasuring();
 	LatteDecompilerShader* geometryShader = LatteShader_CreateShaderFromDecompilerOutput(decompilerOutput, shaderBaseHash, false, shaderAuxHash, lcr->GetRawView());
 	// compile
 	LatteShader_DumpShader(shaderBaseHash, shaderAuxHash, geometryShader);
@@ -592,7 +597,9 @@ bool LatteShaderCache_readSeparablePixelShader(MemStreamReader& streamReader, ui
 	LatteShader_GetDecompilerOptions(options, LatteConst::ShaderType::Pixel, usesGeometryShader);
 	// decompile pixel shader
 	LatteDecompilerOutput_t decompilerOutput{};
+	performanceMonitor.gpuTime_shaderCreate.beginMeasuring();
 	LatteDecompiler_DecompilePixelShader(shaderBaseHash, lcr->GetRawView(), pixelShaderData.data(), pixelShaderData.size(), options, &decompilerOutput);
+	performanceMonitor.gpuTime_shaderCreate.endMeasuring();
 	LatteDecompilerShader* pixelShader = LatteShader_CreateShaderFromDecompilerOutput(decompilerOutput, shaderBaseHash, false, shaderAuxHash, lcr->GetRawView());
 	// compile
 	LatteShader_DumpShader(shaderBaseHash, shaderAuxHash, pixelShader);

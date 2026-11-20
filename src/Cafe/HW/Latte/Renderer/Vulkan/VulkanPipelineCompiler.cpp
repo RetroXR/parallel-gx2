@@ -6,6 +6,7 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.h"
 #include "Cafe/HW/Latte/Core/PsoTrace.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
+#include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.h"
 #include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
 #include "Cafe/OS/libs/gx2/GX2.h"
 #include "config/ActiveSettings.h"
@@ -1236,6 +1237,8 @@ static MpmcQueue<PipelineCompiler*> s_pipelineCompileRequests;
 static void compilePipeline_thread(sint32 threadIndex)
 {
 	SetThreadName("compilePl");
+	// the decompiles the GPU thread hands over, sized now rather than in play
+	LatteDecompiler_PrepareThread();
 #ifdef _WIN32
 	// to avoid starving the main cpu and render threads the pipeline compile threads run at lower priority
 	// except for one thread which we always run at normal priority to prevent the opposite scenario where all compile threads are starved
@@ -1258,6 +1261,7 @@ static void compilePipeline_thread(sint32 threadIndex)
 			request->Compile(true, false, true);
 		delete request;
 	}
+	LatteDecompiler_ReleaseThread();
 }
 
 void PipelineCompiler::CompileThreadPool_Start()

@@ -8,9 +8,9 @@
 #include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerInternal.h"
 #include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerInstructions.h"
 #include "Cafe/HW/Latte/Core/FetchShader.h"
+#include "util/helpers/StringBuf.h"
 #include "util/helpers/SizedBlocks.h"
 #include <new>
-#include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
 #include "config/ActiveSettings.h"
 #ifdef ENABLE_VULKAN
@@ -1155,6 +1155,24 @@ void LatteDecompiler_ResetScratch()
 	reset(LatteScratchList<LatteDecompilerRemappedUniformEntry_t>::Pool(), 512);
 }
 
+void LatteDecompiler_PrepareThread()
+{
+	LatteDecompiler_ResetScratch();
+	LatteDecompiler_PrepareSPIRVThread();
+	LatteDecompiler_PrepareGLSLThread();
+}
+
+void LatteDecompiler_ReleaseThread()
+{
+	LatteScratchList<LatteDecompilerCFInstruction>::ReleasePool();
+	LatteScratchList<LatteDecompilerALUInstruction>::ReleasePool();
+	LatteScratchList<LatteDecompilerTEXInstruction>::ReleasePool();
+	LatteScratchList<LatteDecompilerSubroutineInfo>::ReleasePool();
+	LatteScratchList<LatteDecompilerRemappedUniformEntry_t>::ReleasePool();
+	LatteDecompiler_ReleaseSPIRVThread();
+	StringBuf_ReleaseThreadScratch();
+}
+
 void _LatteDecompiler_Process(LatteDecompilerShaderContext* shaderContext, uint8* programData, uint32 programSize)
 {
 	LatteDecompiler_ResetScratch();
@@ -1218,7 +1236,6 @@ void LatteDecompiler_DecompileVertexShader(uint64 shaderBaseHash, uint32* contex
 {
 	cemu_assert_debug(fetchShader);
 	cemu_assert_debug((programSize & 3) == 0);
-	performanceMonitor.gpuTime_shaderCreate.beginMeasuring();
 	// prepare decompiler context
 	LatteDecompilerShaderContext shaderContext = { 0 };
 	LatteDecompiler_InitContext(shaderContext, options, output, LatteConst::ShaderType::Vertex, shaderBaseHash, contextRegisters);
@@ -1236,13 +1253,11 @@ void LatteDecompiler_DecompileVertexShader(uint64 shaderBaseHash, uint32* contex
 	}
 	// parse & compile
 	_LatteDecompiler_Process(&shaderContext, programData, programSize);
-	performanceMonitor.gpuTime_shaderCreate.endMeasuring();
 }
 
 void LatteDecompiler_DecompileGeometryShader(uint64 shaderBaseHash, uint32* contextRegisters, uint8* programData, uint32 programSize, uint8* gsCopyProgramData, uint32 gsCopyProgramSize, uint32 vsRingParameterCount, LatteDecompilerOptions& options, LatteDecompilerOutput_t* output)
 {
 	cemu_assert_debug((programSize & 3) == 0);
-	performanceMonitor.gpuTime_shaderCreate.beginMeasuring();
 	// prepare decompiler context
 	LatteDecompilerShaderContext shaderContext = { 0 };
 	LatteDecompiler_InitContext(shaderContext, options, output, LatteConst::ShaderType::Geometry, shaderBaseHash, contextRegisters);
@@ -1271,13 +1286,11 @@ void LatteDecompiler_DecompileGeometryShader(uint64 shaderBaseHash, uint32* cont
 	}
 	// parse & compile
 	_LatteDecompiler_Process(&shaderContext, programData, programSize);
-	performanceMonitor.gpuTime_shaderCreate.endMeasuring();
 }
 
 void LatteDecompiler_DecompilePixelShader(uint64 shaderBaseHash, uint32* contextRegisters, uint8* programData, uint32 programSize, LatteDecompilerOptions& options, LatteDecompilerOutput_t* output)
 {
 	cemu_assert_debug((programSize & 3) == 0);
-	performanceMonitor.gpuTime_shaderCreate.beginMeasuring();
 	// prepare decompiler context
 	LatteDecompilerShaderContext shaderContext = { 0 };
 	LatteDecompiler_InitContext(shaderContext, options, output, LatteConst::ShaderType::Pixel, shaderBaseHash, contextRegisters);
@@ -1294,7 +1307,6 @@ void LatteDecompiler_DecompilePixelShader(uint64 shaderBaseHash, uint32* context
 	}
 	// parse & compile
 	_LatteDecompiler_Process(&shaderContext, programData, programSize);
-	performanceMonitor.gpuTime_shaderCreate.endMeasuring();
 }
 
 void LatteDecompiler_cleanup(LatteDecompilerShaderContext* shaderContext)

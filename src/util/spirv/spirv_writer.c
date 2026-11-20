@@ -45,6 +45,27 @@ void spv_writer_reset(spv_writer_t *w)
    w->failed = 0;
 }
 
+static int dedup_grow(spv_writer_t *w);
+
+int spv_writer_reserve(spv_writer_t *w, size_t body, size_t other, size_t globals)
+{
+   unsigned i;
+   size_t total = 5;
+   for (i = 0; i < SPV_SEC_COUNT; i++)
+   {
+      size_t want = i == SPV_SEC_BODY ? body : i == SPV_SEC_GLOBAL ? globals * 4 : other;
+      if (!words_reserve(w, &w->sec[i], want))
+         return 0;
+      total += want;
+   }
+   if (!words_reserve(w, &w->out, total))
+      return 0;
+   while ((globals + 1) * 2 > w->dedup_cap)
+      if (!dedup_grow(w))
+         return 0;
+   return 1;
+}
+
 void spv_writer_free(spv_writer_t *w)
 {
    unsigned i;

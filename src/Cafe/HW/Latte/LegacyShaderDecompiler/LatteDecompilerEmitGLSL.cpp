@@ -98,14 +98,25 @@ const char* _getElementStrByIndex(uint32 channel)
 	return "UNDEFINED";
 }
 
-char _tempGenString[64][256];
-uint32 _tempGenStringIndex = 0;
+// the names one expression is written with, a ring of them: the thread's
+// own, as any thread may decompile while another does
+static thread_local char _tempGenString[64][256];
+static thread_local uint32 _tempGenStringIndex = 0;
 
 char* _getTempString()
 {
 	char* str = _tempGenString[_tempGenStringIndex];
 	_tempGenStringIndex = (_tempGenStringIndex+1)%64;
 	return str;
+}
+
+// the room a shader's source is written in (StringBuf_ThreadScratch)
+static constexpr uint32 kSourceScratchSize = 1024 * 1024 * 12;
+
+void LatteDecompiler_PrepareGLSLThread()
+{
+	_tempGenString[0][0] = '\0';
+	StringBuf_ThreadScratch(0, kSourceScratchSize);
 }
 
 static char* _getActiveMaskVarName(LatteDecompilerShaderContext* shaderContext, sint32 index)
@@ -3881,7 +3892,7 @@ void LatteDecompiler_emitGLSLShader(LatteDecompilerShaderContext* shaderContext,
 {
 	// the thread's own, 12 MB set aside once; the shader's source is copied
 	// out of it at the end, its size
-	StringBuf* src = &StringBuf_ThreadScratch(0, 1024 * 1024 * 12);
+	StringBuf* src = &StringBuf_ThreadScratch(0, kSourceScratchSize);
 	shaderContext->shaderSource = src;
 	// GLSL shader header
 	src->add("#version 430" _CRLF); // 430 is required for shader storage (Vulkan alternative TF path)

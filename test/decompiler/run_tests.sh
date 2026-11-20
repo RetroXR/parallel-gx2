@@ -4,7 +4,8 @@
 # prefixes the test (wine for a MinGW build); DECOMPILER_COUNT sets how
 # many random shaders. The direct modules go through spirv-val where that
 # is installed. VN_VALIDATE runs it under the Khronos validation layer,
-# where any error fails.
+# where any error fails. DECOMPILER_TOGETHER_ONLY runs only shaders decompiled
+# on four threads at once (no device; the TSan run, SANITIZER=thread).
 set -e
 cd "$(dirname "$0")"
 make -s

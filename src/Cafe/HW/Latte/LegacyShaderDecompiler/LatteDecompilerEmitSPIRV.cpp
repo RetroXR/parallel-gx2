@@ -43,9 +43,29 @@
 static thread_local const char* s_lastBeyondGLSL;
 namespace
 {
-	// a ternary's sides moved into its branches, sized at the first
-	// decompile (LatteDecompiler_emitSPIRVShader) for the largest a shader has
-	thread_local std::vector<uint32> s_sides;
+	// the thread's writer and a ternary's sides moved into its branches, made
+	// at its first shader written (or LatteDecompiler_PrepareThread) for a
+	// large one, freed by LatteDecompiler_ReleaseThread: a pointer, as MinGW
+	// runs a thread_local's destructor on its storage already freed
+	struct SpirvThreadState
+	{
+		spv_writer_t w;
+		std::vector<uint32> sides;
+		SpirvThreadState()
+		{
+			spv_writer_init(&w);
+			spv_writer_reserve(&w, 16384, 512, 1024);
+			sides.reserve(4096);
+		}
+		~SpirvThreadState() { spv_writer_free(&w); }
+	};
+	thread_local SpirvThreadState* s_thread{};
+	SpirvThreadState& ThreadState()
+	{
+		if (!s_thread) [[unlikely]]
+			s_thread = new SpirvThreadState();
+		return *s_thread;
+	}
 	constexpr sint32 DT_F = LATTE_DECOMPILER_DTYPE_FLOAT;
 	constexpr sint32 DT_I = LATTE_DECOMPILER_DTYPE_SIGNED_INT;
 	constexpr sint32 DT_U = LATTE_DECOMPILER_DTYPE_UNSIGNED_INT;
@@ -897,7 +917,8 @@ namespace
 				return Run(Op(SpvOpSelect, TypeOf(type), { cond.id, a.id, b.id }), type);
 			spv_words_t& body = w->sec[SPV_SEC_BODY];
 			const size_t end = body.n;
-			s_sides.assign(body.w + sidesFrom, body.w + end);
+			std::vector<uint32>& sides = ThreadState().sides;
+			sides.assign(body.w + sidesFrom, body.w + end);
 			body.n = sidesFrom;
 			const size_t aWords = aEnd - sidesFrom;
 			uint32 aLabel = spv_id(w), bLabel = spv_id(w), mergeLabel = spv_id(w);
@@ -909,20 +930,20 @@ namespace
 			Label(aLabel);
 			for (size_t i = 0; i < aWords;)
 			{
-				uint32 n = s_sides[i] >> 16;
-				if ((s_sides[i] & 0xFFFF) == SpvOpLabel)
-					aLast = s_sides[i + 1];
-				spv_inst(w, SPV_SEC_BODY, s_sides[i] & 0xFFFF, s_sides.data() + i + 1, n - 1);
+				uint32 n = sides[i] >> 16;
+				if ((sides[i] & 0xFFFF) == SpvOpLabel)
+					aLast = sides[i + 1];
+				spv_inst(w, SPV_SEC_BODY, sides[i] & 0xFFFF, sides.data() + i + 1, n - 1);
 				i += n;
 			}
 			OpVoid(SpvOpBranch, { mergeLabel });
 			Label(bLabel);
-			for (size_t i = aWords; i < s_sides.size();)
+			for (size_t i = aWords; i < sides.size();)
 			{
-				uint32 n = s_sides[i] >> 16;
-				if ((s_sides[i] & 0xFFFF) == SpvOpLabel)
-					bLast = s_sides[i + 1];
-				spv_inst(w, SPV_SEC_BODY, s_sides[i] & 0xFFFF, s_sides.data() + i + 1, n - 1);
+				uint32 n = sides[i] >> 16;
+				if ((sides[i] & 0xFFFF) == SpvOpLabel)
+					bLast = sides[i + 1];
+				spv_inst(w, SPV_SEC_BODY, sides[i] & 0xFFFF, sides.data() + i + 1, n - 1);
 				i += n;
 			}
 			OpVoid(SpvOpBranch, { mergeLabel });
@@ -4711,12 +4732,6 @@ namespace
 	}
 
 	// the writer each decompiling thread keeps
-	struct ThreadWriter
-	{
-		spv_writer_t w;
-		ThreadWriter() { spv_writer_init(&w); }
-		~ThreadWriter() { spv_writer_free(&w); }
-	};
 }
 
 static thread_local const char* s_lastDecline;
@@ -4737,13 +4752,21 @@ RecycledVectors<uint32>& LatteDecompiler_SPIRVBuffers()
 	return s_buffers;
 }
 
+void LatteDecompiler_PrepareSPIRVThread()
+{
+	ThreadState();
+}
+
+void LatteDecompiler_ReleaseSPIRVThread()
+{
+	delete s_thread;
+	s_thread = nullptr;
+}
+
 bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext, LatteDecompilerShader* shader)
 {
 	s_lastBeyondGLSL = nullptr;
-	if (s_sides.capacity() < 4096)
-		s_sides.reserve(4096);
-	thread_local ThreadWriter s_writer;
-	spv_writer_t* w = &s_writer.w;
+	spv_writer_t* w = &ThreadState().w;
 	spv_writer_reset(w);
 	SpvShader s{};
 	s.w = w;

@@ -37,6 +37,8 @@
 #include <string>
 #include <vector>
 #include <new>
+#include <atomic>
+#include <thread>
 
 // operator new counted, to hold a decompile's allocations under a ceiling;
 // the sanitizers keep their own
@@ -4830,10 +4832,144 @@ static void UniformListsInOneBlock()
 	}
 }
 
+// --- several threads at once ---------------------------------------------------
+
+// what a decompile wrote, to compare one thread's with another's
+struct DecompileResult
+{
+	bool error = false;
+	std::vector<uint32> spirv;
+	std::string glsl;
+	bool operator==(const DecompileResult& o) const { return error == o.error && spirv == o.spirv && glsl == o.glsl; }
+};
+
+static DecompileResult DecompileOn(bool vertex, const std::vector<uint32>& program, LatteDecompilerOptions options)
+{
+	LatteDecompilerOutput_t out{};
+	if (vertex)
+		LatteDecompiler_DecompileVertexShader(0x5678, s_regs, (uint8*)program.data(), (uint32)program.size() * 4, &s_fetchShader, options, &out);
+	else
+		LatteDecompiler_DecompilePixelShader(0x1234, s_regs, (uint8*)program.data(), (uint32)program.size() * 4, options, &out);
+	LatteDecompilerShader* shader = out.shader;
+	DecompileResult r;
+	r.error = shader->hasError;
+	r.spirv = shader->spirv;
+	r.glsl = shader->shaderSource;
+	LatteDecompiler_SPIRVBuffers().Give(shader->spirv);
+	LatteDecompiler_SourceBuffers().Give(shader->shaderSource);
+	delete shader;
+	return r;
+}
+
+// The decompiler on four threads at once, as the GPU thread and a compile
+// thread decompile a new state's vertex and pixel shaders together
+// (LatteShader_DecompileTogether): two of each, three times over, every
+// shader the same as decompiled alone - the lists and the SPIR-V writer
+// each thread's own, the buffers, blocks and shaders shared lock-free (TSan
+// in CI), each thread freeing its storage as it ends (MinGW's thread_local
+// teardown frees it before destroying it: the Windows CI job runs this). A
+// thread prepared first (LatteDecompiler_PrepareThread) decompiles with
+// none of that storage allocated.
+static uint32 s_regsBefore[LATTE_MAX_REGISTER];
+static void DecompiledTogether(int rounds)
+{
+	// the state the rest of the test starts from, put back after
+	std::memcpy(s_regsBefore, s_regs, sizeof(s_regs));
+	const LatteShaderPSInputTable psInputsBefore = g_testPSInputTable;
+	const bool loopsBefore = g_testPreventInfiniteLoops, roundBefore = g_testRoundToPrecision;
+	Gen gen;
+	gen.rng.seed(20261120u);
+	gen.sys.seed(20261120u ^ 0x5F5F0001u);
+	int compared = 0, differing = 0, prepared = 0;
+	for (int r = 0; r < rounds; r++)
+	{
+		const bool allowDeclined = (r % 5) == 0;
+		VSCase k = MakeVertexCase(gen, allowDeclined);
+		k.strictMul = gen.Chance(50);
+		k.preventLoops = gen.Chance(50);
+		const std::vector<uint32> vsWords = Assemble(k.p);
+		const Program ps = gen.Make(allowDeclined);
+		const std::vector<uint32> psWords = Assemble(ps);
+		SetVertexState(k);
+		SetTextureRegisters(s_regs, ps);
+		s_regs[mmCB_SHADER_MASK] = 0xF; // the pixel shader's one color output
+		LatteDecompilerOptions vsOptions;
+		vsOptions.strictMul = k.strictMul;
+		vsOptions.directSPIRV = r % 4 != 1; // a quarter the GLSL way
+		vsOptions.useTFViaSSBO = true;
+		LatteDecompilerOptions psOptions;
+		psOptions.strictMul = gen.Chance(50);
+		psOptions.directSPIRV = r % 4 != 2;
+		const DecompileResult vsAlone = DecompileOn(true, vsWords, vsOptions);
+		const DecompileResult psAlone = DecompileOn(false, psWords, psOptions);
+		DecompileResult got[4][3];
+		std::atomic<int> ready{0};
+		std::vector<std::thread> threads;
+		for (int t = 0; t < 4; t++)
+		{
+			threads.emplace_back([&, t] {
+				ready.fetch_add(1);
+				while (ready.load() < 4)
+					std::this_thread::yield();
+				for (int n = 0; n < 3; n++)
+					got[t][n] = DecompileOn((t & 1) == 0, (t & 1) == 0 ? vsWords : psWords, (t & 1) == 0 ? vsOptions : psOptions);
+				LatteDecompiler_ReleaseThread();
+			});
+		}
+		for (auto& th : threads)
+			th.join();
+		for (int t = 0; t < 4; t++)
+		{
+			for (int n = 0; n < 3; n++)
+			{
+				compared++;
+				if (!(got[t][n] == ((t & 1) == 0 ? vsAlone : psAlone)))
+					differing++;
+			}
+		}
+		// the first round's on a thread prepared for it: nothing allocated
+		if (r == 0)
+		{
+			unsigned long long allocs = ~0ull;
+			std::thread([&] {
+				LatteDecompiler_PrepareThread();
+				const unsigned long long before = s_allocs;
+				LatteDecompilerOutput_t out{};
+				LatteDecompilerOptions options = psOptions;
+				LatteDecompiler_DecompilePixelShader(0x1234, s_regs, (uint8*)psWords.data(), (uint32)psWords.size() * 4, options, &out);
+				allocs = s_allocs - before;
+				LatteDecompilerShader* shader = out.shader;
+				LatteDecompiler_SPIRVBuffers().Give(shader->spirv);
+				LatteDecompiler_SourceBuffers().Give(shader->shaderSource);
+				delete shader;
+				LatteDecompiler_ReleaseThread();
+			}).join();
+			prepared += allocs == 0;
+		}
+	}
+	std::printf("decompiler: %d shaders decompiled on four threads at once, %d not as alone; a prepared thread's %s\n", compared, differing,
+		prepared ? "allocated nothing" : "allocated");
+	CHECK(differing == 0 && compared == rounds * 12);
+	CHECK(prepared == 1);
+	std::memcpy(s_regs, s_regsBefore, sizeof(s_regs));
+	g_testPSInputTable = psInputsBefore;
+	g_testPreventInfiniteLoops = loopsBefore;
+	g_testRoundToPrecision = roundBefore;
+	s_fetchShader.bufferGroups.clear();
+}
+
 int main(int argc, char** argv)
 {
 	ScratchListsInterleaved();
 	UniformListsInOneBlock();
+	if (getenv("DECOMPILER_TOGETHER_ONLY"))
+	{
+		// the threads alone (the TSan run): no device
+		DecompiledTogether(argc > 2 ? std::atoi(argv[2]) : 40);
+		std::printf(s_failures ? "decompiler_test: %d failure(s)\n" : "decompiler_test: all passed\n", s_failures);
+		return s_failures ? 1 : 0;
+	}
+	DecompiledTogether(40);
 	const char* outDir = argc > 1 ? argv[1] : nullptr;
 	const int count = argc > 2 ? std::atoi(argv[2]) : 400;
 	FillUniformBuffers();

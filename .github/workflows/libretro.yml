@@ -278,7 +278,8 @@ jobs:
         # SPIR-V directly, both drawn on lavapipe: every pixel the same, the
         # same uniform layout, the direct module shaped as rslc's and valid
         # to spirv-val; plain, under ASan + UBSan, and under the Khronos
-        # validation layer, where any error fails
+        # validation layer, where any error fails; and shaders decompiled on
+        # four threads at once as on one, under TSan
         run: |
           git submodule update --init --depth 1 dependencies/fmt dependencies/Vulkan-Headers
           sudo apt-get install -y mesa-vulkan-drivers libvulkan1 vulkan-validationlayers spirv-tools
@@ -287,6 +288,8 @@ jobs:
           VN_REQUIRE_DEVICE=1 SANITIZER=address,undefined DECOMPILER_COUNT=300 ./test/decompiler/run_tests.sh
           make -C test/decompiler clean
           VN_REQUIRE_DEVICE=1 VN_VALIDATE=1 DECOMPILER_COUNT=150 ./test/decompiler/run_tests.sh
+          make -C test/decompiler clean
+          SANITIZER=thread DECOMPILER_TOGETHER_ONLY=1 DECOMPILER_COUNT=40 ./test/decompiler/run_tests.sh
 
       - name: "XML"
         # the core's XML layer over libretro-common's rxml and the settings
@@ -1044,6 +1047,12 @@ jobs:
       - name: "Fibers"
         # Windows' own fibers, started over for the next guest thread
         run: FIBER=win EXE=.exe ./test/fiber/run_tests.sh
+
+      - name: "Shader decompiler on several threads"
+        # shaders decompiled on four threads at once as on one, each thread
+        # ending with its storage freed (LatteDecompiler_ReleaseThread):
+        # MinGW runs a thread_local's destructor on storage already freed
+        run: DECOMPILER_TOGETHER_ONLY=1 DECOMPILER_COUNT=30 EXE=.exe ./test/decompiler/run_tests.sh
 
       - name: "Upload artifact"
         uses: actions/upload-artifact@v6
