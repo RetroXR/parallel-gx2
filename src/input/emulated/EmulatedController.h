@@ -115,6 +115,8 @@ protected:
 	std::vector<std::shared_ptr<ControllerBase>> m_controllers;
 
 	float get_axis_value(uint64 mapping) const;
+	// the mappings' values, as get_axis_value gives them, together
+	void get_axis_values(const uint64* mappings, float* values, size_t count) const;
 	bool m_rumble = false;
 
 	struct Mapping

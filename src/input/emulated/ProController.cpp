@@ -96,11 +96,10 @@ std::string_view ProController::get_button_name(ButtonId id)
 
 Vector2<float> ProController::get_axis() const
 {
-	const auto left = get_axis_value(kButtonId_StickL_Left);
-	const auto right = get_axis_value(kButtonId_StickL_Right);
-
-	const auto up = get_axis_value(kButtonId_StickL_Up);
-	const auto down = get_axis_value(kButtonId_StickL_Down);
+	const uint64 mappings[4] = { kButtonId_StickL_Left, kButtonId_StickL_Right, kButtonId_StickL_Up, kButtonId_StickL_Down };
+	float v[4];
+	get_axis_values(mappings, v, 4);
+	const float left = v[0], right = v[1], up = v[2], down = v[3];
 
 	Vector2<float> result;
 	result.x = (left > right) ? -left : right;
@@ -110,11 +109,10 @@ Vector2<float> ProController::get_axis() const
 
 Vector2<float> ProController::get_rotation() const
 {
-	const auto left = get_axis_value(kButtonId_StickR_Left);
-	const auto right = get_axis_value(kButtonId_StickR_Right);
-
-	const auto up = get_axis_value(kButtonId_StickR_Up);
-	const auto down = get_axis_value(kButtonId_StickR_Down);
+	const uint64 mappings[4] = { kButtonId_StickR_Left, kButtonId_StickR_Right, kButtonId_StickR_Up, kButtonId_StickR_Down };
+	float v[4];
+	get_axis_values(mappings, v, 4);
+	const float left = v[0], right = v[1], up = v[2], down = v[3];
 
 	Vector2<float> result;
 	result.x = (left > right) ? -left : right;
@@ -124,8 +122,10 @@ Vector2<float> ProController::get_rotation() const
 
 Vector2<float> ProController::get_trigger() const
 {
-	const auto left = get_axis_value(kButtonId_ZL);
-	const auto right = get_axis_value(kButtonId_ZR);
+	const uint64 mappings[2] = { kButtonId_ZL, kButtonId_ZR };
+	float v[2];
+	get_axis_values(mappings, v, 2);
+	const float left = v[0], right = v[1];
 	return { left, right };
 }
 

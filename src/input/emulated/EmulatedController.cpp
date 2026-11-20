@@ -265,6 +265,35 @@ float EmulatedController::get_axis_value(uint64 mapping) const
 	return 0;
 }
 
+// Several mappings' values from one look at the mappings, each controller's
+// published state read once for all of them (a stick's four directions come
+// from one controller): where each was read whole, a lock of the controller
+// and a copy of its state for every direction
+void EmulatedController::get_axis_values(const uint64* mappings, float* values, size_t count) const
+{
+	const auto state = m_state.Read();
+	const ControllerBase* loaded = nullptr;
+	ControllerState loadedState;
+	bool loadedHasAxis = false;
+	for (size_t i = 0; i < count; i++)
+	{
+		values[i] = 0;
+		const auto it = state->mappings.find(mappings[i]);
+		if (it == state->mappings.cend())
+			continue;
+		const auto controller = it->second.controller.lock();
+		if (!controller)
+			continue;
+		if (controller.get() != loaded)
+		{
+			loaded = controller.get();
+			loadedState = controller->get_state();
+			loadedHasAxis = controller->has_axis();
+		}
+		values[i] = ControllerBase::AxisValueOf(loadedState, it->second.button, loadedHasAxis);
+	}
+}
+
 bool EmulatedController::is_mapping_down(uint64 mapping) const
 {
 	const auto state = m_state.Read();

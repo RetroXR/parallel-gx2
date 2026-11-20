@@ -133,34 +133,38 @@ bool ControllerBase::operator==(const ControllerBase& c) const
 float ControllerBase::get_axis_value(uint64 button) const
 {
 	// on the game's threads: the published state, read whole
-	const ControllerState state = m_published_state.Load();
+	return AxisValueOf(m_published_state.Load(), button, has_axis());
+}
+
+float ControllerBase::AxisValueOf(const ControllerState& state, uint64 button, bool hasAxis)
+{
 	if (state.buttons.GetButtonState(button))
 	{
-		if (button <= kButtonNoneAxisMAX || !has_axis())
+		if (button <= kButtonNoneAxisMAX || !hasAxis)
 			return 1.0f;
 
 		switch (button)
 		{
 		case kAxisXP:
 		case kAxisXN:
-			return std::abs(state.axis.x);
+			return fabsf(state.axis.x);
 		case kAxisYP:
 		case kAxisYN:
-			return std::abs(state.axis.y);
+			return fabsf(state.axis.y);
 
 		case kRotationXP:
 		case kRotationXN:
-			return std::abs(state.rotation.x);
+			return fabsf(state.rotation.x);
 		case kRotationYP:
 		case kRotationYN:
-			return std::abs(state.rotation.y);
+			return fabsf(state.rotation.y);
 
 		case kTriggerXP:
 		case kTriggerXN:
-			return std::abs(state.trigger.x);
+			return fabsf(state.trigger.x);
 		case kTriggerYP:
 		case kTriggerYN:
-			return std::abs(state.trigger.y);
+			return fabsf(state.trigger.y);
 		}
 	}
 

@@ -45,11 +45,10 @@ bool WiimoteController::set_default_mapping(const std::shared_ptr<ControllerBase
 
 Vector2<float> WiimoteController::get_axis() const
 {
-	const auto left = get_axis_value(kButtonId_Nunchuck_Left);
-	const auto right = get_axis_value(kButtonId_Nunchuck_Right);
-
-	const auto up = get_axis_value(kButtonId_Nunchuck_Up);
-	const auto down = get_axis_value(kButtonId_Nunchuck_Down);
+	const uint64 mappings[4] = { kButtonId_Nunchuck_Left, kButtonId_Nunchuck_Right, kButtonId_Nunchuck_Up, kButtonId_Nunchuck_Down };
+	float v[4];
+	get_axis_values(mappings, v, 4);
+	const float left = v[0], right = v[1], up = v[2], down = v[3];
 
 	Vector2<float> result;
 	result.x = (left > right) ? -left : right;

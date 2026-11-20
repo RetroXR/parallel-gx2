@@ -113,6 +113,9 @@ public:
 	bool is_calibrated() const { return m_is_calibrated; }
 
 	float get_axis_value(uint64 button) const;
+	// a button's value in a state read already: 1 or 0 for a button, the
+	// axis' magnitude for an axis direction held
+	static float AxisValueOf(const ControllerState& state, uint64 button, bool hasAxis);
 	virtual bool has_axis() const { return true; }
 
 	bool use_motion() { return has_motion() && m_settings.Load().motion; }

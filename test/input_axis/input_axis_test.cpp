@@ -25,7 +25,8 @@ struct TestController : ControllerBase
 	std::string_view api_name() const override { return "test"; }
 	InputAPI::Type api() const override { return InputAPI::Type(0); }
 	bool is_connected() override { return true; }
-	ControllerState raw_state() override { return {}; }
+	ControllerState raw = {};
+	ControllerState raw_state() override { return raw; }
 };
 
 // as it was: glm's length() and normalize()
@@ -119,6 +120,29 @@ int main()
 		Vector2<float> off(0.9f, 0.9f); // past full tilt: of length 1
 		c.apply_axis_setting(off, Vector2<float>(), setting);
 		CHECK(std::abs(off.x * off.x + off.y * off.y - 1.0f) < 1e-5f);
+	}
+	// a button's value from a state read once (AxisValueOf, as the emulated
+	// controllers read a stick's four directions) is what get_axis_value reads
+	{
+		ControllerBase::Settings none;
+		none.axis = none.rotation = none.trigger = ControllerBase::AxisSetting(0.0f);
+		c.set_settings(none);
+		c.calibrate();
+		for (int i = 0; i < 2000; i++)
+		{
+			c.raw = {};
+			c.raw.axis = Vector2<float>(stick(rng), stick(rng));
+			c.raw.rotation = Vector2<float>(stick(rng), stick(rng));
+			c.raw.trigger = Vector2<float>(stick(rng), stick(rng));
+			for (uint64 b = 0; b < 8; b++)
+				if (rng() & 1)
+					c.raw.buttons.SetButtonState(b, true);
+			c.update_state();
+			const ControllerState st = c.get_state();
+			for (uint64 b = 0; b < kButtonAxisStart + 12 && b < 256; b++)
+				CHECK(c.get_axis_value(b) == ControllerBase::AxisValueOf(st, b, c.has_axis()));
+			CHECK(ControllerBase::AxisValueOf(st, kAxisXP, true) == (st.buttons.GetButtonState(kAxisXP) ? std::abs(st.axis.x) : 0.0f));
+		}
 	}
 	// timed: the same sticks both ways
 	std::vector<Vector2<float>> sticks(1 << 16);
