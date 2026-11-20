@@ -231,6 +231,9 @@ struct wu_addrinfo
 #define WU_SOCKET_LIMIT			(32) // only 32 socket handles are supported per running process
 
 virtualSocket_t* virtualSocketTable[WU_SOCKET_LIMIT] = { 0 };
+// each handle's socket, in place: a game opening and closing sockets while it
+// plays allocates nothing for them
+static virtualSocket_t s_virtualSocketStorage[WU_SOCKET_LIMIT];
 
 sint32 _getFreeSocketHandle()
 {
@@ -251,10 +254,12 @@ WUSOCKET nsysnet_createVirtualSocket(sint32 family, sint32 type, sint32 protocol
 	sint32 s = _getFreeSocketHandle();
 	if (s == 0)
 	{
-		cemuLog_logDebug(LogType::Force, "Ran out of socket handles");
-		cemu_assert(false);
+		// as a full table of the console's: no socket, where this trapped (and
+		// would then have written before the table)
+		cemuLog_log(LogType::Force, "nsysnet: all {} socket handles in use", WU_SOCKET_LIMIT);
+		return -1;
 	}
-	virtualSocket_t* vs = (virtualSocket_t*)malloc(sizeof(virtualSocket_t));
+	virtualSocket_t* vs = &s_virtualSocketStorage[s - 1];
 	memset(vs, 0, sizeof(virtualSocket_t));
 	vs->family = family;
 	vs->type = type;
@@ -283,10 +288,12 @@ WUSOCKET nsysnet_createVirtualSocketFromExistingSocket(SOCKET existingSocket)
 	sint32 s = _getFreeSocketHandle();
 	if (s == 0)
 	{
-		cemuLog_logDebug(LogType::Force, "Ran out of socket handles");
-		cemu_assert(false);
+		// as a full table of the console's: no socket, where this trapped (and
+		// would then have written before the table)
+		cemuLog_log(LogType::Force, "nsysnet: all {} socket handles in use", WU_SOCKET_LIMIT);
+		return -1;
 	}
-	virtualSocket_t* vs = (virtualSocket_t*)malloc(sizeof(virtualSocket_t));
+	virtualSocket_t* vs = &s_virtualSocketStorage[s - 1];
 	memset(vs, 0, sizeof(virtualSocket_t));
 #if BOOST_OS_WINDOWS
 	// SO_TYPE -> type
@@ -329,7 +336,6 @@ void nsysnet_notifyCloseSharedSocket(SOCKET existingSocket)
 		if (virtualSocketTable[i] && virtualSocketTable[i]->s == existingSocket)
 		{
 			// remove entry
-			free(virtualSocketTable[i]);
 			virtualSocketTable[i] = nullptr;
 			return;
 		}
@@ -453,7 +459,6 @@ void nsysnetExport_socketclose(PPCInterpreter_t* hCPU)
 	if (vs)
 	{
 		closesocket(vs->s);
-		free(vs);
 		virtualSocketTable[s - 1] = NULL;
 	}
 	osLib_returnFromFunction(hCPU, 0);
@@ -925,6 +930,8 @@ void nsysnetExport_accept(PPCInterpreter_t* hCPU)
 		if (hr != SOCKET_ERROR)
 		{
 			r = nsysnet_createVirtualSocketFromExistingSocket(hr);
+			if (r < 0)
+				closesocket(hr); // no handle for it
 			_setSockError(WU_SO_SUCCESS);
 		}
 		else

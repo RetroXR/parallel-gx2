@@ -75,7 +75,7 @@ namespace NAPI
 
 		if (!req.submitRequest(false))
 		{
-			cemuLog_log(LogType::Force, fmt::format("Failed to request IDBE icon for title {0:016X}", titleId));
+			cemuLog_log(LogType::Force, "Failed to request IDBE icon for title {0:016X}", titleId);
 			return {};
 		}
 		/*

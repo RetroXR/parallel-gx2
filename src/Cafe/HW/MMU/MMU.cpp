@@ -174,12 +174,12 @@ void memory_mapForCurrentTitle()
 		}
 		if (!mmuRange)
 		{
-			cemuLog_log(LogType::Force, fmt::format("Graphic pack error: Unable to apply modified RAM mapping {:08x}-{:08x}. Start address must match one of the existing MMU ranges:", mapping.first, mapping.second));
+			cemuLog_log(LogType::Force, "Graphic pack error: Unable to apply modified RAM mapping {:08x}-{:08x}. Start address must match one of the existing MMU ranges:", mapping.first, mapping.second);
 			for (auto& itr : g_mmuRanges)
 			{
 				if(itr->isMapped())
 					continue;
-				cemuLog_log(LogType::Force, fmt::format("{:08x}-{:08x} ({:})", itr->getBase(), itr->getEnd(), itr->getName()));
+				cemuLog_log(LogType::Force, "{:08x}-{:08x} ({:})", itr->getBase(), itr->getEnd(), itr->getName());
 			}
 			continue;
 		}
@@ -191,7 +191,7 @@ void memory_mapForCurrentTitle()
 				continue;
 			if (mapping.first < itr->getEnd() && mapping.second > itr->getBase())
 			{
-				cemuLog_log(LogType::Force, fmt::format("Graphic pack error: Unable to apply modified memory range {:08x}-{:08x} since it is overlapping with {:08x}-{:08x} ({:})", mapping.first, mapping.second, itr->getBase(), itr->getEnd(), itr->getName()));
+				cemuLog_log(LogType::Force, "Graphic pack error: Unable to apply modified memory range {:08x}-{:08x} since it is overlapping with {:08x}-{:08x} ({:})", mapping.first, mapping.second, itr->getBase(), itr->getEnd(), itr->getName());
 				isOverlapping = true;
 			}
 		}
@@ -239,7 +239,7 @@ void memory_logModifiedMemoryRanges()
 			memAmountStr = fmt::format("{:+}MiB", (extraMem + 1023) / 1024);
 		else
 			memAmountStr = fmt::format("{:+}KiB", extraMem);
-		cemuLog_log(LogType::Force, fmt::format("Graphic pack: Using modified RAM mapping {:08x}-{:08x} ({})", mapping.first, mapping.second, memAmountStr));
+		cemuLog_log(LogType::Force, "Graphic pack: Using modified RAM mapping {:08x}-{:08x} ({})", mapping.first, mapping.second, memAmountStr);
 	}
 }
 

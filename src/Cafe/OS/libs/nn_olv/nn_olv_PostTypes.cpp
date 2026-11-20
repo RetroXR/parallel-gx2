@@ -378,7 +378,7 @@ namespace nn
 			xml::Document doc;
 			if (!doc.load(req.getReceivedData().data(), req.getReceivedData().size()))
 			{
-				cemuLog_log(LogType::Force, fmt::format("Invalid XML in community download response"));
+				cemuLog_log(LogType::Force, "Invalid XML in community download response");
 				return OLV_RESULT_INVALID_XML;
 			}
 			*/

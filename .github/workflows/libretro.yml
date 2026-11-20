@@ -658,6 +658,14 @@ jobs:
           SANITIZER=address,undefined ./test/shared_by_key/run_tests.sh
           make -C test/shared_by_key clean
           SANITIZER=thread ./test/shared_by_key/run_tests.sh
+      - name: "Guest sockets"
+        # nsysnet's socket handles: every one made, the one past them
+        # refused, each made again in place, nothing allocated; plain and
+        # under ASan + UBSan
+        run: |
+          ./test/nsysnet/run_tests.sh
+          make -C test/nsysnet clean
+          SANITIZER=address,undefined ./test/nsysnet/run_tests.sh
       - name: "Pinned objects"
         # the H.264 decoder sessions' table: held, put back, released once;
         # plain, under ASan + UBSan and under TSan

@@ -88,7 +88,7 @@ void DebugLogStackTrace(OSThread_t* thread, MPTR sp)
 		}
 	}
 
-	cemuLog_log(LogType::Force, fmt::format("Trace starting at SP {:08x} r1={:08x}", highestScoreSP, sp));
+	cemuLog_log(LogType::Force, "Trace starting at SP {:08x} r1={:08x}", highestScoreSP, sp);
 
 	// print stack trace
 	uint32 currentStackPtr = highestScoreSP;
@@ -108,9 +108,9 @@ void DebugLogStackTrace(OSThread_t* thread, MPTR sp)
 		const rpl_symbol_t* symbol = rpl_symbols_closest(returnAddress);
 
 		if(symbol)
-			cemuLog_log(LogType::Force, fmt::format("SP {:08x} ReturnAddr {:08x}   ({}.{}+0x{:x})", nextStackPtr, returnAddress, symbol->lib, symbol->name, returnAddress - symbol->address));
+			cemuLog_log(LogType::Force, "SP {:08x} ReturnAddr {:08x}   ({}.{}+0x{:x})", nextStackPtr, returnAddress, symbol->lib, symbol->name, returnAddress - symbol->address);
 		else
-			cemuLog_log(LogType::Force, fmt::format("SP {:08x} ReturnAddr {:08x}", nextStackPtr, returnAddress));
+			cemuLog_log(LogType::Force, "SP {:08x} ReturnAddr {:08x}", nextStackPtr, returnAddress);
 
 		currentStackPtr = nextStackPtr;
 	}

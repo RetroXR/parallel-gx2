@@ -507,7 +507,7 @@ namespace iosu::boss
 
 			if (!request.submitRequest(false))
 			{
-				cemuLog_log(LogType::Force, fmt::format("Failed BOSS request"));
+				cemuLog_log(LogType::Force, "Failed BOSS request");
 				SetState(TaskState::Done, TaskTurnState::DoneError);
 				return BUILD_NN_RESULT(NN_RESULT_LEVEL_FATAL, NN_RESULT_MODULE_NN_BOSS, 0);
 			}

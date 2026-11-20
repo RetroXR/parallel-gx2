@@ -35,7 +35,7 @@ namespace NAPI
 
 		if (!req.submitRequest(false))
 		{
-			cemuLog_log(LogType::Force, fmt::format("Failed to request version of update list"));
+			cemuLog_log(LogType::Force, "Failed to request version of update list");
 			return result;
 		}
 		auto& receivedData = req.getReceivedData();
@@ -65,7 +65,7 @@ namespace NAPI
 		req.initate(authInfo.GetService(), fmt::format("https://{}/tagaya/versionlist/{}/{}/list/{}.versionlist", fqdnURL, NCrypto::GetRegionAsString(authInfo.region), authInfo.country.empty() ? "NN" : authInfo.country, versionListVersion), HttpRequestHelper::SERVER_SSL_CONTEXT::TAGAYA);
 		if (!req.submitRequest(false))
 		{
-			cemuLog_log(LogType::Force, fmt::format("Failed to request update list"));
+			cemuLog_log(LogType::Force, "Failed to request update list");
 			return result;
 		}
 		auto& receivedData = req.getReceivedData();

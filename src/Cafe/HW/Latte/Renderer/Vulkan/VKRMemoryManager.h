@@ -293,7 +293,8 @@ public:
 	}
 
 	bool FindMemoryType(uint32 typeFilter, VkMemoryPropertyFlags properties, uint32& memoryIndex) const; // searches for exact properties. Can gracefully fail without throwing exception (returns false)
-	std::vector<uint32> FindMemoryTypes(uint32_t typeFilter, VkMemoryPropertyFlags properties) const;
+	// every memory type in typeFilter with the properties, a bit each
+	uint32 FindMemoryTypes(uint32_t typeFilter, VkMemoryPropertyFlags properties) const;
 
 	// image memory allocation
 	void imageMemoryFree(VkImageMemAllocation* imageMemAllocation);

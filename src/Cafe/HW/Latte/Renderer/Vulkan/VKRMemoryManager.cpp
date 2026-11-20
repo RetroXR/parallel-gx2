@@ -276,46 +276,32 @@ uint32 VkTextureChunkedHeap::allocateNewChunk(uint32 chunkIndex, uint32 minimumA
 	}
 	if (allocationSize < minimumAllocationSize)
 		allocationSize = minimumAllocationSize;
-	// get available memory types/heaps
-	std::vector<uint32> deviceLocalMemoryTypeIndices = m_vkrMemoryManager->FindMemoryTypes(m_typeFilter, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-	std::vector<uint32> hostLocalMemoryTypeIndices = m_vkrMemoryManager->FindMemoryTypes(m_typeFilter, 0);
-	// remove device local memory types from host local vector
-	auto pred = [&deviceLocalMemoryTypeIndices](const uint32& v) -> bool {
-		return std::find(deviceLocalMemoryTypeIndices.begin(), deviceLocalMemoryTypeIndices.end(), v) != deviceLocalMemoryTypeIndices.end();
-	};
-	hostLocalMemoryTypeIndices.erase(std::remove_if(hostLocalMemoryTypeIndices.begin(), hostLocalMemoryTypeIndices.end(), pred), hostLocalMemoryTypeIndices.end());
+	// the memory types to allocate from, a bit each: device local first, then
+	// the rest
+	const uint32 deviceLocalMemoryTypes = m_vkrMemoryManager->FindMemoryTypes(m_typeFilter, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	const uint32 hostLocalMemoryTypes = m_vkrMemoryManager->FindMemoryTypes(m_typeFilter, 0) & ~deviceLocalMemoryTypes;
+	const uint32 typeOrder[2] = { deviceLocalMemoryTypes, hostLocalMemoryTypes };
 	// allocate chunk memory
 	for (sint32 t = 0; t < 3; t++)
 	{
-		// attempt to allocate from device local memory first
-		for (auto memType : deviceLocalMemoryTypeIndices)
+		for (uint32 types : typeOrder)
 		{
-			VkMemoryAllocateInfo allocInfo{};
-			allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-			allocInfo.allocationSize = allocationSize;
-			allocInfo.memoryTypeIndex = memType;
+			for (uint32 memType = 0; memType < 32 && (types >> memType) != 0; memType++)
+			{
+				if (!((types >> memType) & 1))
+					continue;
+				VkMemoryAllocateInfo allocInfo{};
+				allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+				allocInfo.allocationSize = allocationSize;
+				allocInfo.memoryTypeIndex = memType;
 
-			VkDeviceMemory imageMemory;
-			VkResult r = vkAllocateMemory(VulkanRenderer::GetInstance()->GetLogicalDevice(), &allocInfo, nullptr, &imageMemory);
-			if (r != VK_SUCCESS)
-				continue;
-			m_list_chunkInfo[chunkIndex].mem = imageMemory;
-			return allocationSize;
-		}
-		// attempt to allocate from host-local memory
-		for (auto memType : hostLocalMemoryTypeIndices)
-		{
-			VkMemoryAllocateInfo allocInfo{};
-			allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-			allocInfo.allocationSize = allocationSize;
-			allocInfo.memoryTypeIndex = memType;
-
-			VkDeviceMemory imageMemory;
-			VkResult r = vkAllocateMemory(VulkanRenderer::GetInstance()->GetLogicalDevice(), &allocInfo, nullptr, &imageMemory);
-			if (r != VK_SUCCESS)
-				continue;
-			m_list_chunkInfo[chunkIndex].mem = imageMemory;
-			return allocationSize;
+				VkDeviceMemory imageMemory;
+				VkResult r = vkAllocateMemory(VulkanRenderer::GetInstance()->GetLogicalDevice(), &allocInfo, nullptr, &imageMemory);
+				if (r != VK_SUCCESS)
+					continue;
+				m_list_chunkInfo[chunkIndex].mem = imageMemory;
+				return allocationSize;
+			}
 		}
 		// retry with smaller size if possible
 		allocationSize /= 2;
@@ -323,7 +309,7 @@ uint32 VkTextureChunkedHeap::allocateNewChunk(uint32 chunkIndex, uint32 minimumA
 			break;
 		cemuLog_log(LogType::Force, "Failed to allocate texture memory chunk with size {}MB. Trying again with smaller allocation size", allocationSize / 1024 / 1024);
 	}
-	cemuLog_log(LogType::Force, "Unable to allocate image memory chunk ({} heaps)", deviceLocalMemoryTypeIndices.size());
+	cemuLog_log(LogType::Force, "Unable to allocate image memory chunk ({} heaps)", std::popcount(deviceLocalMemoryTypes));
 	throw std::runtime_error("failed to allocate image memory!");
 	return 0;
 }
@@ -406,20 +392,19 @@ bool VKRMemoryManager::FindMemoryType(uint32 typeFilter, VkMemoryPropertyFlags p
 	return false;
 }
 
-std::vector<uint32> VKRMemoryManager::FindMemoryTypes(uint32_t typeFilter, VkMemoryPropertyFlags properties) const
+uint32 VKRMemoryManager::FindMemoryTypes(uint32_t typeFilter, VkMemoryPropertyFlags properties) const
 {
-	std::vector<uint32> memoryTypes;
-	memoryTypes.clear();
+	uint32 memoryTypes = 0;
 	VkPhysicalDeviceMemoryProperties memProperties;
 	vkGetPhysicalDeviceMemoryProperties(m_vkr->GetPhysicalDevice(), &memProperties);
 
 	for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++)
 	{
 		if (typeFilter & (1 << i) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties)
-			memoryTypes.emplace_back(i);
+			memoryTypes |= 1u << i;
 	}
 
-	if (memoryTypes.empty())
+	if (memoryTypes == 0)
 		m_vkr->UnrecoverableError(fmt::format("Failed to find suitable memory type ({0:#08x} {1:#08x})", typeFilter, properties).c_str());
 
 	return memoryTypes;

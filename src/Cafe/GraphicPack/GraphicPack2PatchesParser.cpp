@@ -27,9 +27,9 @@ void GraphicPack2::LogPatchesSyntaxError(sint32 lineNumber, std::string_view err
 {
 	cemuLog_log(LogType::Force, "Syntax error while parsing patch for graphic pack '{}':", _pathToUtf8(this->GetRulesPath()));
 	if(lineNumber >= 0)
-		cemuLog_log(LogType::Force, fmt::format("Line {0}: {1}", lineNumber, errorMsg));
+		cemuLog_log(LogType::Force, "Line {0}: {1}", lineNumber, errorMsg);
 	else
-		cemuLog_log(LogType::Force, fmt::format("{0}", errorMsg));
+		cemuLog_log(LogType::Force, "{0}", errorMsg);
 	list_patchGroups.clear();
 }
 

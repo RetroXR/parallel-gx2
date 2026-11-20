@@ -35,7 +35,7 @@ namespace NAPI
 	{
 		if (!doc.load(requestHelper.getReceivedData().data(), requestHelper.getReceivedData().size()))
 		{
-			cemuLog_log(LogType::Force, fmt::format("Invalid XML in account service response"));
+			cemuLog_log(LogType::Force, "Invalid XML in account service response");
 			result.apiError = NAPI_RESULT::XML_ERROR;
 			return false;
 		}
@@ -178,7 +178,7 @@ namespace NAPI
 
 		if (!req.submitRequest(true))
 		{
-			cemuLog_log(LogType::Force, fmt::format("Failed request /oauth20/access_token/generate"));
+			cemuLog_log(LogType::Force, "Failed request /oauth20/access_token/generate");
 			result.apiError = NAPI_RESULT::FAILED;
 			return result;
 		}
@@ -201,14 +201,14 @@ namespace NAPI
 		xml::Node node = doc.child("OAuth20");
 		if (!node)
 		{
-			cemuLog_log(LogType::Force, fmt::format("Response does not contain OAuth20 node"));
+			cemuLog_log(LogType::Force, "Response does not contain OAuth20 node");
 			result.apiError = NAPI_RESULT::XML_ERROR;
 			return result;
 		}
 		node = node.child("access_token");
 		if (!node)
 		{
-			cemuLog_log(LogType::Force, fmt::format("Response does not contain OAuth20/access_token node"));
+			cemuLog_log(LogType::Force, "Response does not contain OAuth20/access_token node");
 			result.apiError = NAPI_RESULT::XML_ERROR;
 			return result;
 		}
@@ -323,7 +323,7 @@ namespace NAPI
 
 		if (!req.submitRequest(false))
 		{
-			cemuLog_log(LogType::Force, fmt::format("Failed request /provider/nex_token/@me"));
+			cemuLog_log(LogType::Force, "Failed request /provider/nex_token/@me");
 			result.apiError = NAPI_RESULT::FAILED;
 			return result;
 		}
@@ -471,7 +471,7 @@ namespace NAPI
 
 		if (!req.submitRequest(false))
 		{
-			cemuLog_log(LogType::Force, fmt::format("Failed request /provider/service_token/@me"));
+			cemuLog_log(LogType::Force, "Failed request /provider/service_token/@me");
 			result.apiError = NAPI_RESULT::FAILED;
 			return result;
 		}
@@ -548,7 +548,7 @@ namespace NAPI
 
 		if (!req.submitRequest(false))
 		{
-			cemuLog_log(LogType::Force, fmt::format("Failed request /admin/mapped_ids"));
+			cemuLog_log(LogType::Force, "Failed request /admin/mapped_ids");
 			result.apiError = NAPI_RESULT::FAILED;
 			return result;
 		}

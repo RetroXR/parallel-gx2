@@ -1817,6 +1817,8 @@ src/Cafe/OS/libs/nsysnet/nsysnet.cpp nsysnetExport_socketlasterr
 src/Cafe/OS/libs/nsysnet/nsysnet.cpp sockaddr_guest2host
 src/Cafe/OS/libs/nsysnet/nsysnet.cpp sockaddr_host2guest
 src/Cafe/OS/libs/nsysnet/nsysnet.cpp _getFreeSocketHandle
+src/Cafe/OS/libs/nsysnet/nsysnet.cpp nsysnet_createVirtualSocket
+src/Cafe/OS/libs/nsysnet/nsysnet.cpp nsysnet_createVirtualSocketFromExistingSocket
 src/Cafe/OS/libs/nsysnet/nsysnet.cpp nsysnet_notifyCloseSharedSocket
 src/Cafe/OS/libs/nsysnet/nsysnet.cpp nsysnet_getVirtualSocketObject
 src/Cafe/OS/libs/nsysnet/nsysnet.cpp nsysnet_getVirtualSocketHandleFromHostHandle
@@ -3863,6 +3865,11 @@ awk '
 	FNR == NR { tab = index($0, "\t"); key = substr($0, 1, tab - 1); bad[key] = bad[key] substr($0, tab + 1) "\n"; next }
 	!seen[$0]++ && ($0 in bad) { printf "an allocation in %s, which runs while a game plays:\n%s", $2, bad[$0] }
 ' "$tmp/bad" "$tmp/list" > "$tmp/report"
+# anywhere, listed or not: a log call handed a string formatted for it
+# formats it whether its kind of logging is on or not; the call formats its
+# own (cemuLog_log(type, format, args...))
+grep -rnE 'cemuLog_log\(LogType::[A-Za-z0-9_]+, fmt::format\(' src --include='*.cpp' --include='*.h' | grep -vE '^[^:]*:[0-9]*:[[:space:]]*//' |
+	sed 's/^/a log call formatting its message before it, logging on or not: /' >> "$tmp/report"
 cat "$tmp/fail" "$tmp/report"
 n=$(cut -f1 "$tmp/bodies" | sort -u | wc -l)
 if [ -s "$tmp/fail" ] || [ -s "$tmp/report" ]; then
