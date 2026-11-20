@@ -2488,8 +2488,6 @@ src/Cafe/HW/Latte/Core/LatteTexture.cpp LatteTexture_UpdateCacheFromDynamicTextu
 src/Cafe/HW/Latte/Core/LatteTexture.cpp LatteTexture_MarkConnectedTexturesForReloadFromDynamicTextures
 src/Cafe/HW/Latte/Core/LatteTexture.cpp LatteTexture_TrackTextureGPUWrite
 src/Cafe/HW/Latte/Core/LatteTextureCache.cpp LatteTC_Init
-src/Cafe/HW/Latte/Core/LatteTextureCache.cpp LatteTC_RegisterTexture
-src/Cafe/HW/Latte/Core/LatteTextureCache.cpp LatteTC_UnregisterTexture
 src/Cafe/HW/Latte/Core/LatteTextureCache.cpp _quickStochasticHash
 src/Cafe/HW/Latte/Core/LatteTextureCache.cpp _hashTextureDataAVX2
 src/Cafe/HW/Latte/Core/LatteTextureCache.cpp LatteTexture_CalculateTextureDataHash

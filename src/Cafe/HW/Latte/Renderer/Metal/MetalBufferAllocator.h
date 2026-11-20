@@ -1,5 +1,6 @@
 #pragma once
 
+#include "util/helpers/RingQueue.h"
 #include "Cafe/HW/Latte/Renderer/Metal/MetalRenderer.h"
 #include "Metal/MTLResource.hpp"
 #include "util/ChunkedHeap/ChunkedHeap.h"
@@ -75,6 +76,7 @@ public:
 		MTL::CommandBuffer* commandBuffer;
 		uint32 offset;
 
+		BufferSyncPoint_t() = default;
 		BufferSyncPoint_t(MTL::CommandBuffer* _commandBuffer, uint32 _offset) : commandBuffer(_commandBuffer), offset(_offset) {};
 	};
 
@@ -84,7 +86,9 @@ public:
 		uint8* basePtr;
 		uint32 size;
 		uint32 writeIndex;
-		std::queue<BufferSyncPoint_t> queue_syncPoints;
+		// one for each command buffer that used the buffer and has not finished:
+		// as many as there are in flight, with room to spare
+		RingQueue<BufferSyncPoint_t, 256> queue_syncPoints;
 		MTL::CommandBuffer* lastSyncpointCommandBuffer{ nullptr };
 		uint32 index;
 		uint32 cleanupCounter{ 0 }; // increased by one every time CleanupBuffer() is called if there is no sync point. If it reaches 300 then the buffer is released

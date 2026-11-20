@@ -116,8 +116,6 @@ void LatteRenderTarget_unloadAll();
 
 void LatteTC_Init();
 
-void LatteTC_RegisterTexture(LatteTexture* tex);
-void LatteTC_UnregisterTexture(LatteTexture* tex);
 
 uint32 LatteTexture_CalculateTextureDataHash(LatteTexture* hostTexture);
 void LatteTexture_ReloadData(LatteTexture* hostTexture);

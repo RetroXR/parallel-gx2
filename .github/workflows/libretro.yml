@@ -666,6 +666,14 @@ jobs:
           ./test/nsysnet/run_tests.sh
           make -C test/nsysnet clean
           SANITIZER=address,undefined ./test/nsysnet/run_tests.sh
+      - name: "Fixed queue"
+        # the upload allocators' sync points and release batches: against a
+        # reference deque, full refusing, batches kept in place, nothing
+        # allocated; plain and under ASan + UBSan
+        run: |
+          ./test/ring_queue/run_tests.sh
+          make -C test/ring_queue clean
+          SANITIZER=address,undefined ./test/ring_queue/run_tests.sh
       - name: "Pinned objects"
         # the H.264 decoder sessions' table: held, put back, released once;
         # plain, under ASan + UBSan and under TSan

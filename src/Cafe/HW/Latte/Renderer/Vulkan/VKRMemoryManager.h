@@ -1,4 +1,5 @@
 #pragma once
+#include "util/helpers/RingQueue.h"
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
 #include "util/ChunkedHeap/ChunkedHeap.h"
@@ -160,6 +161,7 @@ public:
 		uint64 commandBufferId;
 		uint32 offset;
 
+		BufferSyncPoint_t() = default;
 		BufferSyncPoint_t(uint64 _commandBufferId, uint32 _offset) : commandBufferId(_commandBufferId), offset(_offset) {};
 	};
 
@@ -170,7 +172,9 @@ public:
 		uint8* basePtr;
 		uint32 size;
 		uint32 writeIndex;
-		std::queue<BufferSyncPoint_t> queue_syncPoints;
+		// one for each command buffer that used the buffer and has not finished:
+		// as many as there are in flight, with room to spare
+		RingQueue<BufferSyncPoint_t, 256> queue_syncPoints;
 		uint64 lastSyncpointCmdBufferId{ 0xFFFFFFFFFFFFFFFFull };
 		uint32 index;
 		uint32 cleanupCounter{ 0 }; // increased by one every time CleanupBuffer() is called if there is no sync point. If it reaches 300 then the buffer is released
@@ -242,8 +246,15 @@ class VKRSynchronizedHeapAllocator
 	// allocations
 	std::vector<TrackedAllocation> m_activeAllocations;
 	MemoryPool<AllocatorReservation> m_poolAllocatorReservation{32};
-	// release queue
-	std::unordered_map<uint64, std::vector<CHAddr>> m_releaseQueue;
+	// what each command buffer let go of, released once it has finished: one
+	// batch for each, in order, each batch's room kept for the batch made in
+	// its place later
+	struct ReleaseBatch
+	{
+		uint64 commandBufferId;
+		std::vector<CHAddr> allocations;
+	};
+	RingQueue<ReleaseBatch, 256> m_releaseQueue;
 };
 
 void LatteIndices_invalidateAll();

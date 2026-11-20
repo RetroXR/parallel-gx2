@@ -4,21 +4,8 @@
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
 #include "Common/cpu_features.h"
 
-std::unordered_set<LatteTexture*> g_allTextures;
-
 void LatteTC_Init()
 {
-	cemu_assert_debug(g_allTextures.empty());
-}
-
-void LatteTC_RegisterTexture(LatteTexture* tex)
-{
-	g_allTextures.emplace(tex);
-}
-
-void LatteTC_UnregisterTexture(LatteTexture* tex)
-{
-	g_allTextures.erase(tex);
 }
 
 // sample few uint64s uniformly over memory range
@@ -339,7 +326,6 @@ bool LatteTC_IsTextureDataOverwritten(LatteTexture* texture)
 
 void LatteTexture_Delete(LatteTexture* texture)
 {
-	LatteTC_UnregisterTexture(texture);
 	LatteMRT::NotifyTextureDeletion(texture);
 	LatteTextureReadback_NotifyTextureDeletion(texture);
 	LatteTexture_DeleteTextureRelations(texture);
@@ -442,10 +428,15 @@ size_t LatteTC_GetDeleteableTextures(LatteTexture** out, size_t max)
 	size_t count = 0;
 	uint32 currentFrameCount = LatteGPUState.frameCounter;
 
-	for (auto& itr : g_allTextures)
+	// every texture, from the list each is in from its construction
+	// (LatteTexture::GetAllTextures), where a set kept beside it allocated a
+	// node for each texture made
+	for (LatteTexture* itr : LatteTexture::GetAllTextures())
 	{
 		if (count == max)
 			break;
+		if (!itr)
+			continue;
 		if(itr->lastAccessFrameCount == 0)
 			continue; // not initialized
 		uint32 framesSinceLastAccess = currentFrameCount - itr->lastAccessFrameCount;

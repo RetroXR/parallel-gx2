@@ -17,7 +17,11 @@ void VKRSynchronizedRingAllocator::addUploadBufferSyncPoint(AllocatorBuffer_t& b
 	if (cmdBufferId == buffer.lastSyncpointCmdBufferId)
 		return;
 	buffer.lastSyncpointCmdBufferId = cmdBufferId;
-	buffer.queue_syncPoints.emplace(cmdBufferId, offset);
+	// full only with that many command buffers unfinished: the last one's
+	// range, from where it starts, is then held until this one finishes too -
+	// freed a little later than it could be, never early
+	if (!buffer.queue_syncPoints.push({ cmdBufferId, offset }))
+		buffer.queue_syncPoints.back().commandBufferId = cmdBufferId;
 }
 
 void VKRSynchronizedRingAllocator::allocateAdditionalUploadBuffer(uint32 sizeRequiredForAlloc)
@@ -209,7 +213,21 @@ void VKRSynchronizedHeapAllocator::FreeReservation(AllocatorReservation* uploadR
 		cemuLog_logOnce(LogType::Force, "[Vulkan] an index allocation was returned to an allocator that did not make it, ignoring it");
 		return;
 	}
-	m_releaseQueue[currentCommandBufferId].emplace_back(it->allocation);
+	// the command buffer's batch, or a new one; with as many batches as there
+	// is room for, the last one's are held until this command buffer is done
+	// too - released a little later than they could be, never early
+	if (m_releaseQueue.empty() || m_releaseQueue.back().commandBufferId != currentCommandBufferId)
+	{
+		if (m_releaseQueue.full())
+			m_releaseQueue.back().commandBufferId = currentCommandBufferId;
+		else
+		{
+			ReleaseBatch& batch = m_releaseQueue.push_slot();
+			batch.commandBufferId = currentCommandBufferId;
+			batch.allocations.clear();
+		}
+	}
+	m_releaseQueue.back().allocations.emplace_back(it->allocation);
 	m_activeAllocations.erase(it);
 	m_poolAllocatorReservation.freeObj(uploadReservation);
 }
@@ -229,18 +247,13 @@ void VKRSynchronizedHeapAllocator::FlushReservation(AllocatorReservation* upload
 
 void VKRSynchronizedHeapAllocator::CleanupBuffer(uint64 latestFinishedCommandBufferId)
 {
-	auto it = m_releaseQueue.begin();
-	while (it != m_releaseQueue.end())
+	while (!m_releaseQueue.empty() && m_releaseQueue.front().commandBufferId <= latestFinishedCommandBufferId)
 	{
-		if (it->first <= latestFinishedCommandBufferId)
-		{
-			// release allocations
-			for(auto& addr : it->second)
-				m_chunkedHeap.free(addr);
-			it = m_releaseQueue.erase(it);
-			continue;
-		}
-		it++;
+		ReleaseBatch& batch = m_releaseQueue.front();
+		for (auto& addr : batch.allocations)
+			m_chunkedHeap.free(addr);
+		batch.allocations.clear();
+		m_releaseQueue.pop();
 	}
 }
 

@@ -23,7 +23,11 @@ void MetalSynchronizedRingAllocator::addUploadBufferSyncPoint(AllocatorBuffer_t&
 	if (commandBuffer == buffer.lastSyncpointCommandBuffer)
 		return;
 	buffer.lastSyncpointCommandBuffer = commandBuffer;
-	buffer.queue_syncPoints.emplace(commandBuffer, offset);
+	// full only with that many command buffers unfinished: the last one's
+	// range, from where it starts, is then held until this one finishes too -
+	// freed a little later than it could be, never early
+	if (!buffer.queue_syncPoints.push({ commandBuffer, offset }))
+		buffer.queue_syncPoints.back().commandBuffer = commandBuffer;
 }
 
 void MetalSynchronizedRingAllocator::allocateAdditionalUploadBuffer(uint32 sizeRequiredForAlloc)
