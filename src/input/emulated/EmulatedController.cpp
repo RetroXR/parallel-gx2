@@ -294,6 +294,36 @@ void EmulatedController::get_axis_values(const uint64* mappings, float* values, 
 	}
 }
 
+// Which of the mappings first to end (at most 64) are down, a bit each (bit
+// i for mapping i), with one look at the mappings and each controller's
+// published state read once: where each was looked up, its controller locked
+// and its whole state copied on its own, for every button of every read
+uint64 EmulatedController::get_mappings_down(uint64 first, uint64 end) const
+{
+	cemu_assert_debug(end <= 64);
+	const auto state = m_state.Read();
+	const ControllerBase* loaded = nullptr;
+	ControllerState loadedState;
+	uint64 down = 0;
+	for (uint64 mapping = first; mapping < end && mapping < 64; mapping++)
+	{
+		const auto it = state->mappings.find(mapping);
+		if (it == state->mappings.cend())
+			continue;
+		const auto controller = it->second.controller.lock();
+		if (!controller)
+			continue;
+		if (controller.get() != loaded)
+		{
+			loaded = controller.get();
+			loadedState = controller->get_state();
+		}
+		if (loadedState.buttons.GetButtonState(it->second.button))
+			down |= 1ull << mapping;
+	}
+	return down;
+}
+
 bool EmulatedController::is_mapping_down(uint64 mapping) const
 {
 	const auto state = m_state.Read();

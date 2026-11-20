@@ -669,6 +669,8 @@ src/input/InputManager.cpp InputManager::Shutdown
 src/input/api/Controller.cpp apply_axis_button
 src/input/api/Controller.cpp ControllerBase::update_state
 src/input/api/Controller.cpp ControllerBase::get_axis_value
+src/input/api/Controller.cpp ControllerBase::AxisValueOf
+src/input/api/Controller.cpp ControllerBase::apply_axis_setting
 src/input/api/Controller.cpp ControllerBase::calibrate
 src/input/api/Controller.cpp ControllerBase::get_settings
 src/input/api/Controller.cpp ControllerBase::set_settings
@@ -697,6 +699,9 @@ src/input/emulated/EmulatedController.cpp EmulatedController::is_battery_low
 src/input/emulated/EmulatedController.cpp EmulatedController::has_motion
 src/input/emulated/EmulatedController.cpp EmulatedController::get_motion_data
 src/input/emulated/EmulatedController.cpp EmulatedController::has_second_motion
+src/input/emulated/EmulatedController.cpp EmulatedController::get_axis_values
+src/input/emulated/EmulatedController.cpp EmulatedController::get_mappings_down
+src/input/emulated/EmulatedController.cpp EmulatedController::get_positions
 src/input/emulated/EmulatedController.cpp EmulatedController::get_second_motion_data
 src/input/emulated/EmulatedController.cpp EmulatedController::has_position
 src/input/emulated/EmulatedController.cpp EmulatedController::get_position

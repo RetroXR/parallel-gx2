@@ -65,13 +65,17 @@ uint32 WPADController::get_emulated_button_flag(WPADDataFormat format, uint32 id
 	return 0;
 }
 
+// a bit each in get_mappings_down
+static_assert(WiimoteController::kButtonId_Max <= 64 && ProController::kButtonId_Max <= 64 && ClassicController::kButtonId_Max <= 64);
+
 void WPADController::WPADRead(WPADStatus_t* status)
 {
 	controllers_update_states();
 	uint32 button = 0;
+	const uint64 down = get_mappings_down(1, get_highest_mapping_id());
 	for (uint32 i = 1; i < get_highest_mapping_id(); ++i)
 	{
-		if (is_mapping_down(i))
+		if (down & (1ull << i))
 		{
 			const uint32 value = get_emulated_button_flag(m_data_format, i);
 			button |= value;
@@ -196,9 +200,10 @@ void WPADController::KPADRead(KPADStatus_t& status, const BtnRepeat& repeat)
 	}
 
 	controllers_update_states();
+	const uint64 down = get_mappings_down(1, get_highest_mapping_id());
 	for (uint32 i = 1; i < get_highest_mapping_id(); ++i)
 	{
-		if (is_mapping_down(i))
+		if (down & (1ull << i))
 		{
 			const uint32 value = get_emulated_button_flag(m_data_format, i);
 			*hold |= value;

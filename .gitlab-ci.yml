@@ -932,6 +932,21 @@ test-input-axis:
     - make -C test/input_axis clean
     - SANITIZER=address,undefined ./test/input_axis/run_tests.sh
 
+# An emulated controller's buttons and stick directions read together.
+test-emulated-input:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: normal
+    GIT_SUBMODULE_PATHS: dependencies/fmt dependencies/Vulkan-Headers
+    CC: gcc-12
+    CXX: g++-12
+  script:
+    - ./test/emulated_input/run_tests.sh
+    - make -C test/emulated_input clean
+    - SANITIZER=address,undefined ./test/emulated_input/run_tests.sh
+
 test-pin-table:
   stage: test
   image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports

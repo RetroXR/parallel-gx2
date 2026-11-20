@@ -48,13 +48,15 @@ void VPADController::VPADRead(VPADStatus_t& status, const BtnRepeat& repeat)
 	controllers_update_states();
 	m_mic_active = false;
 	m_screen_active = false;
+	static_assert(kButtonId_Max <= 64);
+	const uint64 down = get_mappings_down(kButtonId_A, kButtonId_Max);
 	for (uint32 i = kButtonId_A; i < kButtonId_Max; ++i)
 	{
 		// axis will be aplied later
 		if (is_axis_mapping(i))
 			continue;
 
-		if (is_mapping_down(i))
+		if (down & (1ull << i))
 		{
 			const uint32 value = get_emulated_button_flag(i);
 			if (value == 0)

@@ -117,6 +117,8 @@ protected:
 	float get_axis_value(uint64 mapping) const;
 	// the mappings' values, as get_axis_value gives them, together
 	void get_axis_values(const uint64* mappings, float* values, size_t count) const;
+	// the mappings first to end (at most 64) that are down, bit i for mapping i
+	uint64 get_mappings_down(uint64 first, uint64 end) const;
 	bool m_rumble = false;
 
 	struct Mapping

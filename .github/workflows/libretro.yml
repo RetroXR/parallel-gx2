@@ -681,6 +681,14 @@ jobs:
           ./test/input_axis/run_tests.sh
           make -C test/input_axis clean
           SANITIZER=address,undefined ./test/input_axis/run_tests.sh
+      - name: "Emulated controller reads"
+        # an emulated controller's buttons and stick directions read
+        # together, against each read on its own, nothing allocated; plain
+        # and under ASan + UBSan
+        run: |
+          ./test/emulated_input/run_tests.sh
+          make -C test/emulated_input clean
+          SANITIZER=address,undefined ./test/emulated_input/run_tests.sh
       - name: "Pinned objects"
         # the H.264 decoder sessions' table: held, put back, released once;
         # plain, under ASan + UBSan and under TSan
