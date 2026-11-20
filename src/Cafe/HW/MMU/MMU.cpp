@@ -432,20 +432,64 @@ namespace MMU
 	// 0x0C000000 (the old GC register interface?)
 	// 0x0D000000 (new Wii U stuff?)
 
-	std::unordered_map<PAddr, MMIOFuncWrite32>* g_mmioHandlerW32{};
-	std::unordered_map<PAddr, MMIOFuncWrite16>* g_mmioHandlerW16{};
-	std::unordered_map<PAddr, MMIOFuncRead32>* g_mmioHandlerR32{};
-	std::unordered_map<PAddr, MMIOFuncRead16>* g_mmioHandlerR16{};
-
-	void _initHandlers()
+	// Each access size's handlers by address, in order, in place: registered
+	// as the hardware is set up (static initializers of the files that
+	// handle it, so constant-initialized storage rather than a map made
+	// first), found by a binary search
+	template<typename Fn>
+	struct MMIOHandlers
 	{
-		if (g_mmioHandlerW32)
-			return;
-		g_mmioHandlerW32 = new std::unordered_map<PAddr, MMIOFuncWrite32>();
-		g_mmioHandlerW16 = new std::unordered_map<PAddr, MMIOFuncWrite16>();
-		g_mmioHandlerR32 = new std::unordered_map<PAddr, MMIOFuncRead32>();
-		g_mmioHandlerR16 = new std::unordered_map<PAddr, MMIOFuncRead16>();
-	}
+		static constexpr size_t kMax = 64;
+		PAddr addr[kMax];
+		Fn fn[kMax];
+		size_t count;
+
+		// the first one registered for an address stays, as the map kept it
+		void Add(PAddr a, Fn f)
+		{
+			size_t i = LowerBound(a);
+			if (i < count && addr[i] == a)
+				return;
+			if (count == kMax)
+			{
+				cemu_assert_debug(false);
+				return;
+			}
+			for (size_t j = count; j > i; j--)
+			{
+				addr[j] = addr[j - 1];
+				fn[j] = fn[j - 1];
+			}
+			addr[i] = a;
+			fn[i] = f;
+			count++;
+		}
+
+		Fn Find(PAddr a) const
+		{
+			const size_t i = LowerBound(a);
+			return (i < count && addr[i] == a) ? fn[i] : nullptr;
+		}
+
+		size_t LowerBound(PAddr a) const
+		{
+			size_t lo = 0, hi = count;
+			while (lo < hi)
+			{
+				const size_t mid = (lo + hi) / 2;
+				if (addr[mid] < a)
+					lo = mid + 1;
+				else
+					hi = mid;
+			}
+			return lo;
+		}
+	};
+
+	MMIOHandlers<MMIOFuncWrite32> g_mmioHandlerW32;
+	MMIOHandlers<MMIOFuncWrite16> g_mmioHandlerW16;
+	MMIOHandlers<MMIOFuncRead32> g_mmioHandlerR32;
+	MMIOHandlers<MMIOFuncRead16> g_mmioHandlerR16;
 
 	PAddr _MakeMMIOAddress(MMIOInterface interfaceLocation, uint32 relativeAddress)
 	{
@@ -461,51 +505,46 @@ namespace MMU
 
 	void RegisterMMIO_W32(MMIOInterface interfaceLocation, uint32 relativeAddress, MMIOFuncWrite32 ptr)
 	{
-		_initHandlers();
-		g_mmioHandlerW32->emplace(_MakeMMIOAddress(interfaceLocation, relativeAddress), ptr);
+		g_mmioHandlerW32.Add(_MakeMMIOAddress(interfaceLocation, relativeAddress), ptr);
 	}
 
 	void RegisterMMIO_W16(MMIOInterface interfaceLocation, uint32 relativeAddress, MMIOFuncWrite16 ptr)
 	{
-		_initHandlers();
-		g_mmioHandlerW16->emplace(_MakeMMIOAddress(interfaceLocation, relativeAddress), ptr);
+		g_mmioHandlerW16.Add(_MakeMMIOAddress(interfaceLocation, relativeAddress), ptr);
 	}
 
 	void RegisterMMIO_R32(MMIOInterface interfaceLocation, uint32 relativeAddress, MMIOFuncRead32 ptr)
 	{
-		_initHandlers();
-		PAddr addr = _MakeMMIOAddress(interfaceLocation, relativeAddress);
-		g_mmioHandlerR32->emplace(addr, ptr);
+		g_mmioHandlerR32.Add(_MakeMMIOAddress(interfaceLocation, relativeAddress), ptr);
 	}
 
 	void RegisterMMIO_R16(MMIOInterface interfaceLocation, uint32 relativeAddress, MMIOFuncRead16 ptr)
 	{
-		_initHandlers();
-		g_mmioHandlerR16->emplace(_MakeMMIOAddress(interfaceLocation, relativeAddress), ptr);
+		g_mmioHandlerR16.Add(_MakeMMIOAddress(interfaceLocation, relativeAddress), ptr);
 	}
 
 	void WriteMMIO_32(PAddr address, uint32 value)
 	{
 		cemu_assert_debug((address & 0x3) == 0);
-		auto itr = g_mmioHandlerW32->find(address);
-		if (itr == g_mmioHandlerW32->end())
+		const auto handler = g_mmioHandlerW32.Find(address);
+		if (!handler)
 		{
 			//cemuLog_logDebug(LogType::Force, "[MMU] MMIO write u32 0x{:08x} from unhandled address 0x{:08x}", value, address);
 			return;
 		}
-		return itr->second(address, value);
+		return handler(address, value);
 	}
 
 	void WriteMMIO_16(PAddr address, uint16 value)
 	{
 		cemu_assert_debug((address & 0x1) == 0);
-		auto itr = g_mmioHandlerW16->find(address);
-		if (itr == g_mmioHandlerW16->end())
+		const auto handler = g_mmioHandlerW16.Find(address);
+		if (!handler)
 		{
 			//cemuLog_logDebug(LogType::Force, "[MMU] MMIO write u16 0x{:04x} from unhandled address 0x{:08x}", (uint32)value, address);
 			return;
 		}
-		return itr->second(address, value);
+		return handler(address, value);
 	}
 
 
@@ -514,25 +553,25 @@ namespace MMU
 	uint32 ReadMMIO_32(PAddr address)
 	{
 		cemu_assert_debug((address & 0x3) == 0);
-		auto itr = g_mmioHandlerR32->find(address);
-		if(itr == g_mmioHandlerR32->end())
+		const auto handler = g_mmioHandlerR32.Find(address);
+		if (!handler)
 		{
 			//cemuLog_logDebug(LogType::Force, "[MMU] MMIO read u32 from unhandled address 0x{:08x}", address);
 			return 0;
 		}
-		return itr->second(address);
+		return handler(address);
 	}
 
 	uint16 ReadMMIO_16(PAddr address)
 	{
 		cemu_assert_debug((address & 0x1) == 0);
-		auto itr = g_mmioHandlerR16->find(address);
-		if (itr == g_mmioHandlerR16->end())
+		const auto handler = g_mmioHandlerR16.Find(address);
+		if (!handler)
 		{
 			//cemuLog_logDebug(LogType::Force, "[MMU] MMIO read u16 from unhandled address 0x{:08x}", address);
 			return 0;
 		}
-		return itr->second(address);
+		return handler(address);
 	}
 
 

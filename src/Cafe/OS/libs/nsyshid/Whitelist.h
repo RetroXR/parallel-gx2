@@ -2,6 +2,8 @@
 #define CEMU_NSYSHID_WHITELIST_H
 
 #include <list>
+#include <tuple>
+#include <boost/container/static_vector.hpp>
 
 namespace nsyshid
 {
@@ -26,8 +28,8 @@ namespace nsyshid
 	  private:
 		Whitelist();
 
-		// vendorId, productId
-		std::list<std::tuple<uint16, uint16>> m_devices;
+		// vendorId, productId: a few known devices and those added, in place
+		boost::container::static_vector<std::tuple<uint16, uint16>, 32> m_devices;
 	};
 } // namespace nsyshid
 

@@ -471,7 +471,6 @@ src/Cafe/HW/MMU/MMU.cpp memory_readU64
 src/Cafe/HW/MMU/MMU.cpp memory_readU32
 src/Cafe/HW/MMU/MMU.cpp memory_readU16
 src/Cafe/HW/MMU/MMU.cpp memory_readU8
-src/Cafe/HW/MMU/MMU.cpp _initHandlers
 src/Cafe/HW/MMU/MMU.cpp _MakeMMIOAddress
 src/Cafe/HW/MMU/MMU.cpp RegisterMMIO_W32
 src/Cafe/HW/MMU/MMU.cpp RegisterMMIO_W16
@@ -3854,6 +3853,15 @@ grep -v -e 'cemuLog_' -e 'UnrecoverableError' -e 'cemu_assert' -e 'PSO_TRACE' "$
 	# a log call formats only when its kind of logging is on; one handed a
 	# string formatted beforehand formats it every time, logging on or not
 	grep -E 'cemuLog_[A-Za-z]*\([^;]*(fmt::format\(|std::to_string\(|std::string\()' "$tmp/nocomment" | sed 's/$/ (formatted before the log call, logging on or not)/'
+	# an insert into a container that allocates a node for each - a list, map,
+	# set or deque (std::queue on one) - by the names they are declared with
+	# anywhere in the tree, the call one adding to it
+	nodes=$(grep -rhoE 'std::(list|map|set|multimap|multiset|unordered_map|unordered_set|unordered_multimap|unordered_multiset|queue|deque|priority_queue)<.*>[[:space:]*]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*(;|=|\{|\()' src --include='*.cpp' --include='*.h' |
+		sed -E 's/[[:space:]]*(;|=|\{|\()$//; s/.*[[:space:]]//' | sort -u | paste -sd'|' -)
+	if [ -n "$nodes" ]; then
+		grep -E "(^|[^A-Za-z0-9_])($nodes)(\[[^]]*\])?(\.|->)(emplace|insert|try_emplace|push|push_back|push_front|emplace_back|emplace_front|emplace_hint)\(" "$tmp/code" |
+			sed 's/$/ (a node allocated for each)/'
+	fi
 	# an object new'd that does not come from a pool
 	for t in $(grep -oE 'new[[:space:]]+[A-Za-z_][A-Za-z0-9_:]*[[:space:]]*[({]' "$tmp/code" | sed -E 's/new[[:space:]]+//; s/[[:space:]]*[({]$//' | sort -u); do
 		short=${t##*::}

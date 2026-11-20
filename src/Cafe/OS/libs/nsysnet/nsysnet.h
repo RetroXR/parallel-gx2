@@ -1,5 +1,7 @@
 #pragma once
 #include <set>
+#include <algorithm>
+#include <boost/container/static_vector.hpp>
 #include <vector>
 #include "Cafe/OS/RPL/COSModule.h"
 
@@ -37,7 +39,16 @@ namespace nsysnet
 		bool destroyed;
 		uint32 sslVersion;
 		uint32 clientPKI;
-		std::set<uint32> serverPKIs;
+		// in order, each once (as the set it was): both groups' (39) and a
+		// game's own fit, a context's PKIs set without allocating
+		boost::container::static_vector<uint32, 64> serverPKIs;
+		void AddServerPKI(uint32 pki)
+		{
+			auto it = std::lower_bound(serverPKIs.begin(), serverPKIs.end(), pki);
+			if ((it != serverPKIs.end() && *it == pki) || serverPKIs.size() == serverPKIs.capacity())
+				return;
+			serverPKIs.insert(it, pki);
+		}
 		std::vector<std::vector<uint8>> serverCustomPKIs;
 	};
 

@@ -2061,7 +2061,7 @@ namespace nsysnet
 			return;
 		}
 
-		g_nsslInternalStates[nsslHandle].serverPKIs.insert(serverPKI);
+		g_nsslInternalStates[nsslHandle].AddServerPKI(serverPKI);
 		osLib_returnFromFunction(hCPU, NSSL_OK);
 	}
 
@@ -2100,16 +2100,14 @@ namespace nsysnet
 
 		if (HAS_FLAG(groupMask, 1))
 		{
-			g_nsslInternalStates[nsslHandle].serverPKIs.insert({ 100,101,102,103,104,105 });
+			for (uint32 pki = 100; pki <= 105; pki++)
+				g_nsslInternalStates[nsslHandle].AddServerPKI(pki);
 		}
 
 		if (HAS_FLAG(groupMask, 2))
 		{
-			g_nsslInternalStates[nsslHandle].serverPKIs.insert({
-				1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009,
-				1010, 1011, 1012, 1013, 1014, 1015, 1016, 1017, 1018, 1019,
-				1020, 1021, 1022, 1023, 1024, 1025, 1026, 1027, 1028, 1029,
-				1030, 1031, 1032, 1033 });
+			for (uint32 pki = 1001; pki <= 1033; pki++)
+				g_nsslInternalStates[nsslHandle].AddServerPKI(pki);
 		}
 
 		if (validCountOut)

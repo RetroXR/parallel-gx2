@@ -2,7 +2,7 @@
 
 #include <memory>
 #include <span>
-#include <map>
+#include <array>
 
 #include "TLV.h"
 
@@ -30,8 +30,14 @@ private:
 	bool ParseDataArea(const std::span<const std::byte>& data, std::vector<std::byte>& dataArea);
 	bool ValidateCapabilityContainer();
 
-	std::map<uint8, Block> mLockedOrReservedBlocks;
-	std::map<uint8, Block> mLockedBlocks;
+	// the tag's 64 blocks: which are locked (or locked and reserved), a bit
+	// each, and their data in place
+	static constexpr std::size_t kBlocks = 64;
+	void SetBlock(uint64& mask, std::array<Block, kBlocks>& blocks, uint8 index, const Block& block);
+	uint64 mLockedOrReservedMask = 0;
+	std::array<Block, kBlocks> mLockedOrReservedBlocks{};
+	uint64 mLockedMask = 0;
+	std::array<Block, kBlocks> mLockedBlocks{};
 	std::array<uint8, 0x4> mCapabilityContainer;
 	std::vector<TLV> mTLVs;
 	std::size_t mNdefTlvIdx;

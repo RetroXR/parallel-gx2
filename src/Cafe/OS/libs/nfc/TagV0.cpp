@@ -112,8 +112,11 @@ std::shared_ptr<TagV0> TagV0::FromBytes(const std::span<const std::byte>& data)
 	}
 
 	// Append locked data
-	for (const auto& [key, value] : tag->mLockedBlocks)
+	for (std::size_t key = 0; key < kBlocks; key++)
 	{
+		if (!(tag->mLockedMask >> key & 1))
+			continue;
+		const Block& value = tag->mLockedBlocks[key];
 		tag->mLockedArea.insert(tag->mLockedArea.end(), value.begin(), value.end());
 	}
 
@@ -125,15 +128,20 @@ std::vector<std::byte> TagV0::ToBytes() const
 	std::vector<std::byte> bytes(kTagSize);
 
 	// Insert locked or reserved blocks
-	for (const auto& [key, value] : mLockedOrReservedBlocks)
+	for (std::size_t key = 0; key < kBlocks; key++)
 	{
+		if (!(mLockedOrReservedMask >> key & 1))
+			continue;
+		const Block& value = mLockedOrReservedBlocks[key];
 		std::copy(value.begin(), value.end(), bytes.begin() + key * sizeof(Block));
 	}
 
 	// Insert locked area
 	auto lockedDataIterator = mLockedArea.begin();
-	for (const auto& [key, value] : mLockedBlocks)
+	for (std::size_t key = 0; key < kBlocks; key++)
 	{
+		if (!(mLockedMask >> key & 1))
+			continue;
 		std::copy_n(lockedDataIterator, sizeof(Block), bytes.begin() + key * sizeof(Block));
 		lockedDataIterator += sizeof(Block);
 	}
@@ -168,7 +176,8 @@ std::vector<std::byte> TagV0::ToBytes() const
 
 const TagV0::Block& TagV0::GetUIDBlock() const
 {
-	return mLockedOrReservedBlocks.at(0);
+	// block 0, the UID, is always reserved
+	return mLockedOrReservedBlocks[0];
 }
 
 const std::vector<std::byte>& TagV0::GetNDEFData() const
@@ -185,6 +194,16 @@ void TagV0::SetNDEFData(const std::span<const std::byte>& data)
 {
 	// Update the ndef value
 	mTLVs[mNdefTlvIdx].SetValue(data);
+}
+
+// a block's data kept, where it was not already (as std::map::emplace kept
+// the first); one past the tag's blocks is left out
+void TagV0::SetBlock(uint64& mask, std::array<Block, kBlocks>& blocks, uint8 index, const Block& block)
+{
+	if (index >= kBlocks || (mask >> index & 1))
+		return;
+	mask |= 1ull << index;
+	blocks[index] = block;
 }
 
 bool TagV0::ParseLockedArea(const std::span<const std::byte>& data)
@@ -208,11 +227,11 @@ bool TagV0::ParseLockedArea(const std::span<const std::byte>& data)
 				// The lock bytes themselves are not part of the locked area
 				if (!IsBlockLockedOrReserved(currentBlock))
 				{
-					mLockedBlocks.emplace(currentBlock, blk);
+					SetBlock(mLockedMask, mLockedBlocks, currentBlock, blk);
 				}
 				else
 				{
-					mLockedOrReservedBlocks.emplace(currentBlock, blk);
+					SetBlock(mLockedOrReservedMask, mLockedOrReservedBlocks, currentBlock, blk);
 				}
 			}
 
@@ -236,11 +255,11 @@ bool TagV0::ParseLockedArea(const std::span<const std::byte>& data)
 				// The lock bytes themselves are not part of the locked area
 				if (!IsBlockLockedOrReserved(currentBlock))
 				{
-					mLockedBlocks.emplace(currentBlock, blk);
+					SetBlock(mLockedMask, mLockedBlocks, currentBlock, blk);
 				}
 				else
 				{
-					mLockedOrReservedBlocks.emplace(currentBlock, blk);
+					SetBlock(mLockedOrReservedMask, mLockedOrReservedBlocks, currentBlock, blk);
 				}
 			}
 
@@ -253,7 +272,7 @@ bool TagV0::ParseLockedArea(const std::span<const std::byte>& data)
 
 bool TagV0::IsBlockLocked(uint8 blockIdx) const
 {
-	return mLockedBlocks.contains(blockIdx) || IsBlockLockedOrReserved(blockIdx);
+	return (blockIdx < kBlocks && (mLockedMask >> blockIdx & 1)) || IsBlockLockedOrReserved(blockIdx);
 }
 
 bool TagV0::ParseDataArea(const std::span<const std::byte>& data, std::vector<std::byte>& dataArea)

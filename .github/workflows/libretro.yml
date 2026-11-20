@@ -689,6 +689,20 @@ jobs:
           ./test/emulated_input/run_tests.sh
           make -C test/emulated_input clean
           SANITIZER=address,undefined ./test/emulated_input/run_tests.sh
+      - name: "NFC tags"
+        # version 0 tags with random blocks locked read and written back the
+        # same; plain and under ASan + UBSan
+        run: |
+          ./test/nfc_tag/run_tests.sh
+          make -C test/nfc_tag clean
+          SANITIZER=address,undefined ./test/nfc_tag/run_tests.sh
+      - name: "MMIO handlers"
+        # registered from static initializers and found by address in a
+        # table in place, nothing allocated; plain and under ASan + UBSan
+        run: |
+          ./test/mmio/run_tests.sh
+          make -C test/mmio clean
+          SANITIZER=address,undefined ./test/mmio/run_tests.sh
       - name: "Pinned objects"
         # the H.264 decoder sessions' table: held, put back, released once;
         # plain, under ASan + UBSan and under TSan

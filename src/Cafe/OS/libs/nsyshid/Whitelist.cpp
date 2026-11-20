@@ -34,7 +34,7 @@ namespace nsyshid
 
 	void Whitelist::AddDevice(uint16 vendorId, uint16 productId)
 	{
-		if (!IsDeviceWhitelisted(vendorId, productId))
+		if (!IsDeviceWhitelisted(vendorId, productId) && m_devices.size() < m_devices.capacity())
 		{
 			m_devices.emplace_back(vendorId, productId);
 		}
@@ -42,12 +42,12 @@ namespace nsyshid
 
 	void Whitelist::RemoveDevice(uint16 vendorId, uint16 productId)
 	{
-		m_devices.remove(std::tuple<uint16, uint16>(vendorId, productId));
+		m_devices.erase(std::remove(m_devices.begin(), m_devices.end(), std::tuple<uint16, uint16>(vendorId, productId)), m_devices.end());
 	}
 
 	std::list<std::tuple<uint16, uint16>> Whitelist::GetDevices()
 	{
-		return m_devices;
+		return std::list<std::tuple<uint16, uint16>>(m_devices.begin(), m_devices.end());
 	}
 
 	void Whitelist::RemoveAllDevices()
