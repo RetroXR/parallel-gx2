@@ -623,6 +623,23 @@ void PipelineCompiler::LogCompileFailure(VkResult result, sint32 topology)
 		topology, vertexFormats);
 }
 
+// A shader a waiting draw needs compiled: by a compile thread, or by the
+// thread taking it (PreparedPipeline::BuildTogether); PreponeCompilation
+// compiles it there unless the shader's own compile thread has it already,
+// and waits for that one if so
+struct ShaderCompileTogether
+{
+	RendererShaderVk* shader{};
+	bool callerIsRenderThread{};
+	// last: retired first
+	PreparedPipeline prepared{[](void* self, bool onCompileThread) {
+		ShaderCompileTogether* j = (ShaderCompileTogether*)self;
+		if (!j->shader->IsCompiled())
+			j->shader->PreponeCompilation(!onCompileThread && j->callerIsRenderThread);
+		return (VkPipeline)VK_NULL_HANDLE;
+	}, this};
+};
+
 bool PipelineCompiler::Compile(bool forceCompile, bool isRenderThread, bool showInOverlay)
 {
 	VulkanRenderer* vkRenderer = VulkanRenderer::GetInstance();
@@ -644,15 +661,34 @@ bool PipelineCompiler::Compile(bool forceCompile, bool isRenderThread, bool show
 	}
 	else
 	{
-		// if some shader stages are not compiled yet, compile them now
-		if (m_vkVertexShader && m_vkVertexShader->IsCompiled() == false)
-			m_vkVertexShader->PreponeCompilation(isRenderThread);
-		if (m_vkPixelShader && m_vkPixelShader->IsCompiled() == false)
-			m_vkPixelShader->PreponeCompilation(isRenderThread);
-		if (m_vkGeometryShader && m_vkGeometryShader->IsCompiled() == false)
-			m_vkGeometryShader->PreponeCompilation(isRenderThread);
-		if (m_rectEmulationGS && m_rectEmulationGS->IsCompiled() == false)
-			m_rectEmulationGS->PreponeCompilation(isRenderThread);
+		// if some shader stages are not compiled yet, compile them now: for
+		// a draw that waits, together (the first here, the others offered
+		// to the compile threads meanwhile), else one after the other
+		RendererShaderVk* const stages[4] = { m_vkVertexShader, m_vkPixelShader, m_vkGeometryShader, m_rectEmulationGS };
+		ShaderCompileTogether jobs[4];
+		PreparedPipeline* here[1];
+		PreparedPipeline* queued[3];
+		size_t count = 0;
+		for (RendererShaderVk* shader : stages)
+		{
+			if (!shader || shader->IsCompiled())
+				continue;
+			jobs[count].shader = shader;
+			jobs[count].callerIsRenderThread = isRenderThread;
+			count++;
+		}
+		if (count > 1 && (isRenderThread || m_drawWaits))
+		{
+			here[0] = &jobs[0].prepared;
+			for (size_t i = 1; i < count; i++)
+				queued[i - 1] = &jobs[i].prepared;
+			PreparedPipeline::BuildTogether(here, 1, queued, count - 1, [](PreparedPipeline& item) { CompileThreadPool_QueuePrepared(item); });
+		}
+		else
+		{
+			for (size_t i = 0; i < count; i++)
+				jobs[i].shader->PreponeCompilation(isRenderThread);
+		}
 	}
 
 	if (shaderStageCount == 0)
@@ -790,22 +826,24 @@ namespace
 		const VkGraphicsPipelineCreateInfo* full;
 		int part;
 		uint64 key;
+		bool callerIsRenderThread;
 		VkResult result{VK_SUCCESS};
 		// last: retired first
 		PreparedPipeline prepared{[](void* self, bool onCompileThread) {
 			LibraryPartBuild* b = (LibraryPartBuild*)self;
-			return b->compiler->MakeLibraryPart(b->part, b->key, true, *b->full, true, !onCompileThread, b->result);
+			return b->compiler->MakeLibraryPart(b->part, b->key, true, *b->full, true, !onCompileThread && b->callerIsRenderThread, b->result);
 		}, this};
 	};
 }
 
-// The parts of a pipeline a draw waits for, on the GPU thread: those made
-// already taken, those another thread makes waited for, and the missing
+// The parts of a pipeline a draw waits for (on the GPU thread, or on a
+// compile thread for a draw skipped until it lands): those made already
+// taken, those another thread makes waited for, and the missing
 // ones claimed and made together - the shader parts (the costly ones) but
 // the first queued for the compile threads while this thread makes the
 // first, then each taken - where they were made one after the other. False
 // when one could not be made.
-bool PipelineCompiler::GatherLibraryPartsTogether(const VkGraphicsPipelineCreateInfo& full, const uint64 keys[], VkPipeline libraries[])
+bool PipelineCompiler::GatherLibraryPartsTogether(const VkGraphicsPipelineCreateInfo& full, const uint64 keys[], VkPipeline libraries[], bool isRenderThread)
 {
 	VulkanPipelineLibraryCache& cache = *VulkanRenderer::GetInstance()->m_pipelineLibraries;
 	bool pending[VULKAN_PIPELINE_LIBRARY_PARTS]{};
@@ -841,6 +879,7 @@ bool PipelineCompiler::GatherLibraryPartsTogether(const VkGraphicsPipelineCreate
 		builds[i].full = &full;
 		builds[i].part = toMake[i];
 		builds[i].key = keys[toMake[i]];
+		builds[i].callerIsRenderThread = isRenderThread;
 		if (i > 0 && i < costly)
 			queued[queuedCount++] = &builds[i].prepared;
 		else
@@ -862,13 +901,13 @@ bool PipelineCompiler::GatherLibraryPartsTogether(const VkGraphicsPipelineCreate
 	{
 		if (!pending[p])
 			continue;
-		PSO_TRACE_SCOPE("pipeline library wait", keys[p]);
+		PSO_TRACE_SCOPE(isRenderThread ? "pipeline library wait" : "pipeline library wait (worker)", keys[p]);
 		VkPipeline library = VK_NULL_HANDLE;
 		if (cache.WaitFor((VulkanPipelineLibraryPart)p, keys[p], library) != VulkanPipelineLibraryCache::State::Ready)
 		{
 			// failed on the thread that claimed it: made here, as before
 			VkResult result;
-			library = MakeLibraryPart(p, keys[p], cache.Claim((VulkanPipelineLibraryPart)p, keys[p]), full, true, true, result);
+			library = MakeLibraryPart(p, keys[p], cache.Claim((VulkanPipelineLibraryPart)p, keys[p]), full, true, isRenderThread, result);
 			if (library == VK_NULL_HANDLE)
 			{
 				cemuLog_log(LogType::Force, "Failed to create graphics pipeline library part {}: {}", p, (sint32)result);
@@ -903,13 +942,14 @@ bool PipelineCompiler::CompileFromLibraries(const VkGraphicsPipelineCreateInfo& 
 
 	VkPipeline libraries[VULKAN_PIPELINE_LIBRARY_PARTS]{};
 	bool ok = true;
-	if (forceCompile && isRenderThread)
+	if (forceCompile && (isRenderThread || m_drawWaits))
 	{
-		// a draw waits: what is missing made at once, not one after the other
+		// a draw waits - on the GPU thread, or skipped until a compile thread
+		// lands it: what is missing made at once, not one after the other
 		uint64 keys[VULKAN_PIPELINE_LIBRARY_PARTS];
 		for (int p = 0; p < VULKAN_PIPELINE_LIBRARY_PARTS; p++)
 			keys[p] = VulkanPipelineLibrary_Key((VulkanPipelineLibraryPart)p, full, identity);
-		if (!GatherLibraryPartsTogether(full, keys, libraries))
+		if (!GatherLibraryPartsTogether(full, keys, libraries, isRenderThread))
 			return true; // a part failed: no use trying again
 	}
 	else for (int p = 0; p < VULKAN_PIPELINE_LIBRARY_PARTS && ok; p++)

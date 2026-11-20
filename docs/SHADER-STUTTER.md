@@ -338,7 +338,9 @@ after the other: the shader parts but the first queued for the compile
 threads while the GPU thread makes the first and the cheap ones, then each
 taken - made on the GPU thread as well where no compile thread has started
 on it (`PreparedPipeline::BuildTogether`). Its wait is for the slowest part,
-not their sum. `test/prepared_pipeline` checks the builds overlap with
+not their sum. A draw skipped until its pipeline lands has the compile
+thread making it do the same, the other compile threads helping, so it is
+skipped for that much less. `test/prepared_pipeline` checks the builds overlap with
 compile threads free and run one after the other here with none.
 
 Next: the draws async skips while the parts are made.

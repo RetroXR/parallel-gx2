@@ -159,7 +159,7 @@ public:
 private:
 	bool CompileFromLibraries(const VkGraphicsPipelineCreateInfo& full, bool forceCompile, bool isRenderThread);
 	// the parts a draw waits for, the missing ones made together (BuildTogether)
-	bool GatherLibraryPartsTogether(const VkGraphicsPipelineCreateInfo& full, const uint64 keys[], VkPipeline libraries[]);
+	bool GatherLibraryPartsTogether(const VkGraphicsPipelineCreateInfo& full, const uint64 keys[], VkPipeline libraries[], bool isRenderThread);
 	void LogCompileFailure(VkResult result, sint32 topology);
 public:
 
