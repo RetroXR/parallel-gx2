@@ -1,6 +1,7 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.h"
+#include "util/helpers/SharedByKey.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.h"
 #include "Cafe/HW/Latte/Core/PsoTrace.h"
@@ -13,9 +14,11 @@
 #include "Cafe/HW/Latte/Common/RegisterSerializer.h"
 #include "HW/Latte/Renderer/RendererCore.h"
 
-RendererShaderVk* rectsEmulationGS_generate(LatteDecompilerShader* vertexShader, const LatteContextRegister& latteRegister)
+// The source of the rect emulation geometry shader for a vertex shader and
+// the pixel shader's inputs, written into gsSrc (emptied first)
+static void rectsEmulationGS_write(std::string& gsSrc, LatteDecompilerShader* vertexShader, const LatteContextRegister& latteRegister)
 {
-	std::string gsSrc;
+	gsSrc.clear();
 
 	gsSrc.append("#version 450\r\n");
 
@@ -41,7 +44,7 @@ RendererShaderVk* rectsEmulationGS_generate(LatteDecompilerShader* vertexShader,
 			if (psImport == nullptr)
 				continue;
 
-			gsSrc.append(fmt::format("layout(location = {}) ", psInputTable->getPSImportLocationBySemanticId(vsSemanticId)));
+			fmt::format_to(std::back_inserter(gsSrc), "layout(location = {}) ", psInputTable->getPSImportLocationBySemanticId(vsSemanticId));
 			if (psImport->isFlat)
 				gsSrc.append("flat ");
 			if (psImport->isNoPerspective)
@@ -53,9 +56,9 @@ RendererShaderVk* rectsEmulationGS_generate(LatteDecompilerShader* vertexShader,
 				gsSrc.append("out");
 
 			if (f == 0)
-				gsSrc.append(fmt::format(" vec4 passParameterSem{}In[];\r\n", vsSemanticId));
+				fmt::format_to(std::back_inserter(gsSrc), " vec4 passParameterSem{}In[];\r\n", vsSemanticId);
 			else
-				gsSrc.append(fmt::format(" vec4 passParameterSem{}Out;\r\n", vsSemanticId));
+				fmt::format_to(std::back_inserter(gsSrc), " vec4 passParameterSem{}Out;\r\n", vsSemanticId);
 		}
 	}
 
@@ -108,9 +111,52 @@ RendererShaderVk* rectsEmulationGS_generate(LatteDecompilerShader* vertexShader,
 
 	gsSrc.append("}\r\n");
 
-	auto vkShader = new RendererShaderVk(RendererShader::ShaderType::kGeometry, 0, 0, false, false, std::move(gsSrc));
-	vkShader->PreponeCompilation(true);
-	return vkShader;
+}
+
+// The rect emulation geometry shaders, one for each source written: the
+// pipelines whose vertex shader outputs and pixel shader inputs are alike
+// share one, compiled once on a compile thread rather than once per pipeline
+// on the thread making it. The GPU thread and the cache loader's compile
+// threads make pipelines at once, so the table is lock-free (SharedByKey.h);
+// a thread that finds the source's key being published, or no slot left,
+// makes one of its own, which its pipeline keeps. The shared ones go with the
+// renderer (rectsEmulationGS_deleteShared).
+static SharedByKey<RendererShaderVk, 1024> s_rectGS;
+
+static uint64 RectGSHash(std::string_view src, uint64 h, uint64 mul)
+{
+	for (unsigned char c : src)
+		h = (h ^ c) * mul;
+	return h ^ (h >> 31);
+}
+
+RectEmulationGS rectsEmulationGS_generate(LatteDecompilerShader* vertexShader, const LatteContextRegister& latteRegister)
+{
+	// a source a compiled shader gave back; moved into the shader made, or
+	// given back again
+	thread_local std::string gsSrc;
+	LatteDecompiler_SourceBuffers().Take(gsSrc);
+	rectsEmulationGS_write(gsSrc, vertexShader, latteRegister);
+	const uint64 key = RectGSHash(gsSrc, 0xcbf29ce484222325ull, 0x100000001b3ull) | 1;
+	const uint64 check = RectGSHash(gsSrc, 0x9E3779B97F4A7C15ull, 0xff51afd7ed558ccdull);
+	bool made = false;
+	RendererShaderVk* shared = s_rectGS.Get(key, check, [&] {
+		made = true;
+		// queued for the compile threads
+		return new RendererShaderVk(RendererShader::ShaderType::kGeometry, 0, 0, false, false, std::move(gsSrc));
+	});
+	if (shared)
+	{
+		if (!made)
+			LatteDecompiler_SourceBuffers().Give(gsSrc);
+		return { shared, key };
+	}
+	return { new RendererShaderVk(RendererShader::ShaderType::kGeometry, 0, 0, false, false, std::move(gsSrc)), 0 };
+}
+
+void rectsEmulationGS_deleteShared()
+{
+	s_rectGS.Clear([](RendererShaderVk* shader) { delete shader; });
 }
 
 /* pipeline compiler and cache helper */
@@ -187,9 +233,11 @@ bool PipelineCompiler::InitShaderStages(VulkanRenderer* vkRenderer, RendererShad
 	cemu_assert_debug(vkVertexShader == nullptr || vkVertexShader->IsCompiled());
 	cemu_assert_debug(vkPixelShader == nullptr || vkPixelShader->IsCompiled());
 	cemu_assert_debug(vkGeometryShader == nullptr || vkGeometryShader->IsCompiled());
+	cemu_assert_debug(m_rectEmulationGS == nullptr || m_rectEmulationGS->IsCompiled());
 
 	if ((vkVertexShader && vkVertexShader->GetShaderModule() == VK_NULL_HANDLE) ||
 		(vkGeometryShader && vkGeometryShader->GetShaderModule() == VK_NULL_HANDLE) ||
+		(!vkGeometryShader && m_rectEmulationGS && m_rectEmulationGS->GetShaderModule() == VK_NULL_HANDLE) ||
 		(vkPixelShader && vkPixelShader->GetShaderModule() == VK_NULL_HANDLE))
 	{
 		cemuLog_log(LogType::Force, "Vulkan-Info: Pipeline creation failed due to invalid shader(s)");
@@ -464,8 +512,12 @@ bool PipelineCompiler::InitFromCurrentGPUState(PipelineInfo* pipelineInfo, const
 	if (!vkRenderer->m_featureControl.deviceExtensions.nv_fill_rectangle && isPrimitiveRect)
 	{
 		cemu_assert(m_vkGeometryShader == nullptr); // todo - handle cases where the game already provides a GS
-		m_rectEmulationGS = rectsEmulationGS_generate(pipelineInfo->vertexShader, latteRegister);
-		pipelineInfo->rectEmulationGS = m_rectEmulationGS;
+		const RectEmulationGS gs = rectsEmulationGS_generate(pipelineInfo->vertexShader, latteRegister);
+		m_rectEmulationGS = gs.shader;
+		m_rectEmulationKey = gs.sharedKey;
+		// one of its own: the pipeline keeps it
+		if (!gs.sharedKey)
+			pipelineInfo->rectEmulationGS = gs.shader;
 	}
 
 	// ##########################################################################################################################################
@@ -587,6 +639,8 @@ bool PipelineCompiler::Compile(bool forceCompile, bool isRenderThread, bool show
 			return false;
 		if (m_vkGeometryShader && m_vkGeometryShader->IsCompiled() == false)
 			return false;
+		if (m_rectEmulationGS && m_rectEmulationGS->IsCompiled() == false)
+			return false;
 	}
 	else
 	{
@@ -597,6 +651,8 @@ bool PipelineCompiler::Compile(bool forceCompile, bool isRenderThread, bool show
 			m_vkPixelShader->PreponeCompilation(isRenderThread);
 		if (m_vkGeometryShader && m_vkGeometryShader->IsCompiled() == false)
 			m_vkGeometryShader->PreponeCompilation(isRenderThread);
+		if (m_rectEmulationGS && m_rectEmulationGS->IsCompiled() == false)
+			m_rectEmulationGS->PreponeCompilation(isRenderThread);
 	}
 
 	if (shaderStageCount == 0)
@@ -707,12 +763,12 @@ bool PipelineCompiler::CompileFromLibraries(const VkGraphicsPipelineCreateInfo& 
 	};
 	VulkanPipelineLibraryIdentity identity{};
 	identity.vertexShader = shaderHash(m_vkVertexShader);
-	// the rect emulation geometry shader is made for this pipeline: its part
-	// is too, under a number no other part has (one per compiler, so that a
-	// compile thread's try finds the GPU thread's)
+	// a shared rect emulation geometry shader goes by its source's key; one
+	// made for this pipeline alone, under a number no other part has (one per
+	// compiler, so that a compile thread's try finds the GPU thread's)
 	static std::atomic<uint64> s_rectEmulationSerial{0};
 	if (m_rectEmulationGS && m_rectEmulationSerial == 0)
-		m_rectEmulationSerial = (1ull << 63) | s_rectEmulationSerial.fetch_add(1, std::memory_order_relaxed);
+		m_rectEmulationSerial = m_rectEmulationKey ? m_rectEmulationKey : (1ull << 63) | s_rectEmulationSerial.fetch_add(1, std::memory_order_relaxed);
 	identity.geometryShader = m_vkGeometryShader ? shaderHash(m_vkGeometryShader) : m_rectEmulationSerial;
 	identity.pixelShader = shaderHash(m_vkPixelShader);
 	identity.renderPass = m_renderPassObj->m_hashForPipeline;

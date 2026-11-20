@@ -10,6 +10,19 @@
 // compile thread. From a pool (PoolNew.h), with its state in arrays of its
 // own, so that a game reaching new state allocates nothing for it: only the
 // driver does, compiling.
+// A rect emulation geometry shader (RECTS without VK_NV_fill_rectangle): one
+// shared by every pipeline whose source is alike (sharedKey its key), or one
+// for the pipeline alone to keep (sharedKey 0). Queued for the compile
+// threads, not compiled on the thread asking.
+struct RectEmulationGS
+{
+	class RendererShaderVk* shader;
+	uint64 sharedKey;
+};
+RectEmulationGS rectsEmulationGS_generate(LatteDecompilerShader* vertexShader, const LatteContextRegister& latteRegister);
+// the shared ones, once no pipeline is left
+void rectsEmulationGS_deleteShared();
+
 class PipelineCompiler : public VKRMoveableRefCounter, public PoolNew<PipelineCompiler, 64>
 {
 private:
@@ -23,6 +36,7 @@ private:
 	/* shader stages (requires compiled shader) */
 
 	RendererShaderVk* m_rectEmulationGS{};
+	uint64 m_rectEmulationKey{}; // its source's, when shared (rectsEmulationGS_generate)
 
 	bool InitShaderStages(VulkanRenderer* vkRenderer, RendererShaderVk* vkVertexShader, RendererShaderVk* vkPixelShader, RendererShaderVk* vkGeometryShader);
 

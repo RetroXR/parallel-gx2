@@ -687,6 +687,9 @@ VulkanRenderer::~VulkanRenderer()
 	// clean up resources used for surface copy
 	surfaceCopy_cleanup();
 
+	// the rect emulation geometry shaders the pipelines shared, all gone
+	rectsEmulationGS_deleteShared();
+
 	// clean up default shaders
 	delete defaultShaders.copySurface_vs;
 	defaultShaders.copySurface_vs = nullptr;
@@ -1333,6 +1336,9 @@ void VulkanRenderer::Initialize()
 {
 	cemuLog_log(LogType::Force, "VulkanRenderer::Initialize() - calling Renderer::Initialize()");
 	Renderer::Initialize();
+	// on the GPU thread (Latte_InitRendererState): its room for the shaders
+	// it compiles itself
+	RendererShaderVk::WarmCompileScratch();
 	InitFirstCommandBuffer();
 	cemuLog_log(LogType::Force, "VulkanRenderer::Initialize() - calling CreatePipelineCache()");
 	CreatePipelineCache();

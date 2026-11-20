@@ -94,9 +94,9 @@ void rectsEmulationGS_outputSingleVertex(std::string& gsSrc, LatteDecompilerShad
 		// make sure PS has matching input
 		if (!psInputTable->hasPSImportForSemanticId(vsSemanticId))
 			continue;
-		gsSrc.append(fmt::format("passParameterSem{}Out = passParameterSem{}In[{}];\r\n", vsSemanticId, vsSemanticId, vIdx));
+		fmt::format_to(std::back_inserter(gsSrc), "passParameterSem{}Out = passParameterSem{}In[{}];\r\n", vsSemanticId, vsSemanticId, vIdx);
 	}
-	gsSrc.append(fmt::format("gl_Position = gl_in[{}].gl_Position;\r\n", vIdx));
+	fmt::format_to(std::back_inserter(gsSrc), "gl_Position = gl_in[{}].gl_Position;\r\n", vIdx);
 	gsSrc.append("EmitVertex();\r\n");
 }
 
@@ -113,9 +113,9 @@ void rectsEmulationGS_outputGeneratedVertex(std::string& gsSrc, LatteDecompilerS
 		// make sure PS has matching input
 		if (!psInputTable->hasPSImportForSemanticId(vsSemanticId))
 			continue;
-		gsSrc.append(fmt::format("passParameterSem{}Out = gen4thVertex{}(passParameterSem{}In[0], passParameterSem{}In[1], passParameterSem{}In[2]);\r\n", vsSemanticId, variant, vsSemanticId, vsSemanticId, vsSemanticId));
+		fmt::format_to(std::back_inserter(gsSrc), "passParameterSem{}Out = gen4thVertex{}(passParameterSem{}In[0], passParameterSem{}In[1], passParameterSem{}In[2]);\r\n", vsSemanticId, variant, vsSemanticId, vsSemanticId, vsSemanticId);
 	}
-	gsSrc.append(fmt::format("gl_Position = gen4thVertex{}(gl_in[0].gl_Position, gl_in[1].gl_Position, gl_in[2].gl_Position);\r\n", variant));
+	fmt::format_to(std::back_inserter(gsSrc), "gl_Position = gen4thVertex{}(gl_in[0].gl_Position, gl_in[1].gl_Position, gl_in[2].gl_Position);\r\n", variant);
 	gsSrc.append("EmitVertex();\r\n");
 }
 

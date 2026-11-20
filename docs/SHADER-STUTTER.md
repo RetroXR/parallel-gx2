@@ -114,6 +114,15 @@ Where the core still does, as of `204bbde5`:
   fallback; there is none to draw with yet.
 - **No `VK_EXT_pipeline_creation_cache_control`**: every compile is forced
   synchronous (`PipelineCompiler::Compile`).
+- **Rect emulation geometry shaders** (RECTS where the device has no
+  `VK_NV_fill_rectangle`): no longer. Each pipeline compiled its own on the
+  thread making it, the GPU thread included, before its draw. One is now
+  made for each source written and shared by the pipelines alike
+  (`rectsEmulationGS_generate`, `SharedByKey.h`), queued for the compile
+  threads and waited for only where the pipeline is: a draw async may skip
+  skips until it lands, one that may not compiles it then, as it does its
+  other shaders. `test/shared_by_key` checks the sharing, eight threads
+  racing for 600 keys (each made once; TSan in CI).
 - **Surface copies** (color to depth and back, `VulkanSurfaceCopy.cpp`):
   no longer. The copy shaders are compiled at init, and the pipeline that
   copies into a format is queued for the compile threads when the first

@@ -648,6 +648,16 @@ jobs:
           SANITIZER=address,undefined ./test/surface_copy/run_tests.sh
           make -C test/surface_copy clean
           SANITIZER=thread ./test/surface_copy/run_tests.sh
+      - name: "Shared by key"
+        # the rect emulation geometry shaders' table: eight threads racing
+        # for the same keys, each object made once; plain, under ASan +
+        # UBSan and under TSan
+        run: |
+          ./test/shared_by_key/run_tests.sh
+          make -C test/shared_by_key clean
+          SANITIZER=address,undefined ./test/shared_by_key/run_tests.sh
+          make -C test/shared_by_key clean
+          SANITIZER=thread ./test/shared_by_key/run_tests.sh
       - name: "Pinned objects"
         # the H.264 decoder sessions' table: held, put back, released once;
         # plain, under ASan + UBSan and under TSan

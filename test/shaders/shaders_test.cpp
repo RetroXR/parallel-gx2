@@ -11,7 +11,10 @@
 //    say rendererFilter = opengl is never loaded there), its preset variables
 //    set to 1, save the few the packs themselves get wrong (glslang refuses
 //    them too).
-// Each module is written to the directory given, for spirv-val.
+// Each module is written to the directory given, for spirv-val. Each is also
+// compiled the way a compile thread does (RslcCompileSpirv, in one scratch
+// whose arena starts small and grows as the corpus needs it), which must
+// give the same words; and, once warm, compiles taking nothing from the heap.
 //
 // The shader/PSO gate (test/pso) builds this file with SHADERS_CORPUS_ONLY
 // and takes every module through s_onModule: the corpus is the same one.
@@ -19,6 +22,9 @@
 
 #include <gfx/shaders/rslc.h>
 
+#include <algorithm>
+#include <cstdlib>
+#include <new>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -55,6 +61,10 @@ static unsigned RteWidths(const uint32_t* w, size_t n)
 	return mask;
 }
 
+// a compile thread's room, as small as rslc takes so that it grows
+static RslcScratch s_scratch;
+static int s_scratchMismatches = 0;
+
 static bool Compile(const std::string& name, const std::string& glsl, rslc_stage stage, bool report = true, bool rte32 = true)
 {
 	const std::string src = RslcGlsl(glsl, rte32);
@@ -79,6 +89,18 @@ static bool Compile(const std::string& name, const std::string& glsl, rslc_stage
 	}
 	s_compiled++;
 	s_lastRte = RteWidths(result.spirv, result.spirv_len);
+	{
+		if (s_scratch.arena.empty())
+			s_scratch.Warm(64 * 1024);
+		char err2[512];
+		const std::span<const uint32_t> words = RslcCompileSpirv(glsl, stage, rte32, s_scratch, err2, sizeof(err2));
+		if (words.size() != result.spirv_len || !std::equal(words.begin(), words.end(), result.spirv))
+		{
+			std::fprintf(stderr, "FAIL %s: compiled in a scratch, other words (%s)\n", name.c_str(), err2);
+			s_failures++;
+			s_scratchMismatches++;
+		}
+	}
 	if (s_onModule)
 		s_onModule(name, result.spirv, result.spirv_len, micros);
 	if (!s_out.empty())
@@ -445,6 +467,79 @@ static void TestGraphicPacks(const fs::path& packs)
 }
 
 #ifndef SHADERS_CORPUS_ONLY
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define COUNT_ALLOCS 0
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#define COUNT_ALLOCS 0
+#endif
+#endif
+#ifndef COUNT_ALLOCS
+#define COUNT_ALLOCS 1
+#endif
+static unsigned long long s_allocs = 0;
+#if COUNT_ALLOCS
+void* operator new(size_t size)
+{
+	s_allocs++;
+	if (void* p = std::malloc(size ? size : 1))
+		return p;
+	throw std::bad_alloc();
+}
+void* operator new[](size_t size) { return operator new(size); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p, size_t) noexcept { std::free(p); }
+void operator delete[](void* p, size_t) noexcept { std::free(p); }
+#endif
+
+// The corpus again in the scratch it grew: nothing from the heap, neither
+// new nor a module rslc had to malloc
+static void TestScratchWarm(const std::string& kHeaderAndFragment)
+{
+	char err[512];
+	// a module rslc mallocs (its room lent already): copied into the scratch,
+	// the same words
+	{
+		const std::span<const uint32_t> w = RslcCompileSpirv(kRectGeometry, RSLC_STAGE_GEOMETRY, true, s_scratch, err, sizeof(err));
+		const std::vector<uint32_t> expect(w.begin(), w.end());
+		// another module in the scratch's room meanwhile
+		RslcCompileSpirv(kHeaderAndFragment, RSLC_STAGE_FRAGMENT, true, s_scratch, err, sizeof(err));
+		const uint32_t heapBefore = s_scratch.heapBlobs;
+		s_scratch.blobLent = true;
+		const std::span<const uint32_t> h = RslcCompileSpirv(kRectGeometry, RSLC_STAGE_GEOMETRY, true, s_scratch, err, sizeof(err));
+		if (s_scratch.heapBlobs != heapBefore + 1 || s_scratch.blobLent || !std::equal(h.begin(), h.end(), expect.begin(), expect.end()))
+		{
+			std::fprintf(stderr, "FAIL: a module from the heap, not the same words\n");
+			s_failures++;
+		}
+	}
+	const size_t arena = s_scratch.arena.size();
+	const uint32_t heapBlobs = s_scratch.heapBlobs;
+	const unsigned long long before = s_allocs;
+	for (int i = 0; i < 50; i++)
+	{
+		if (RslcCompileSpirv(kRectGeometry, RSLC_STAGE_GEOMETRY, true, s_scratch, err, sizeof(err)).empty() ||
+			RslcCompileSpirv(kHeaderAndFragment, RSLC_STAGE_FRAGMENT, true, s_scratch, err, sizeof(err)).empty())
+		{
+			std::fprintf(stderr, "FAIL: a warm scratch compile: %s\n", err);
+			s_failures++;
+			return;
+		}
+	}
+	std::printf("scratch: arena %zu KiB, %llu allocations for 100 warm compiles\n", s_scratch.arena.size() / 1024, s_allocs - before);
+	if ((COUNT_ALLOCS && s_allocs != before) || s_scratch.heapBlobs != heapBlobs || s_scratch.arena.size() != arena)
+	{
+		std::fprintf(stderr, "FAIL: a warm scratch compile allocated\n");
+		s_failures++;
+	}
+	if (arena <= 64 * 1024)
+	{
+		std::fprintf(stderr, "FAIL: the scratch's arena never grew\n");
+		s_failures++;
+	}
+}
+
 int main(int argc, char** argv)
 {
 	if (argc < 2)
@@ -457,6 +552,7 @@ int main(int argc, char** argv)
 	TestCoreShaders(fs::path(argv[0]).parent_path() / "../../src");
 	TestDecompilerShapes();
 	TestGraphicPacks(argv[1]);
+	TestScratchWarm(std::string(kHeader) + kFragment);
 	if (s_failures)
 	{
 		std::printf("shaders_test: %d failure(s)\n", s_failures);

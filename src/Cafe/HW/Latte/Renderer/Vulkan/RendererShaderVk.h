@@ -39,6 +39,9 @@ public:
 	virtual ~RendererShaderVk();
 
 	static void Init();
+	// the calling thread's room for compiling GLSL (RslcScratch), made as it
+	// starts rather than at its first compile
+	static void WarmCompileScratch();
 	static void Shutdown();
 
 	VkShaderModule& GetShaderModule() { return m_shader_module; }

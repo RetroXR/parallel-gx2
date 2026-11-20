@@ -2667,6 +2667,12 @@ src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::C
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::CompileThreadPool_Stop
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::CompileThreadPool_QueueCompilation
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::Compile
+src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp rectsEmulationGS_write
+src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp RectGSHash
+src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp rectsEmulationGS_generate
+src/Cafe/HW/Latte/Renderer/RendererCore.cpp rectsEmulationGS_outputSingleVertex
+src/Cafe/HW/Latte/Renderer/RendererCore.cpp rectsEmulationGS_outputGeneratedVertex
+src/Cafe/HW/Latte/Renderer/RendererCore.cpp rectsEmulationGS_outputVerticesCode
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.cpp VertexBufferStride
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.cpp VulkanPipelineKey_InputAssembly
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.cpp TopologyClass
@@ -3761,6 +3767,11 @@ src/Cafe/HW/Latte/Renderer/OpenGL/OpenGLRenderer.cpp OpenGLRenderer::shader_crea
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.cpp VulkanRenderer::shader_createSPIRV
 src/Cafe/HW/Latte/Renderer/Vulkan/RendererShaderVk.cpp RendererShaderVk::FinishCompilation
 src/Cafe/HW/Latte/Renderer/Vulkan/RendererShaderVk.cpp RendererShaderVk::CreateVkShaderModule
+src/Cafe/HW/Latte/Renderer/Vulkan/RendererShaderVk.cpp RendererShaderVk::CompileInternal
+src/Cafe/HW/Latte/Renderer/Vulkan/RendererShaderVk.cpp RslcScratchOfThread
+src/Cafe/HW/Latte/Renderer/Vulkan/RslcGlsl.h RslcGlslDropMode
+src/Cafe/HW/Latte/Renderer/Vulkan/RslcGlsl.h RslcGlslInto
+src/Cafe/HW/Latte/Renderer/Vulkan/RslcGlsl.h RslcCompileSpirv
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_free
 '
 

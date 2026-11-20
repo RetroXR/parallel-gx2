@@ -59,6 +59,7 @@ public:
 	void CompilerThreadFunc()
 	{
 		SetThreadName("vkShaderComp");
+		RendererShaderVk::WarmCompileScratch();
 		while (true)
 		{
 			ShaderCompileTicket* ticket = s_compilationQueue.pop();
@@ -183,6 +184,19 @@ void RendererShaderVk::FinishCompilation()
 	LatteDecompiler_SPIRVBuffers().Give(m_spirv);
 }
 
+// the calling thread's room for rslc, warmed by the threads that compile as
+// they start (WarmCompileScratch)
+static RslcScratch& RslcScratchOfThread()
+{
+	thread_local RslcScratch scratch;
+	return scratch;
+}
+
+void RendererShaderVk::WarmCompileScratch()
+{
+	RslcScratchOfThread().Warm();
+}
+
 void RendererShaderVk::CompileInternal(bool isRenderThread)
 {
 	// written as SPIR-V by the decompiler: only the module to make
@@ -229,28 +243,16 @@ void RendererShaderVk::CompileInternal(bool isRenderThread)
 		return;
 	}
 
-	const std::string glsl = RslcGlsl(m_glslCode, VulkanRenderer::GetInstance()->HasSPRIVRoundingModeRTE32());
 	char err[512];
-	err[0] = '\0';
-	rslc_opts opts{};
-	opts.dst = RSLC_DST_SPIRV;
-	opts.err = err;
-	opts.err_cap = sizeof(err);
-	struct Result : rslc_result
+	const std::span<const uint32> spirv = RslcCompileSpirv(m_glslCode, stage, VulkanRenderer::GetInstance()->HasSPRIVRoundingModeRTE32(), RslcScratchOfThread(), err, sizeof(err));
+	if (spirv.empty())
 	{
-		const rslc_opts* opts;
-		~Result() { rslc_result_free(this, opts); }
-	} result{};
-	result.opts = &opts;
-	if (!rslc_compile(glsl.data(), glsl.size(), stage, &opts, &result))
-	{
-		cemuLog_log(LogType::Force, fmt::format("GLSL compilation failed for {:016x}_{:016x}: \"{}\"", m_baseHash, m_auxHash, err));
+		cemuLog_log(LogType::Force, "GLSL compilation failed for {:016x}_{:016x}: \"{}\"", m_baseHash, m_auxHash, err);
 		cemuLog_logDebug(LogType::Force, "GLSL source:\n{}", m_glslCode);
 		cemu_assert_debug(false);
 		FinishCompilation();
 		return;
 	}
-	std::span<uint32> spirv((uint32*)result.spirv, result.spirv_len);
 
 	// store in cache, unless it is a modified shader from a gfx pack
 	if (s_spirvCache && m_isGameShader && m_isGfxPackShader == false)
@@ -260,7 +262,7 @@ void RendererShaderVk::CompileInternal(bool isRenderThread)
 		s_spirvCache->AddFile({ h1, h2 }, (const uint8*)spirv.data(), spirv.size_bytes());
 	}
 
-	CreateVkShaderModule(spirv);
+	CreateVkShaderModule(std::span<uint32>((uint32*)spirv.data(), spirv.size()));
 
 	// count compiled shader
 	if (!s_isLoadingShadersVk)
