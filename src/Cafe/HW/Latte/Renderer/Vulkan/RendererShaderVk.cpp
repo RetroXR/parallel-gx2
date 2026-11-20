@@ -139,6 +139,13 @@ void RendererShaderVk::Shutdown()
 	ShaderVkThreadPool.StopThreads();
 }
 
+// cold, out of CreateVkShaderModule: the message is formatted only here
+[[noreturn]] static void ThrowShaderModuleError(VkResult result)
+{
+	cemuLog_log(LogType::Force, "Vulkan: Shader error");
+	throw std::runtime_error(fmt::format("Failed to create shader module: {}", result));
+}
+
 void RendererShaderVk::CreateVkShaderModule(std::span<uint32> spirvBuffer)
 {
 	VkShaderModuleCreateInfo createInfo{};
@@ -152,10 +159,7 @@ void RendererShaderVk::CreateVkShaderModule(std::span<uint32> spirvBuffer)
 
 	VkResult result = vkCreateShaderModule(m_device, &createInfo, nullptr, &m_shader_module);
 	if (result != VK_SUCCESS)
-	{
-		cemuLog_log(LogType::Force, "Vulkan: Shader error");
-		throw std::runtime_error(fmt::format("Failed to create shader module: {}", result));
-	}
+		ThrowShaderModuleError(result);
 
 	// set debug name
 	if (vkr->IsDebugMarkersEnabled())
@@ -165,8 +169,9 @@ void RendererShaderVk::CreateVkShaderModule(std::span<uint32> spirvBuffer)
 		objName.objectType = VK_OBJECT_TYPE_SHADER_MODULE;
 		objName.pNext = nullptr;
 		objName.objectHandle = (uint64_t)m_shader_module;
-		auto objNameStr = fmt::format("shader_{:016x}_{:016x}", m_baseHash, m_auxHash);
-		objName.pObjectName = objNameStr.c_str();
+		char objNameStr[48];
+		snprintf(objNameStr, sizeof(objNameStr), "shader_%016llx_%016llx", (unsigned long long)m_baseHash, (unsigned long long)m_auxHash);
+		objName.pObjectName = objNameStr;
 		vkSetDebugUtilsObjectNameEXT(vkr->GetLogicalDevice(), &objName);
 	}
 }

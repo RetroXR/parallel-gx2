@@ -49,10 +49,11 @@ private:
     static uint64 CalculatePipelineHash(const LatteFetchShader* fetchShader, const LatteDecompilerShader* vertexShader, const LatteDecompilerShader* geometryShader, const LatteDecompilerShader* pixelShader, const class MetalAttachmentsInfo& lastUsedAttachmentsInfo, const class MetalAttachmentsInfo& activeAttachmentsInfo, const LatteContextRegister& lcr);
 
     void AddCurrentStateToCache(uint64 pipelineStateHash, const class MetalAttachmentsInfo& lastUsedAttachmentsInfo);
+    void StartCacheStoreThread();
 
 	// pipeline serialization for file
-	bool SerializePipeline(class MemStreamWriter& memWriter, struct CachedPipeline& cachedPipeline);
-	bool DeserializePipeline(class MemStreamReader& memReader, struct CachedPipeline& cachedPipeline);
+	bool SerializePipeline(class MemStreamWriter& memWriter, struct MetalCachedPipeline& cachedPipeline);
+	bool DeserializePipeline(class MemStreamReader& memReader, struct MetalCachedPipeline& cachedPipeline);
 
     int CompilerThread();
 	template<typename TPred>

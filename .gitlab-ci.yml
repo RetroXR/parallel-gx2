@@ -833,6 +833,24 @@ test-shader-state:
     - make -C test/shader_state clean
     - SANITIZER=thread ./test/shader_state/run_tests.sh
 
+# Fetch shaders parsed: each buffer's attributes together and in order, the
+# limits kept, nothing allocated.
+test-fetch-shader:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: normal
+    GIT_SUBMODULE_PATHS: dependencies/fmt dependencies/glm dependencies/Vulkan-Headers
+    CC: gcc-12
+    CXX: g++-12
+  script:
+    - ./test/fetch_shader/run_tests.sh
+    - make -C test/fetch_shader clean
+    - SANITIZER=address,undefined ./test/fetch_shader/run_tests.sh
+    - make -C test/fetch_shader clean
+    - SANITIZER=thread ./test/fetch_shader/run_tests.sh
+
 test-pin-table:
   stage: test
   image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports

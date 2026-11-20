@@ -18,6 +18,7 @@
 #include "config/ActiveSettings.h"
 
 #include "util/crypto/sha.h"
+#include "util/helpers/PoolNew.h"
 
 static bool g_compilePipelineThreadInit{false};
 // pushed by the GPU thread, taken by every compile thread: no lock
@@ -365,7 +366,10 @@ void MetalPipelineCache::Close()
     }
 }
 
-struct CachedPipeline
+// From a pool (PoolNew.h): a pipeline first seen while a game plays queues
+// its state for the writer without allocating. Named apart from Vulkan's,
+// both being in a Metal build.
+struct MetalCachedPipeline : PoolNew<MetalCachedPipeline, 32>
 {
 	struct ShaderHash
 	{
@@ -397,7 +401,7 @@ void MetalPipelineCache::LoadPipelineFromCache(std::span<uint8> fileData)
 	// cache no longer leak it, and the register file is this thread's own
 	// (LoadGPURegisterStateScratch), where each entry allocated and zeroed
 	// 256 KiB of its own
-	auto cachedPipeline = std::make_unique<CachedPipeline>();
+	auto cachedPipeline = std::make_unique<MetalCachedPipeline>();
 
 	MemStreamReader streamReader(fileData.data(), fileData.size());
 	if (!DeserializePipeline(streamReader, *cachedPipeline))
@@ -478,20 +482,17 @@ void MetalPipelineCache::TakeLoadedPipelines()
 }
 
 // the GPU thread to the cache writer: no lock
-MpmcQueue<CachedPipeline*> g_mtlPipelineCachingQueue;
+MpmcQueue<MetalCachedPipeline*> g_mtlPipelineCachingQueue;
 
 void MetalPipelineCache::AddCurrentStateToCache(uint64 pipelineStateHash, const MetalAttachmentsInfo& lastUsedAttachmentsInfo)
 {
 	if (!m_pipelineCacheStoreThread)
-	{
-		m_pipelineCacheStoreThread = new std::thread(&MetalPipelineCache::WorkerThread, this);
-		m_pipelineCacheStoreThread->detach();
-	}
+		StartCacheStoreThread();
 	// fill job structure with cached GPU state
 	// for each cached pipeline we store:
 	// - Active shaders (referenced by hash)
 	// - An almost-complete register state of the GPU (minus some ALU uniform constants which aren't relevant)
-	CachedPipeline* job = new CachedPipeline();
+	MetalCachedPipeline* job = new MetalCachedPipeline();
 	auto vs = LatteSHRC_GetActiveVertexShader();
 	auto gs = LatteSHRC_GetActiveGeometryShader();
 	auto ps = LatteSHRC_GetActivePixelShader();
@@ -507,7 +508,14 @@ void MetalPipelineCache::AddCurrentStateToCache(uint64 pipelineStateHash, const 
 	g_mtlPipelineCachingQueue.push(job);
 }
 
-bool MetalPipelineCache::SerializePipeline(MemStreamWriter& memWriter, CachedPipeline& cachedPipeline)
+// once, at the first pipeline stored
+void MetalPipelineCache::StartCacheStoreThread()
+{
+	m_pipelineCacheStoreThread = new std::thread(&MetalPipelineCache::WorkerThread, this);
+	m_pipelineCacheStoreThread->detach();
+}
+
+bool MetalPipelineCache::SerializePipeline(MemStreamWriter& memWriter, MetalCachedPipeline& cachedPipeline)
 {
 	memWriter.writeBE<uint8>(0x01); // version
 	uint8 presentMask = 0;
@@ -543,7 +551,7 @@ bool MetalPipelineCache::SerializePipeline(MemStreamWriter& memWriter, CachedPip
 	return true;
 }
 
-bool MetalPipelineCache::DeserializePipeline(MemStreamReader& memReader, CachedPipeline& cachedPipeline)
+bool MetalPipelineCache::DeserializePipeline(MemStreamReader& memReader, MetalCachedPipeline& cachedPipeline)
 {
 	// version
 	if (memReader.readBE<uint8>() != 1)
@@ -607,7 +615,7 @@ void MetalPipelineCache::WorkerThread()
 	SetThreadName("plCacheWriter");
 	while (true)
 	{
-		CachedPipeline* job;
+		MetalCachedPipeline* job;
 		g_mtlPipelineCachingQueue.pop(job);
 		if (!s_cache)
 		{

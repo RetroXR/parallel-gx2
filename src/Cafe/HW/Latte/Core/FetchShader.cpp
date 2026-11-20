@@ -238,10 +238,13 @@ void _fetchShaderDecompiler_parseInstruction_VTX_SEMANTIC(LatteFetchShader* pars
 	// create new group if none found
 	if (attribGroup == nullptr)
 	{
-		if (LatteFetchShader::isValidBufferIndex(bufferIndex))
-			attribGroup = &parsedFetchShader->bufferGroups.emplace_back();
-		else
-			attribGroup = &parsedFetchShader->bufferGroupsInvalid.emplace_back();
+		auto& groups = LatteFetchShader::isValidBufferIndex(bufferIndex) ? parsedFetchShader->bufferGroups : parsedFetchShader->bufferGroupsInvalid;
+		if (groups.size() == groups.capacity())
+		{
+			cemuLog_log(LogType::Force, "Fetch shader: more than {} buffers, buffer {} left out", LatteFetchShader::kMaxGroups, bufferIndex);
+			return;
+		}
+		attribGroup = &groups.emplace_back();
 
 		parsedFetchShader->attributeBufferMask |= (1 << bufferIndex);
 		attribGroup->attributeBufferIndex = bufferIndex;
@@ -249,50 +252,92 @@ void _fetchShaderDecompiler_parseInstruction_VTX_SEMANTIC(LatteFetchShader* pars
 		attribGroup->totalAttribRangeSize = offset;
 	}
 	// add attribute
-	sint32 groupAttribIndex = attribGroup->attribCount;
-	if (attribGroup->attribCount < (groupAttribIndex + 1))
-	{
-		cemu_assert(groupAttribIndex < 127);
-		attribGroup->attribCount = (groupAttribIndex + 1);
-		attribGroup->attrib = (LatteParsedFetchShaderAttribute*)realloc(attribGroup->attrib, sizeof(LatteParsedFetchShaderAttribute) * attribGroup->attribCount);
-	}
-	attribGroup->attrib[groupAttribIndex].semanticId = semanticId;
-	attribGroup->attrib[groupAttribIndex].format = dataFormat;
-	attribGroup->attrib[groupAttribIndex].fetchType = fetchType;
-	attribGroup->attrib[groupAttribIndex].nfa = (uint8)nfa;
-	attribGroup->attrib[groupAttribIndex].isSigned = isSigned;
-	attribGroup->attrib[groupAttribIndex].offset = offset;
-	attribGroup->attrib[groupAttribIndex].ds[0] = (uint8)dsx;
-	attribGroup->attrib[groupAttribIndex].ds[1] = (uint8)dsy;
-	attribGroup->attrib[groupAttribIndex].ds[2] = (uint8)dsz;
-	attribGroup->attrib[groupAttribIndex].ds[3] = (uint8)dsw;
-	attribGroup->attrib[groupAttribIndex].attributeBufferIndex = bufferIndex;
-	attribGroup->attrib[groupAttribIndex].endianSwap = endianSwap;
+	LatteParsedFetchShaderAttribute* attr = parsedFetchShader->AddAttrib(attribGroup);
+	if (!attr)
+		return;
+	attr->semanticId = semanticId;
+	attr->format = dataFormat;
+	attr->fetchType = fetchType;
+	attr->nfa = (uint8)nfa;
+	attr->isSigned = isSigned;
+	attr->offset = offset;
+	attr->ds[0] = (uint8)dsx;
+	attr->ds[1] = (uint8)dsy;
+	attr->ds[2] = (uint8)dsz;
+	attr->ds[3] = (uint8)dsw;
+	attr->attributeBufferIndex = bufferIndex;
+	attr->endianSwap = endianSwap;
 	attribGroup->minOffset = (std::min)(attribGroup->minOffset, offset);
 	attribGroup->totalAttribRangeSize = (std::max)(attribGroup->totalAttribRangeSize, offsetAfterAttrib);
 	// get alu divisor
 	if (srcSelX == LatteClauseInstruction_VTX::SRC_SEL::SEL_X)
 	{
 		cemu_assert_debug(fetchType != LatteConst::VertexFetchType2::INSTANCE_DATA); // aluDivisor 0 in combination with instanced data is not allowed?
-		attribGroup->attrib[groupAttribIndex].aluDivisor = -1;
+		attr->aluDivisor = -1;
 	}
 	else if (srcSelX == LatteClauseInstruction_VTX::SRC_SEL::SEL_W)
 	{
 		cemu_assert_debug(fetchType == LatteConst::VertexFetchType2::INSTANCE_DATA); // using constant divisor 1 with per-vertex data seems strange? (divisor is instance-only)
 		// aluDivisor is constant 1
-		attribGroup->attrib[groupAttribIndex].aluDivisor = 1;
+		attr->aluDivisor = 1;
 	}
 	else if (srcSelX == LatteClauseInstruction_VTX::SRC_SEL::SEL_Y)
 	{
 		// use alu divisor 1
-		attribGroup->attrib[groupAttribIndex].aluDivisor = (sint32)contextRegister[Latte::REGADDR::VGT_INSTANCE_STEP_RATE_0];
-		cemu_assert_debug(attribGroup->attrib[groupAttribIndex].aluDivisor > 0);
+		attr->aluDivisor = (sint32)contextRegister[Latte::REGADDR::VGT_INSTANCE_STEP_RATE_0];
+		cemu_assert_debug(attr->aluDivisor > 0);
 	}
 	else if (srcSelX == LatteClauseInstruction_VTX::SRC_SEL::SEL_Z)
 	{
 		// use alu divisor 2
-		attribGroup->attrib[groupAttribIndex].aluDivisor = (sint32)contextRegister[Latte::REGADDR::VGT_INSTANCE_STEP_RATE_1];
-		cemu_assert_debug(attribGroup->attrib[groupAttribIndex].aluDivisor > 0);
+		attr->aluDivisor = (sint32)contextRegister[Latte::REGADDR::VGT_INSTANCE_STEP_RATE_1];
+		cemu_assert_debug(attr->aluDivisor > 0);
+	}
+}
+
+LatteParsedFetchShaderAttribute* LatteFetchShader::AddAttrib(LatteParsedFetchShaderBufferGroup* group)
+{
+	if (m_attribCount >= kMaxAttribs || group->attribCount >= 127)
+	{
+		cemuLog_log(LogType::Force, "Fetch shader: more than {} attributes, the rest left out", kMaxAttribs);
+		return nullptr;
+	}
+	const bool valid = group >= bufferGroups.data() && group < bufferGroups.data() + bufferGroups.size();
+	m_attribGroup[m_attribCount] = (uint8)(valid ? group - bufferGroups.data() : kMaxGroups + (group - bufferGroupsInvalid.data()));
+	group->attribCount++;
+	LatteParsedFetchShaderAttribute* attr = &m_attribs[m_attribCount++];
+	*attr = {};
+	return attr;
+}
+
+void LatteFetchShader::FinishAttribs()
+{
+	// each group's attributes together, in the order they were parsed: the
+	// valid groups' first, then the invalid ones' (their tags' order), sorted
+	// in place
+	for (uint32 i = 1; i < m_attribCount; i++)
+	{
+		const LatteParsedFetchShaderAttribute attr = m_attribs[i];
+		const uint8 tag = m_attribGroup[i];
+		uint32 j = i;
+		for (; j > 0 && m_attribGroup[j - 1] > tag; j--)
+		{
+			m_attribs[j] = m_attribs[j - 1];
+			m_attribGroup[j] = m_attribGroup[j - 1];
+		}
+		m_attribs[j] = attr;
+		m_attribGroup[j] = tag;
+	}
+	uint32 n = 0;
+	for (auto& group : bufferGroups)
+	{
+		group.attrib = m_attribs + n;
+		n += group.attribCount;
+	}
+	for (auto& group : bufferGroupsInvalid)
+	{
+		group.attrib = m_attribs + n;
+		n += group.attribCount;
 	}
 }
 
@@ -378,7 +423,6 @@ LatteFetchShader* LatteShaderRecompiler_createFetchShader(LatteFetchShader::Cach
 	//			{0x00000002, 0x01800400, 0x00000000, 0x8a000000, 0x0000a001, 0x2c151000, 0x00020000, ...}
 
 	// for ALU instructions everything except the 01 is dynamic
-	newFetchShader->bufferGroups.reserve(16);
 	if (fsProgramSize == 0)
 	{
 		// empty fetch shader, seen in Minecraft
@@ -418,7 +462,7 @@ LatteFetchShader* LatteShaderRecompiler_createFetchShader(LatteFetchShader::Cach
 			}
 		}
 	}
-	newFetchShader->bufferGroups.shrink_to_fit();
+	newFetchShader->FinishAttribs();
 	// calculate group information
 	cemu_assert(newFetchShader->bufferGroups.size() <= Latte::GPU_LIMITS::NUM_VERTEX_BUFFERS);
 	for (auto& bufferGroup : newFetchShader->bufferGroups)

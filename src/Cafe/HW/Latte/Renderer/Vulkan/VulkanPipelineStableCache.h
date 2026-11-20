@@ -3,6 +3,7 @@
 #include "util/helpers/FixedQueue.h"
 #include "util/helpers/MpmcQueue.h"
 #include "util/helpers/RecycledBuffers.h"
+#include "util/helpers/U64Table.h"
 
 struct VulkanPipelineHash
 {
@@ -26,15 +27,6 @@ class VulkanPipelineStableCache
 		{
 			return h0 == r.h0 && h1 == r.h1;
 		}
-
-		struct HashFunc 
-		{
-			size_t operator()(const PipelineHash& v) const
-			{
-				static_assert(sizeof(uint64) == sizeof(size_t));
-				return v.h0 ^ v.h1;
-			}
-		};
 	};
 
 public:
@@ -72,7 +64,12 @@ private:
 	std::vector<std::thread> m_compilerThreads;
 	std::atomic_bool m_stopCacheStoreThread{ false };
 
-	std::unordered_set<PipelineHash, PipelineHash::HashFunc> m_pipelineIsCached;
+	// the pipelines in the cache file or queued for it, by CachedKey: the GPU
+	// thread's alone, sized at BeginLoading
+	U64Table<char> m_pipelineIsCached;
+	static uint64 CachedKey(uint64 baseHash, uint64 pipelineStateHash);
+	void MarkCached(uint64 baseHash, uint64 pipelineStateHash);
+	void StartCacheStoreThread();
 	FixedList<PipelineHash, 4096> m_pipelinesLoaded; // from the compile threads, see TakeLoadedHashes
 	void TakeLoadedHashes();
 	class FileCache* s_cache;

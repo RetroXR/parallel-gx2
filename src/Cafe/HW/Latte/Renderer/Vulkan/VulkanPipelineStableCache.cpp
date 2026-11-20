@@ -15,6 +15,7 @@
 #include "util/crypto/sha.h"
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/HW/Latte/Core/LatteGpuWake.h"
+#include "util/helpers/PoolNew.h"
 
 struct
 {
@@ -84,6 +85,9 @@ uint32 VulkanPipelineStableCache::BeginLoading(uint64 cacheTitleId)
 		s_cache->UseCompression(false);
 		g_vkCacheState.pipelineMaxFileIndex = s_cache->GetMaximumFileIndex();
 	}
+	// room for every pipeline in the file and as many again new ones before
+	// the table grows
+	m_pipelineIsCached.Reserve((size_t)(s_cache->GetFileCount() + 4096) * 2);
 	return s_cache->GetFileCount();
 }
 
@@ -195,7 +199,7 @@ void VulkanPipelineStableCache::Close()
 	// going away. Kept across titles, the next one believes its pipelines are
 	// already accounted for and never writes them again.
 	TakeLoadedHashes();
-	m_pipelineIsCached.clear();
+	m_pipelineIsCached.Clear();
 	// The cache file is deliberately not freed here: retro_unload_game does it
 	// once the GPU thread is gone (ReleaseCacheFile), or else BeginLoading for
 	// the next title. See the note there.
@@ -221,7 +225,9 @@ bool VulkanPipelineStableCache::ReleaseCacheFile()
 }
 
 
-struct CachedPipeline
+// From a pool (PoolNew.h): a pipeline first seen while a game plays queues
+// its state for the writer without allocating
+struct CachedPipeline : PoolNew<CachedPipeline, 32>
 {
 	struct ShaderHash
 	{
@@ -387,14 +393,34 @@ void VulkanPipelineStableCache::LoadPipelineFromCache(std::span<uint8> fileData)
 // hand it what they loaded through a FixedList instead of a lock on it
 void VulkanPipelineStableCache::TakeLoadedHashes()
 {
-	m_pipelinesLoaded.TakeAll([this](PipelineHash&& hash) { m_pipelineIsCached.emplace(hash); });
+	m_pipelinesLoaded.TakeAll([this](PipelineHash&& hash) { MarkCached(hash.h0, hash.h1); });
 }
 
 bool VulkanPipelineStableCache::HasPipelineCached(uint64 baseHash, uint64 pipelineStateHash)
 {
 	TakeLoadedHashes();
-	PipelineHash ph(baseHash, pipelineStateHash);
-	return m_pipelineIsCached.find(ph) != m_pipelineIsCached.end();
+	return m_pipelineIsCached.Find(CachedKey(baseHash, pipelineStateHash)) != nullptr;
+}
+
+// The state hash has the vertex shader's in it already (the renderer's own
+// pipeline table goes by it alone); the base hash mixed in as well
+uint64 VulkanPipelineStableCache::CachedKey(uint64 baseHash, uint64 pipelineStateHash)
+{
+	return pipelineStateHash ^ (baseHash * 0x9E3779B97F4A7C15ull);
+}
+
+void VulkanPipelineStableCache::MarkCached(uint64 baseHash, uint64 pipelineStateHash)
+{
+	static char s_cached;
+	m_pipelineIsCached.Put(CachedKey(baseHash, pipelineStateHash), &s_cached);
+}
+
+// once, at the first pipeline stored
+void VulkanPipelineStableCache::StartCacheStoreThread()
+{
+	// Not detached, for the reason in the header: Close() joins it.
+	m_stopCacheStoreThread = false;
+	m_pipelineCacheStoreThread = new std::thread(&VulkanPipelineStableCache::WorkerThread, this);
 }
 
 // pushed by the GPU thread and Close, taken by the one writer thread: no lock
@@ -402,13 +428,9 @@ FixedQueue<CachedPipeline*, 4096> g_pipelineCachingQueue;
 
 void VulkanPipelineStableCache::AddCurrentStateToCache(uint64 baseHash, uint64 pipelineStateHash)
 {
-	m_pipelineIsCached.emplace(baseHash, pipelineStateHash);
+	MarkCached(baseHash, pipelineStateHash);
 	if (!m_pipelineCacheStoreThread)
-	{
-		// Not detached, for the reason in the header: Close() joins it.
-		m_stopCacheStoreThread = false;
-		m_pipelineCacheStoreThread = new std::thread(&VulkanPipelineStableCache::WorkerThread, this);
-	}
+		StartCacheStoreThread();
 	// fill job structure with cached GPU state
 	// for each cached pipeline we store:
 	// - Active shaders (referenced by hash)

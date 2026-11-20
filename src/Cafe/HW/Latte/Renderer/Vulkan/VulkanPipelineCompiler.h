@@ -141,6 +141,7 @@ public:
 
 private:
 	bool CompileFromLibraries(const VkGraphicsPipelineCreateInfo& full, bool forceCompile, bool isRenderThread);
+	void LogCompileFailure(VkResult result, sint32 topology);
 public:
 
 };

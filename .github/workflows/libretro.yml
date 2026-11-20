@@ -627,6 +627,16 @@ jobs:
           SANITIZER=address,undefined ./test/shader_state/run_tests.sh
           make -C test/shader_state clean
           SANITIZER=thread ./test/shader_state/run_tests.sh
+      - name: "Fetch shaders"
+        # fetch shaders parsed from programs fetching from several buffers in
+        # turn: each buffer's attributes together and in order, the limits
+        # kept, nothing allocated; plain, under ASan + UBSan and under TSan
+        run: |
+          ./test/fetch_shader/run_tests.sh
+          make -C test/fetch_shader clean
+          SANITIZER=address,undefined ./test/fetch_shader/run_tests.sh
+          make -C test/fetch_shader clean
+          SANITIZER=thread ./test/fetch_shader/run_tests.sh
       - name: "Pinned objects"
         # the H.264 decoder sessions' table: held, put back, released once;
         # plain, under ASan + UBSan and under TSan

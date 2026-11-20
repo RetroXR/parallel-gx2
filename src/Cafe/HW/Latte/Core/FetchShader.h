@@ -1,5 +1,7 @@
 #pragma once
 #include "Cafe/HW/Latte/Core/LatteConst.h"
+#include "util/helpers/PoolNew.h"
+#include <boost/container/static_vector.hpp>
 
 struct LatteParsedFetchShaderAttribute
 {
@@ -23,19 +25,42 @@ struct LatteParsedFetchShaderBufferGroup
 	bool hasInstanceIndexAccess : 1;
 	uint32 minOffset{};
 	uint32 totalAttribRangeSize{}; // max attribOffset+attribSize
-	LatteParsedFetchShaderAttribute* attrib{}; // attributes for this buffer
+	LatteParsedFetchShaderAttribute* attrib{}; // attributes for this buffer, in its fetch shader's m_attribs
 
 	uint32 getCurrentBufferStride(uint32* contextRegister) const;
 };
 
-struct LatteFetchShader
+// from a pool (PoolNew.h), its groups and attributes in place: a fetch
+// shader first seen while a game plays allocates nothing
+struct LatteFetchShader : PoolNew<LatteFetchShader>
 {
 	using CacheHash = uint64;
 
+	// attributes a fetch shader may fetch, of every buffer together
+	static constexpr size_t kMaxAttribs = 128;
+	// groups of each kind: one a vertex buffer (the invalid ones' indices
+	// past the 16 valid, as many again)
+	static constexpr size_t kMaxGroups = 16;
+
+	LatteFetchShader() = default;
+	// its groups point into its own m_attribs
+	LatteFetchShader(const LatteFetchShader&) = delete;
+	LatteFetchShader& operator=(const LatteFetchShader&) = delete;
 	~LatteFetchShader();
 
-	std::vector<LatteParsedFetchShaderBufferGroup> bufferGroups;
-	std::vector<LatteParsedFetchShaderBufferGroup> bufferGroupsInvalid; // groups with buffer index not being a valid buffer (dst components of these can affect shader code, but no actual vertex imports are done)
+	boost::container::static_vector<LatteParsedFetchShaderBufferGroup, kMaxGroups> bufferGroups;
+	boost::container::static_vector<LatteParsedFetchShaderBufferGroup, kMaxGroups> bufferGroupsInvalid; // groups with buffer index not being a valid buffer (dst components of these can affect shader code, but no actual vertex imports are done)
+	// the groups' attributes, each group's together (FinishAttribs)
+	LatteParsedFetchShaderAttribute m_attribs[kMaxAttribs];
+	uint32 m_attribCount{};
+	// while parsing, each attribute's group: its index, the invalid ones' after
+	// the valid ones' (kMaxGroups on)
+	uint8 m_attribGroup[kMaxAttribs];
+
+	// an attribute for the group, in parse order (nullptr past kMaxAttribs)
+	LatteParsedFetchShaderAttribute* AddAttrib(LatteParsedFetchShaderBufferGroup* group);
+	// the attributes put in each group's order and its attrib pointed at them
+	void FinishAttribs();
 
 	uint64 key{};
 	uint32 attributeBufferMask{}; // mask of buffers sourced by this fetch shader

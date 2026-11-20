@@ -2166,6 +2166,10 @@ src/Cafe/HW/Latte/Core/FetchShader.cpp _getFSProgramSize
 src/Cafe/HW/Latte/Core/FetchShader.cpp LatteFetchShader::FindByGPUState
 src/Cafe/HW/Latte/Core/FetchShader.cpp LatteFetchShader::RegisterInCache
 src/Cafe/HW/Latte/Core/FetchShader.cpp LatteFetchShader::UnregisterInCache
+src/Cafe/HW/Latte/Core/FetchShader.cpp _fetchShaderDecompiler_parseInstruction_VTX_SEMANTIC
+src/Cafe/HW/Latte/Core/FetchShader.cpp LatteFetchShader::AddAttrib
+src/Cafe/HW/Latte/Core/FetchShader.cpp LatteFetchShader::FinishAttribs
+src/Cafe/HW/Latte/Core/FetchShader.cpp LatteShaderRecompiler_createFetchShader
 src/Cafe/HW/Latte/Core/LatteAsyncCommands.cpp LatteAsyncCommand_queueTextureCopy
 src/Cafe/HW/Latte/Core/LatteAsyncCommands.cpp LatteAsyncCommands_waitUntilAllProcessed
 src/Cafe/HW/Latte/Core/LatteAsyncCommands.cpp LatteAsyncCommands_isEmpty
@@ -2662,6 +2666,7 @@ src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp compilePipeline_thr
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::CompileThreadPool_Start
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::CompileThreadPool_Stop
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::CompileThreadPool_QueueCompilation
+src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::Compile
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.cpp VertexBufferStride
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.cpp VulkanPipelineKey_InputAssembly
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.cpp TopologyClass
@@ -2706,6 +2711,9 @@ src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.cpp __getDepthBuffer
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.cpp __CreateTemporaryRenderPass
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.cpp VulkanPipelineStableCache::TakeLoadedHashes
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.cpp VulkanPipelineStableCache::HasPipelineCached
+src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.cpp VulkanPipelineStableCache::CachedKey
+src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.cpp VulkanPipelineStableCache::MarkCached
+src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.cpp VulkanPipelineStableCache::AddCurrentStateToCache
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.cpp VulkanPipelineStableCache::SerializePipeline
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.cpp VulkanPipelineStableCache::DeserializePipeline
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.cpp VulkanPipelineStableCache::WaitForCompileProgress
@@ -3748,6 +3756,7 @@ src/Cafe/HW/Latte/Core/LatteShader.cpp InitUniformLayoutFromDecompiler
 src/Cafe/HW/Latte/Renderer/OpenGL/OpenGLRenderer.cpp OpenGLRenderer::shader_create
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.cpp VulkanRenderer::shader_createSPIRV
 src/Cafe/HW/Latte/Renderer/Vulkan/RendererShaderVk.cpp RendererShaderVk::FinishCompilation
+src/Cafe/HW/Latte/Renderer/Vulkan/RendererShaderVk.cpp RendererShaderVk::CreateVkShaderModule
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_free
 '
 
