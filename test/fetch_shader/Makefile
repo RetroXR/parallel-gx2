@@ -7,7 +7,7 @@ LRC := $(DEP)/libretro-common
 CXX ?= g++
 CC ?= gcc
 FLAGS := -O1 -g -I$(SRC) -I$(SRC)/Cafe -I$(LRC)/include -I$(DEP)/Vulkan-Headers/include -DVK_NO_PROTOTYPES -DENABLE_VULKAN -DHAVE_THREADS
-CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include -I$(DEP)/glm \
+CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include \
 	-include $(SRC)/Common/precompiled.h
 ifneq ($(SANITIZER),)
    # vptr checks want the renderer's typeinfo, which is not linked here

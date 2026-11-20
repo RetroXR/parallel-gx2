@@ -86,8 +86,6 @@
 #include <boost/predef.h>
 #include <boost/nowide/convert.hpp>
 #include <boost/algorithm/string.hpp>
-#include <glm/glm.hpp>
-#include <glm/gtc/quaternion.hpp>
 
 namespace fs = std::filesystem;
 

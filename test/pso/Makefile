@@ -12,7 +12,7 @@ FLAGS := -O2 -g -DHAVE_THREADS -DFILECACHE_COUNT_PROBES -DRSLC_EXTENDED -DRSLC_N
 # the Vulkan pipeline key the replayed draws are counted with
 FLAGS += -I$(DEP)/Vulkan-Headers/include -DVK_NO_PROTOTYPES -DENABLE_VULKAN
 # what the core's precompiled header, which the file cache takes, wants
-CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include -I$(DEP)/glm \
+CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include \
 	-include $(SRC)/Common/precompiled.h
 # malloc counted alongside operator new
 LIBS := -lpthread -lm -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc

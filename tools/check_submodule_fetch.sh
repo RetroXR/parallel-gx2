@@ -1,7 +1,7 @@
 #!/bin/sh
 # Fails if a checkout without its git submodules (a clone without
 # --recursive) does not get them from its first make, which otherwise stops
-# at the first header it cannot find (glm/glm.hpp, in the precompiled
+# at the first header it cannot find (fmt/core.h, in the precompiled
 # header). Checks a clone of this checkout's HEAD made without them.
 cd "$(dirname "$0")/.." || exit 2
 tmp=$(mktemp -d) || exit 2
@@ -9,13 +9,13 @@ trap 'rm -rf "$tmp"' EXIT
 git clone -q --no-recurse-submodules . "$tmp/core" || exit 2
 # the submodules' own URLs, not this clone's path
 git -C "$tmp/core" config -f .gitmodules --get-regexp '\.url$' >/dev/null || exit 2
-if [ -e "$tmp/core/dependencies/glm/glm/glm.hpp" ]; then
+if [ -e "$tmp/core/dependencies/fmt/include/fmt/core.h" ]; then
 	echo "the clone already has its submodules"
 	exit 2
 fi
 make -C "$tmp/core" -n OBJ_DIR="$tmp/obj" >/dev/null 2>"$tmp/err"
 status=0
-for f in dependencies/glm/glm/glm.hpp dependencies/fmt/include/fmt/core.h \
+for f in dependencies/fmt/include/fmt/core.h \
 	dependencies/Vulkan-Headers/include/vulkan/vulkan.h; do
 	if [ ! -e "$tmp/core/$f" ]; then
 		echo "not fetched: $f"

@@ -5,7 +5,7 @@ SRC := ../../src
 DEP := ../../dependencies
 LRC := $(DEP)/libretro-common
 CXX ?= g++
-FLAGS := -O1 -g -I$(SRC) -I$(SRC)/Cafe -I$(LRC)/include -I$(DEP)/boost-compat -I$(DEP)/fmt/include -I$(DEP)/glm \
+FLAGS := -O1 -g -I$(SRC) -I$(SRC)/Cafe -I$(LRC)/include -I$(DEP)/boost-compat -I$(DEP)/fmt/include \
 	-include $(SRC)/Common/precompiled.h
 ifneq ($(SANITIZER),)
    FLAGS += -fsanitize=$(SANITIZER) -fno-sanitize=vptr -fno-omit-frame-pointer

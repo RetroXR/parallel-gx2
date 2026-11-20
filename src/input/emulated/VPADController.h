@@ -65,9 +65,9 @@ public:
 
 	uint32 get_emulated_button_flag(uint32 id) const override;
 
-	glm::vec2 get_axis() const override;
-	glm::vec2 get_rotation() const override;
-	glm::vec2 get_trigger() const override;
+	Vector2<float> get_axis() const override;
+	Vector2<float> get_rotation() const override;
+	Vector2<float> get_trigger() const override;
 
 	bool is_mic_active() { return m_mic_active; }
 	bool is_screen_active() { return m_screen_active; }
@@ -111,5 +111,5 @@ private:
 
 	void update_touch(VPADStatus_t& status);
 	void update_motion(VPADStatus_t& status);
-	glm::ivec2 m_last_touch_position{};
+	Vector2<sint32> m_last_touch_position{};
 };

@@ -13,7 +13,7 @@ HOSTCC ?= cc
 # FILECACHE_TEST_HOOKS: a reader held between finding an entry and reading it
 FLAGS := -O1 -g -DHAVE_THREADS -DFILECACHE_TEST_HOOKS -I$(SRC) -I$(SRC)/Common -I$(SRC)/Cafe -I$(SRC)/util -I$(LRC)/include
 # what the core's precompiled header, which the serializers take, wants
-CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include -I$(DEP)/glm \
+CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include \
 	-include $(SRC)/Common/precompiled.h
 ifneq ($(SANITIZER),)
    FLAGS += -fsanitize=$(SANITIZER) -fno-omit-frame-pointer

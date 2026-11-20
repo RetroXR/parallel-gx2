@@ -8,7 +8,7 @@ CXX ?= g++
 CC ?= gcc
 FLAGS := -O1 -g -I$(SRC) -I$(LRC)/include -I$(DEP)/Vulkan-Headers/include -DENABLE_VULKAN -DVK_NO_PROTOTYPES -DRSLC_EXTENDED -DRSLC_NO_TEXT -DHAVE_THREADS
 # what the core's precompiled header wants
-CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include -I$(DEP)/glm -DFMT_HEADER_ONLY \
+CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include -DFMT_HEADER_ONLY \
 	-include $(SRC)/Common/precompiled.h
 ifneq ($(SANITIZER),)
    FLAGS += -fsanitize=$(SANITIZER) -fno-omit-frame-pointer

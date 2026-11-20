@@ -7,7 +7,7 @@ LRC := $(DEP)/libretro-common
 CXX ?= g++
 CC ?= gcc
 FLAGS := -O1 -g -I$(SRC) -I$(LRC)/include -I$(DEP)/Vulkan-Headers/include -DVK_NO_PROTOTYPES -DENABLE_VULKAN
-CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include -I$(DEP)/glm -DFMT_HEADER_ONLY \
+CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include -DFMT_HEADER_ONLY \
 	-include $(SRC)/Common/precompiled.h
 ifneq ($(SANITIZER),)
    FLAGS += -fsanitize=$(SANITIZER) -fno-omit-frame-pointer

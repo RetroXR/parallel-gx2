@@ -89,7 +89,7 @@ std::string_view ClassicController::get_button_name(ButtonId id)
 	}
 }
 
-glm::vec2 ClassicController::get_axis() const
+Vector2<float> ClassicController::get_axis() const
 {
 	const auto left = get_axis_value(kButtonId_StickL_Left);
 	const auto right = get_axis_value(kButtonId_StickL_Right);
@@ -97,13 +97,20 @@ glm::vec2 ClassicController::get_axis() const
 	const auto up = get_axis_value(kButtonId_StickL_Up);
 	const auto down = get_axis_value(kButtonId_StickL_Down);
 
-	glm::vec2 result;
-	result.x = (left > right) ? -left : right;
-	result.y = (up > down) ? up : -down;
-	return length(result) > 1.0f ? normalize(result) : result;
+	float x = (left > right) ? -left : right;
+	float y = (up > down) ? up : -down;
+	// at most of length 1: the square root only past it
+	const float lengthSq = x * x + y * y;
+	if (lengthSq > 1.0f)
+	{
+		const float inv = 1.0f / sqrtf(lengthSq);
+		x *= inv;
+		y *= inv;
+	}
+	return { x, y };
 }
 
-glm::vec2 ClassicController::get_rotation() const
+Vector2<float> ClassicController::get_rotation() const
 {
 	const auto left = get_axis_value(kButtonId_StickR_Left);
 	const auto right = get_axis_value(kButtonId_StickR_Right);
@@ -111,13 +118,20 @@ glm::vec2 ClassicController::get_rotation() const
 	const auto up = get_axis_value(kButtonId_StickR_Up);
 	const auto down = get_axis_value(kButtonId_StickR_Down);
 
-	glm::vec2 result;
-	result.x = (left > right) ? -left : right;
-	result.y = (up > down) ? up : -down;
-	return length(result) > 1.0f ? normalize(result) : result;
+	float x = (left > right) ? -left : right;
+	float y = (up > down) ? up : -down;
+	// at most of length 1: the square root only past it
+	const float lengthSq = x * x + y * y;
+	if (lengthSq > 1.0f)
+	{
+		const float inv = 1.0f / sqrtf(lengthSq);
+		x *= inv;
+		y *= inv;
+	}
+	return { x, y };
 }
 
-glm::vec2 ClassicController::get_trigger() const
+Vector2<float> ClassicController::get_trigger() const
 {
 	const auto left = get_axis_value(kButtonId_ZL);
 	const auto right = get_axis_value(kButtonId_ZR);

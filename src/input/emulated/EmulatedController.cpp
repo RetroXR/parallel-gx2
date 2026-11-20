@@ -162,7 +162,7 @@ bool EmulatedController::has_position() const
 	return std::any_of(state->controllers.cbegin(), state->controllers.cend(), [](const auto& c) {return c->has_position(); });
 }
 
-glm::vec2 EmulatedController::get_position() const
+Vector2<float> EmulatedController::get_position() const
 {
 	const auto state = m_state.Read();
 	for (const auto& controller : state->controllers)
@@ -174,7 +174,24 @@ glm::vec2 EmulatedController::get_position() const
 	return {};
 }
 
-glm::vec2 EmulatedController::get_prev_position() const
+// both from the one controller, with one read of the list
+void EmulatedController::get_positions(Vector2<float>& position, Vector2<float>& prev) const
+{
+	const auto state = m_state.Read();
+	for (const auto& controller : state->controllers)
+	{
+		if (controller->has_position())
+		{
+			position = controller->get_position();
+			prev = controller->get_prev_position();
+			return;
+		}
+	}
+	position = Vector2<float>();
+	prev = Vector2<float>();
+}
+
+Vector2<float> EmulatedController::get_prev_position() const
 {
 	const auto state = m_state.Read();
 	for (const auto& controller : state->controllers)

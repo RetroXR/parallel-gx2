@@ -7,7 +7,7 @@ ControllerBase::ControllerBase(std::string_view uuid, std::string_view display_n
 {
 }
 
-inline void apply_axis_button(ControllerButtonState& buttons, const glm::vec2& axis, int flag)
+inline void apply_axis_button(ControllerButtonState& buttons, const Vector2<float>& axis, int flag)
 {
 	if (axis.x < -ControllerState::kAxisThreshold)
 		buttons.SetButtonState(flag + (kAxisXN - kAxisXP), true);
@@ -68,52 +68,61 @@ const ControllerState& ControllerBase::update_state()
 	return m_last_state;
 }
 
-void ControllerBase::apply_axis_setting(glm::vec2& axis, const glm::vec2& default_value,
+void ControllerBase::apply_axis_setting(Vector2<float>& axis, const Vector2<float>& default_value,
                                         const AxisSetting& setting) const
 {
 	constexpr float kMaxValue = 1.0f + ControllerState::kMinAxisValue;
-	if (setting.deadzone < 1.0f)
+	const float deadzone = setting.deadzone;
+	if (deadzone < 1.0f)
 	{
-		if (axis.x < default_value.x)
-			axis.x = (axis.x - default_value.x) / (kMaxValue + default_value.x);
-		else
-			axis.x = (axis.x - default_value.x) / (kMaxValue - default_value.x);
+		float x = axis.x - default_value.x;
+		float y = axis.y - default_value.y;
+		x /= (axis.x < default_value.x) ? (kMaxValue + default_value.x) : (kMaxValue - default_value.x);
+		y /= (axis.y < default_value.y) ? (kMaxValue + default_value.y) : (kMaxValue - default_value.y);
 
-		if (axis.y < default_value.y)
-			axis.y = (axis.y - default_value.y) / (kMaxValue + default_value.y);
-		else
-			axis.y = (axis.y - default_value.y) / (kMaxValue - default_value.y);
-
-		auto len = length(axis);
-		if (len >= setting.deadzone)
+		// past the dead zone: its length against it squared, no square root
+		if (deadzone <= 0.0f || x * x + y * y >= deadzone * deadzone)
 		{
-			axis *= setting.range;
-			len = length(axis);
+			x *= setting.range;
+			y *= setting.range;
+			const float lengthSq = x * x + y * y;
 
-			// Scaled Radial Dead Zone: stickInput = stickInput.normalized * ((stickInput.magnitude - deadzone) / (1 - deadzone));
-			if (len > 0)
+			// Scaled Radial Dead Zone: stickInput = stickInput.normalized * ((stickInput.magnitude - deadzone) / (1 - deadzone)),
+			// at most of length 1: one factor for both components, from one
+			// square root and one division
+			if (lengthSq > 0)
 			{
-				axis = normalize(axis);
-				axis *= ((len - setting.deadzone) / (kMaxValue - setting.deadzone));
-
-				if (length(axis) > 1.0f)
-					axis = normalize(axis);
+				const float len = sqrtf(lengthSq);
+				const float over = len - deadzone;
+				const float span = kMaxValue - deadzone; // > 0, the dead zone under 1
+				float scale;
+				if (over > span)
+					scale = 1.0f / len;
+				else if (over < -span)
+					scale = -1.0f / len;
+				else
+					scale = over / (span * len);
+				x *= scale;
+				y *= scale;
 			}
 
-			if (axis.x != 0 || axis.y != 0)
+			if (x != 0 || y != 0)
 			{
-				if (std::abs(axis.x) < ControllerState::kMinAxisValue)
-					axis.x = ControllerState::kMinAxisValue;
+				if (fabsf(x) < ControllerState::kMinAxisValue)
+					x = ControllerState::kMinAxisValue;
 
-				if (std::abs(axis.y) < ControllerState::kMinAxisValue)
-					axis.y = ControllerState::kMinAxisValue;
+				if (fabsf(y) < ControllerState::kMinAxisValue)
+					y = ControllerState::kMinAxisValue;
 			}
 
+			axis.x = x;
+			axis.y = y;
 			return;
 		}
 	}
 
-	axis = {0, 0};
+	axis.x = 0;
+	axis.y = 0;
 }
 
 bool ControllerBase::operator==(const ControllerBase& c) const

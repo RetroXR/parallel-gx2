@@ -52,9 +52,9 @@ public:
 
 	bool set_default_mapping(const std::shared_ptr<ControllerBase>& controller) override;
 
-	glm::vec2 get_axis() const override;
-	glm::vec2 get_rotation() const override;
-	glm::vec2 get_trigger() const override;
+	Vector2<float> get_axis() const override;
+	Vector2<float> get_rotation() const override;
+	Vector2<float> get_trigger() const override;
 
 	void load(const xml::Node& node) override;
 	void save(xml::Node& node) override;

@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-#include <glm/vec2.hpp>
+#include "util/math/vector2.h"
 #include <array>
 #include <span>
 #include <vector>
@@ -91,9 +91,9 @@ struct ControllerState
 	constexpr static float kMinAxisValue = 0.0000001f;
 
 	// [-1; 1]
-	glm::vec2 axis{ };
-	glm::vec2 rotation{ };
-	glm::vec2 trigger{ };
+	Vector2<float> axis{ };
+	Vector2<float> rotation{ };
+	Vector2<float> trigger{ };
 
 	ControllerButtonState buttons{};
 

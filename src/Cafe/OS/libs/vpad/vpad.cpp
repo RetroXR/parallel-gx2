@@ -319,23 +319,23 @@ namespace vpad
 			MotionSample motion;
 			if (libretro_get_gamepad_motion(motion))
 			{
-				glm::vec3 acc;
-				motion.getVPADAccelerometer(&acc[0]);
-				status->acc.x = acc.x;
-				status->acc.y = acc.y;
-				status->acc.z = acc.z;
+				float acc[3];
+				motion.getVPADAccelerometer(acc);
+				status->acc.x = acc[0];
+				status->acc.y = acc[1];
+				status->acc.z = acc[2];
 				status->accMagnitude = motion.getVPADAccMagnitude();
 				status->accAcceleration = motion.getVPADAccAcceleration();
-				glm::vec3 gyroChange;
-				motion.getVPADGyroChange(&gyroChange[0]);
-				status->gyroChange.x = gyroChange.x;
-				status->gyroChange.y = gyroChange.y;
-				status->gyroChange.z = gyroChange.z;
-				glm::vec3 gyroOrientation;
-				motion.getVPADOrientation(&gyroOrientation[0]);
-				status->gyroOrientation.x = gyroOrientation.x;
-				status->gyroOrientation.y = gyroOrientation.y;
-				status->gyroOrientation.z = gyroOrientation.z;
+				float gyroChange[3];
+				motion.getVPADGyroChange(gyroChange);
+				status->gyroChange.x = gyroChange[0];
+				status->gyroChange.y = gyroChange[1];
+				status->gyroChange.z = gyroChange[2];
+				float gyroOrientation[3];
+				motion.getVPADOrientation(gyroOrientation);
+				status->gyroOrientation.x = gyroOrientation[0];
+				status->gyroOrientation.y = gyroOrientation[1];
+				status->gyroOrientation.z = gyroOrientation[2];
 				float attitude[9];
 				motion.getVPADAttitudeMatrix(attitude);
 				status->dir.x.x = attitude[0];

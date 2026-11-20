@@ -102,10 +102,9 @@ void WPADController::WPADRead(WPADStatus_t* status)
 		memset(ex_status, 0x00, sizeof(*ex_status));
 		ex_status->button = button;
 
-		auto axis = get_axis();
-		axis *= 127.0f;
-		ex_status->fsStickX = (sint8)axis.x;
-		ex_status->fsStickY = (sint8)axis.y;
+		const Vector2<float> axis = get_axis();
+		ex_status->fsStickX = (sint8)(axis.x * 127.0f);
+		ex_status->fsStickY = (sint8)(axis.y * 127.0f);
 		break;
 	}
 
@@ -120,15 +119,13 @@ void WPADController::WPADRead(WPADStatus_t* status)
 		memset(ex_status, 0x00, sizeof(*ex_status));
 		ex_status->clButton = button;
 		
-		auto axis = get_axis();
-		axis *= 2048.0f;
-		ex_status->clLStickX = (uint16)axis.x;
-		ex_status->clLStickY = (uint16)axis.y;
+		const Vector2<float> axis = get_axis();
+		ex_status->clLStickX = (uint16)(axis.x * 2048.0f);
+		ex_status->clLStickY = (uint16)(axis.y * 2048.0f);
 
-		auto rotation = get_rotation();
-		rotation *= 2048.0f;
-		ex_status->clRStickX = (uint16)rotation.x;
-		ex_status->clRStickY = (uint16)rotation.y;
+		const Vector2<float> rotation = get_rotation();
+		ex_status->clRStickX = (uint16)(rotation.x * 2048.0f);
+		ex_status->clRStickY = (uint16)(rotation.y * 2048.0f);
 		break;
 	}
 	case kDataFormat_TRAIN:
@@ -159,15 +156,13 @@ void WPADController::WPADRead(WPADStatus_t* status)
 		ex_status->cable = TRUE;
 		ex_status->charge = TRUE;
 
-		auto axis = get_axis();
-		axis *= 2048.0f;
-		ex_status->ucLStickX = (uint16)axis.x;
-		ex_status->ucLStickY = (uint16)axis.y;
+		const Vector2<float> axis = get_axis();
+		ex_status->ucLStickX = (uint16)(axis.x * 2048.0f);
+		ex_status->ucLStickY = (uint16)(axis.y * 2048.0f);
 
-		auto rotation = get_rotation();
-		rotation *= 2048.0f;
-		ex_status->ucRStickX = (uint16)rotation.x;
-		ex_status->ucRStickY = (uint16)rotation.y;
+		const Vector2<float> rotation = get_rotation();
+		ex_status->ucRStickX = (uint16)(rotation.x * 2048.0f);
+		ex_status->ucRStickY = (uint16)(rotation.y * 2048.0f);
 
 		break;
 	}
@@ -260,41 +255,41 @@ void WPADController::KPADRead(KPADStatus_t& status, const BtnRepeat& repeat)
 	{
 		auto motion_sample = get_motion_data();
 
-		glm::vec3 acc;
-		motion_sample.getAccelerometer(&acc[0]);
-		status.acc.x = acc.x;
-		status.acc.y = acc.y;
-		status.acc.z = acc.z;
+		float acc[3];
+		motion_sample.getAccelerometer(acc);
+		status.acc.x = acc[0];
+		status.acc.y = acc[1];
+		status.acc.z = acc[2];
 
 		status.acc_value = motion_sample.getVPADAccMagnitude();
 		status.acc_speed = motion_sample.getVPADAccAcceleration();
 
-		//glm::vec2 acc_vert;
+		//Vector2<float> acc_vert;
 		//motion_sample.getVPADAccXY(&acc_vert[0]);
 		//status.acc_vertical.x = acc_vert.x;
 		//status.acc_vertical.y = acc_vert.y;
 
-		status.accVertical.x = std::min(1.0f, std::abs(acc.x + acc.y));
-		status.accVertical.y = std::min(std::max(-1.0f, -acc.z), 1.0f);
+		status.accVertical.x = std::min(1.0f, std::abs(acc[0] + acc[1]));
+		status.accVertical.y = std::min(std::max(-1.0f, -acc[2]), 1.0f);
 
 		if (is_mpls_attached())
 		{
 			// todo
-			glm::vec3 gyroChange;
-			motion_sample.getVPADGyroChange(&gyroChange[0]);
+			float gyroChange[3];
+			motion_sample.getVPADGyroChange(gyroChange);
 			//const auto& gyroChange = motionSample.getVPADGyroChange();
-			status.mpls.mpls.x = gyroChange.x;
-			status.mpls.mpls.y = gyroChange.y;
-			status.mpls.mpls.z = gyroChange.z;
+			status.mpls.mpls.x = gyroChange[0];
+			status.mpls.mpls.y = gyroChange[1];
+			status.mpls.mpls.z = gyroChange[2];
 
 			//debug_printf("GyroChange %7.2lf %7.2lf %7.2lf\n", (float)status.gyroChange.x, (float)status.gyroChange.y, (float)status.gyroChange.z);
 
-			glm::vec3 gyroOrientation;
-			motion_sample.getVPADOrientation(&gyroOrientation[0]);
+			float gyroOrientation[3];
+			motion_sample.getVPADOrientation(gyroOrientation);
 			//const auto& gyroOrientation = motionSample.getVPADOrientation();
-			status.mpls.angle.x = gyroOrientation.x;
-			status.mpls.angle.y = gyroOrientation.y;
-			status.mpls.angle.z = gyroOrientation.z;
+			status.mpls.angle.x = gyroOrientation[0];
+			status.mpls.angle.y = gyroOrientation[1];
+			status.mpls.angle.z = gyroOrientation[2];
 
 			float attitude[9];
 			motion_sample.getVPADAttitudeMatrix(attitude);
@@ -317,16 +312,17 @@ void WPADController::KPADRead(KPADStatus_t& status, const BtnRepeat& repeat)
 		else
 			status.dpd_valid_fg = -1;
 
-		const auto position = get_position();
+		Vector2<float> position, prev;
+		get_positions(position, prev);
 
-		const auto pos = (position * 2.0f) - 1.0f;
-		status.pos.x = pos.x;
-		status.pos.y = pos.y;
+		status.pos.x = position.x * 2.0f - 1.0f;
+		status.pos.y = position.y * 2.0f - 1.0f;
 
-		const auto delta = position - get_prev_position();
-		status.vec.x = delta.x;
-		status.vec.y = delta.y;
-		status.speed = glm::length(delta);
+		const float dx = position.x - prev.x;
+		const float dy = position.y - prev.y;
+		status.vec.x = dx;
+		status.vec.y = dy;
+		status.speed = sqrtf(dx * dx + dy * dy);
 	}
 	else
 		status.dpd_valid_fg = 0;
@@ -341,11 +337,11 @@ void WPADController::KPADRead(KPADStatus_t& status, const BtnRepeat& repeat)
 		{
 			auto motion_sample = get_second_motion_data();
 
-			glm::vec3 acc;
-			motion_sample.getAccelerometer(&acc[0]);
-			status.ex_status.fs.acc.x = acc.x;
-			status.ex_status.fs.acc.y = acc.y;
-			status.ex_status.fs.acc.z = acc.z;
+			float acc[3];
+			motion_sample.getAccelerometer(acc);
+			status.ex_status.fs.acc.x = acc[0];
+			status.ex_status.fs.acc.y = acc[1];
+			status.ex_status.fs.acc.z = acc[2];
 
 			status.ex_status.fs.accValue = motion_sample.getVPADAccMagnitude();
 			status.ex_status.fs.accSpeed = motion_sample.getVPADAccAcceleration();

@@ -9,7 +9,7 @@ CXX ?= g++
 CC ?= gcc
 FLAGS := -O1 -g -DHAVE_THREADS -DENABLE_VULKAN -I$(SRC) -I$(SRC)/Common -I$(SRC)/Cafe -I$(SRC)/util -I$(LRC)/include
 # what the core's precompiled header wants
-CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include -I$(DEP)/glm \
+CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include \
 	-include $(SRC)/Common/precompiled.h
 ifneq ($(SANITIZER),)
    FLAGS += -fsanitize=$(SANITIZER) -fno-omit-frame-pointer

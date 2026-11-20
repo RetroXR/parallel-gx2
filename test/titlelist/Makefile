@@ -10,7 +10,7 @@ CC ?= gcc
 DEP := ../../dependencies
 FLAGS := -O1 -g -I$(SRC) -I$(LRC)/include -Wno-multichar -DHAVE_THREADS -DTITLELIST_TEST_HOOKS
 # stub/ first: CemuConfig as the test has it
-CXXFLAGS_CORE := -iquote stub -I$(DEP)/boost-compat -I$(DEP)/fmt/include -I$(DEP)/glm -DFMT_HEADER_ONLY \
+CXXFLAGS_CORE := -iquote stub -I$(DEP)/boost-compat -I$(DEP)/fmt/include -DFMT_HEADER_ONLY \
 	-include $(SRC)/Common/precompiled.h
 ifneq ($(SANITIZER),)
    FLAGS += -fsanitize=$(SANITIZER) -fno-omit-frame-pointer

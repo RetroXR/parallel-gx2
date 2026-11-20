@@ -179,7 +179,7 @@ void VPADController::update_touch(VPADStatus_t& status)
 		status.tpData.x = (uint16)(mouse.x * 3883.0f + 92.0f);
 		status.tpData.y = (uint16)(4095.0f - mouse.y * 3694.0f - 254.0f);
 
-		m_last_touch_position = glm::ivec2{status.tpData.x, status.tpData.y};
+		m_last_touch_position = Vector2<sint32>{status.tpData.x, status.tpData.y};
 	}
 
 	status.tpProcessed1 = status.tpData;
@@ -192,30 +192,30 @@ void VPADController::update_motion(VPADStatus_t& status)
 	{
 		auto motionSample = get_motion_data();
 
-		glm::vec3 acc;
-		motionSample.getVPADAccelerometer(&acc[0]);
+		float acc[3];
+		motionSample.getVPADAccelerometer(acc);
 		//const auto& acc = motionSample.getVPADAccelerometer();
-		status.acc.x = acc.x;
-		status.acc.y = acc.y;
-		status.acc.z = acc.z;
+		status.acc.x = acc[0];
+		status.acc.y = acc[1];
+		status.acc.z = acc[2];
 		status.accMagnitude = motionSample.getVPADAccMagnitude();
 		status.accAcceleration = motionSample.getVPADAccAcceleration();
 
-		glm::vec3 gyroChange;
-		motionSample.getVPADGyroChange(&gyroChange[0]);
+		float gyroChange[3];
+		motionSample.getVPADGyroChange(gyroChange);
 		//const auto& gyroChange = motionSample.getVPADGyroChange();
-		status.gyroChange.x = gyroChange.x;
-		status.gyroChange.y = gyroChange.y;
-		status.gyroChange.z = gyroChange.z;
+		status.gyroChange.x = gyroChange[0];
+		status.gyroChange.y = gyroChange[1];
+		status.gyroChange.z = gyroChange[2];
 
 		//debug_printf("GyroChange %7.2lf %7.2lf %7.2lf\n", (float)status.gyroChange.x, (float)status.gyroChange.y, (float)status.gyroChange.z);
 
-		glm::vec3 gyroOrientation;
-		motionSample.getVPADOrientation(&gyroOrientation[0]);
+		float gyroOrientation[3];
+		motionSample.getVPADOrientation(gyroOrientation);
 		//const auto& gyroOrientation = motionSample.getVPADOrientation();
-		status.gyroOrientation.x = gyroOrientation.x;
-		status.gyroOrientation.y = gyroOrientation.y;
-		status.gyroOrientation.z = gyroOrientation.z;
+		status.gyroOrientation.x = gyroOrientation[0];
+		status.gyroOrientation.y = gyroOrientation[1];
+		status.gyroOrientation.z = gyroOrientation[2];
 
 		float attitude[9];
 		motionSample.getVPADAttitudeMatrix(attitude);
@@ -319,7 +319,7 @@ uint32 VPADController::get_emulated_button_flag(uint32 id) const
 	return 0;
 }
 
-glm::vec2 VPADController::get_axis() const
+Vector2<float> VPADController::get_axis() const
 {
 	const auto left = get_axis_value(kButtonId_StickL_Left);
 	const auto right = get_axis_value(kButtonId_StickL_Right);
@@ -327,13 +327,20 @@ glm::vec2 VPADController::get_axis() const
 	const auto up = get_axis_value(kButtonId_StickL_Up);
 	const auto down = get_axis_value(kButtonId_StickL_Down);
 
-	glm::vec2 result;
-	result.x = (left > right) ? -left : right;
-	result.y = (up > down) ? up : -down;
-	return length(result) > 1.0f ? normalize(result) : result;
+	float x = (left > right) ? -left : right;
+	float y = (up > down) ? up : -down;
+	// at most of length 1: the square root only past it
+	const float lengthSq = x * x + y * y;
+	if (lengthSq > 1.0f)
+	{
+		const float inv = 1.0f / sqrtf(lengthSq);
+		x *= inv;
+		y *= inv;
+	}
+	return { x, y };
 }
 
-glm::vec2 VPADController::get_rotation() const
+Vector2<float> VPADController::get_rotation() const
 {
 	const auto left = get_axis_value(kButtonId_StickR_Left);
 	const auto right = get_axis_value(kButtonId_StickR_Right);
@@ -341,13 +348,20 @@ glm::vec2 VPADController::get_rotation() const
 	const auto up = get_axis_value(kButtonId_StickR_Up);
 	const auto down = get_axis_value(kButtonId_StickR_Down);
 
-	glm::vec2 result;
-	result.x = (left > right) ? -left : right;
-	result.y = (up > down) ? up : -down;
-	return length(result) > 1.0f ? normalize(result) : result;
+	float x = (left > right) ? -left : right;
+	float y = (up > down) ? up : -down;
+	// at most of length 1: the square root only past it
+	const float lengthSq = x * x + y * y;
+	if (lengthSq > 1.0f)
+	{
+		const float inv = 1.0f / sqrtf(lengthSq);
+		x *= inv;
+		y *= inv;
+	}
+	return { x, y };
 }
 
-glm::vec2 VPADController::get_trigger() const
+Vector2<float> VPADController::get_trigger() const
 {
 	const auto left = get_axis_value(kButtonId_ZL);
 	const auto right = get_axis_value(kButtonId_ZR);

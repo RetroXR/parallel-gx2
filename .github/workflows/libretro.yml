@@ -96,7 +96,7 @@ jobs:
         run: ./tools/check_build_paths.sh
 
       - name: "A clone without submodules builds"
-        # make fetches them, where the build used to stop at glm/glm.hpp
+        # make fetches them, where the build used to stop at fmt/core.h
         run: ./tools/check_submodule_fetch.sh
 
       - name: "No settings file"
@@ -213,7 +213,7 @@ jobs:
         # frontend's wrapper (how it adds Reflex's extensions), version 1 for
         # a frontend without it; on lavapipe, plain then under ASan + UBSan
         run: |
-          git submodule update --init --depth 1 dependencies/fmt dependencies/glm dependencies/Vulkan-Headers
+          git submodule update --init --depth 1 dependencies/fmt dependencies/Vulkan-Headers
           sudo apt-get install -y mesa-vulkan-drivers libvulkan1
           VN_REQUIRE_DEVICE=1 ./test/vknegotiate/run_tests.sh
           make -C test/vknegotiate clean
@@ -224,9 +224,9 @@ jobs:
         # and everything a pipeline bakes in still does; the pipeline
         # library parts' keys and their lock-free cache: plain, under ASan +
         # UBSan, and the cache's threads under TSan. The core's precompiled
-        # header wants fmt and glm, the state the draw sets the Vulkan headers.
+        # header wants fmt, the state the draw sets the Vulkan headers.
         run: |
-          git submodule update --init --depth 1 dependencies/fmt dependencies/glm dependencies/Vulkan-Headers
+          git submodule update --init --depth 1 dependencies/fmt dependencies/Vulkan-Headers
           ./test/pipeline_key/run_tests.sh
           make -C test/pipeline_key clean
           SANITIZER=address,undefined ./test/pipeline_key/run_tests.sh
@@ -265,7 +265,7 @@ jobs:
         # plain, under ASan + UBSan, and under the Khronos validation layer,
         # where any error fails
         run: |
-          git submodule update --init --depth 1 dependencies/fmt dependencies/glm dependencies/Vulkan-Headers
+          git submodule update --init --depth 1 dependencies/fmt dependencies/Vulkan-Headers
           sudo apt-get install -y mesa-vulkan-drivers libvulkan1 vulkan-validationlayers
           VN_REQUIRE_DEVICE=1 ./test/dynstate/run_tests.sh
           make -C test/dynstate clean
@@ -280,7 +280,7 @@ jobs:
         # to spirv-val; plain, under ASan + UBSan, and under the Khronos
         # validation layer, where any error fails
         run: |
-          git submodule update --init --depth 1 dependencies/fmt dependencies/glm dependencies/Vulkan-Headers
+          git submodule update --init --depth 1 dependencies/fmt dependencies/Vulkan-Headers
           sudo apt-get install -y mesa-vulkan-drivers libvulkan1 vulkan-validationlayers spirv-tools
           VN_REQUIRE_DEVICE=1 ./test/decompiler/run_tests.sh
           make -C test/decompiler clean
@@ -291,9 +291,9 @@ jobs:
       - name: "XML"
         # the core's XML layer over libretro-common's rxml and the settings
         # files on it: plain, then under ASan + UBSan. The core's precompiled
-        # header wants fmt and glm.
+        # header wants fmt.
         run: |
-          git submodule update --init --depth 1 dependencies/fmt dependencies/glm
+          git submodule update --init --depth 1 dependencies/fmt
           ./test/xml/run_tests.sh
           make -C test/xml clean
           SANITIZER=address,undefined ./test/xml/run_tests.sh
@@ -310,9 +310,9 @@ jobs:
         # h264.rpl's decoder engine over rh264 and a frontend's decoder,
         # against ffmpeg's pictures of test/h264/streams: plain, under
         # ThreadSanitizer, under ASan + UBSan. The core's precompiled header
-        # wants fmt and glm.
+        # wants fmt.
         run: |
-          git submodule update --init --depth 1 dependencies/fmt dependencies/glm
+          git submodule update --init --depth 1 dependencies/fmt
           ./test/h264/run_tests.sh
           make -C test/h264 clean
           SANITIZER=thread ./test/h264/run_tests.sh
@@ -322,9 +322,9 @@ jobs:
       - name: "Wii U archives"
         # the core's .wua reader over libretro-common's zar, against archives
         # zar's writer makes: plain, under ThreadSanitizer, under ASan + UBSan.
-        # The core's precompiled header wants fmt and glm.
+        # The core's precompiled header wants fmt.
         run: |
-          git submodule update --init --depth 1 dependencies/fmt dependencies/glm
+          git submodule update --init --depth 1 dependencies/fmt
           ./test/zarchive/run_tests.sh
           make -C test/zarchive clean
           SANITIZER=thread ./test/zarchive/run_tests.sh
@@ -334,9 +334,9 @@ jobs:
       - name: "Disc images, title content, homebrew bundles"
         # the core's .wud/.wux, .app and .wuhb readers against images made by
         # the test, mapped and not: plain, under ThreadSanitizer, under ASan +
-        # UBSan. The core's precompiled header wants fmt and glm.
+        # UBSan. The core's precompiled header wants fmt.
         run: |
-          git submodule update --init --depth 1 dependencies/fmt dependencies/glm
+          git submodule update --init --depth 1 dependencies/fmt
           ./test/disc_image/run_tests.sh
           make -C test/disc_image clean
           SANITIZER=thread ./test/disc_image/run_tests.sh
@@ -347,9 +347,9 @@ jobs:
         # where the core looks for a disc image's key - keys.txt, read again
         # at each load, and the .key files beside the image - and what it says
         # when none fits: plain, under ThreadSanitizer, under ASan + UBSan.
-        # The core's precompiled header wants fmt and glm.
+        # The core's precompiled header wants fmt.
         run: |
-          git submodule update --init --depth 1 dependencies/fmt dependencies/glm
+          git submodule update --init --depth 1 dependencies/fmt
           ./test/keycache/run_tests.sh
           make -C test/keycache clean
           SANITIZER=thread ./test/keycache/run_tests.sh
@@ -361,9 +361,9 @@ jobs:
         # update: which mount a file comes from, files read in pieces and the
         # RPX hash over them, directories listed through both; plain, under
         # ThreadSanitizer, under ASan + UBSan. The core's precompiled header
-        # wants fmt and glm.
+        # wants fmt.
         run: |
-          git submodule update --init --depth 1 dependencies/fmt dependencies/glm
+          git submodule update --init --depth 1 dependencies/fmt
           ./test/fsc/run_tests.sh
           make -C test/fsc clean
           SANITIZER=thread ./test/fsc/run_tests.sh
@@ -375,9 +375,9 @@ jobs:
         # the cache file, a wait for a scan that never misses one, and the
         # list read with no lock while scans change it; plain, under
         # ThreadSanitizer, under ASan + UBSan. The core's precompiled header
-        # wants fmt and glm.
+        # wants fmt.
         run: |
-          git submodule update --init --depth 1 dependencies/fmt dependencies/glm
+          git submodule update --init --depth 1 dependencies/fmt
           ./test/titlelist/run_tests.sh
           make -C test/titlelist clean
           SANITIZER=thread ./test/titlelist/run_tests.sh
@@ -674,6 +674,13 @@ jobs:
           ./test/ring_queue/run_tests.sh
           make -C test/ring_queue clean
           SANITIZER=address,undefined ./test/ring_queue/run_tests.sh
+      - name: "Stick dead zone"
+        # the stick dead zone and range in plain arithmetic against the way
+        # glm wrote it, both timed; plain and under ASan + UBSan
+        run: |
+          ./test/input_axis/run_tests.sh
+          make -C test/input_axis clean
+          SANITIZER=address,undefined ./test/input_axis/run_tests.sh
       - name: "Pinned objects"
         # the H.264 decoder sessions' table: held, put back, released once;
         # plain, under ASan + UBSan and under TSan
@@ -865,9 +872,9 @@ jobs:
         # unhashed and hashed clusters of a volume the test makes, through
         # the block cache and straight to where they go, with no allocation
         # once warm; plain, under ThreadSanitizer, under ASan + UBSan. The
-        # core's precompiled header wants fmt and glm.
+        # core's precompiled header wants fmt.
         run: |
-          git submodule update --init --depth 1 dependencies/fmt dependencies/glm
+          git submodule update --init --depth 1 dependencies/fmt
           ./test/fst/run_tests.sh
           make -C test/fst clean
           SANITIZER=thread ./test/fst/run_tests.sh
@@ -877,9 +884,9 @@ jobs:
       - name: "IOSU kernel"
         # Message queues, timers and IPC from several threads at once, against
         # the kernel's own source; plain, under ThreadSanitizer, under ASan +
-        # UBSan. The core's precompiled header wants fmt and glm.
+        # UBSan. The core's precompiled header wants fmt.
         run: |
-          git submodule update --init --depth 1 dependencies/fmt dependencies/glm
+          git submodule update --init --depth 1 dependencies/fmt
           ./test/iosu/run_tests.sh
           make -C test/iosu clean
           SANITIZER=thread ./test/iosu/run_tests.sh
@@ -890,9 +897,9 @@ jobs:
         # What the core stops before the frontend unloads it: a thread still
         # running wakes in unmapped code and crashes the frontend. Plain,
         # under ThreadSanitizer, under ASan + UBSan. The core's precompiled
-        # header wants fmt and glm.
+        # header wants fmt.
         run: |
-          git submodule update --init --depth 1 dependencies/fmt dependencies/glm
+          git submodule update --init --depth 1 dependencies/fmt
           ./test/teardown/run_tests.sh
           make -C test/teardown clean
           SANITIZER=thread ./test/teardown/run_tests.sh
@@ -904,9 +911,9 @@ jobs:
         # the console's zlib125 a byte at a time, standalone Cemu's shader
         # and pipeline cache entries, the graphic packs through the pack tool;
         # plain, under ThreadSanitizer, under ASan + UBSan. The core's
-        # precompiled header wants fmt and glm.
+        # precompiled header wants fmt.
         run: |
-          git submodule update --init --depth 1 dependencies/fmt dependencies/glm
+          git submodule update --init --depth 1 dependencies/fmt
           ./test/compression/run_tests.sh
           make -C test/compression clean
           SANITIZER=thread ./test/compression/run_tests.sh
@@ -917,10 +924,10 @@ jobs:
         # What the shader path costs - each module of the compile corpus, the
         # file cache's load path - against test/pso/baseline.txt: worse
         # fails, and better fails until the baseline is updated with it
-        # (AGENTS.md). The core's precompiled header wants fmt and glm, the
+        # (AGENTS.md). The core's precompiled header wants fmt, the
         # replayed draws' pipeline key the Vulkan headers.
         run: |
-          git submodule update --init --depth 1 dependencies/cemu_graphic_packs dependencies/fmt dependencies/glm dependencies/Vulkan-Headers
+          git submodule update --init --depth 1 dependencies/cemu_graphic_packs dependencies/fmt dependencies/Vulkan-Headers
           ./test/pso/run_tests.sh
 
       - name: "Shader compiler"
@@ -954,7 +961,7 @@ jobs:
         # with the one it replaced; plain, under ASan + UBSan (undefined
         # behaviour fails it) and under TSan
         run: |
-          git submodule update --init --depth 1 dependencies/fmt dependencies/glm dependencies/Vulkan-Headers
+          git submodule update --init --depth 1 dependencies/fmt dependencies/Vulkan-Headers
           JOBS=4 ./test/recompiler/run_tests.sh
           make -C test/recompiler clean
           SANITIZER=address,undefined JOBS=4 ./test/recompiler/run_tests.sh

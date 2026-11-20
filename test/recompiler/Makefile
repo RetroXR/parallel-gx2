@@ -9,7 +9,7 @@ CC ?= gcc
 CXX ?= g++
 FLAGS := -O1 -g -I$(SRC) -I$(SRC)/Common -I$(SRC)/Cafe -I$(SRC)/util -I$(LRC)/include -DHAVE_THREADS
 # what the core's precompiled header and the recompiler's headers want
-CXXFLAGS_CORE := -std=gnu++20 -I$(DEP)/boost-compat -I$(DEP)/fmt/include -I$(DEP)/glm \
+CXXFLAGS_CORE := -std=gnu++20 -I$(DEP)/boost-compat -I$(DEP)/fmt/include \
 	-I$(DEP)/Vulkan-Headers/include -include $(SRC)/Common/precompiled.h \
 	-DENABLE_LIBRETRO -DRETRO_CORE -DVK_NO_PROTOTYPES -DENABLE_VULKAN
 ifneq ($(SANITIZER),)

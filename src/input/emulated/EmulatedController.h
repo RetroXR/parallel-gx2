@@ -49,9 +49,9 @@ public:
 	virtual void update();
 	void controllers_update_states();
 
-	virtual glm::vec2 get_axis() const = 0;
-	virtual glm::vec2 get_rotation() const = 0;
-	virtual glm::vec2 get_trigger() const = 0;
+	virtual Vector2<float> get_axis() const = 0;
+	virtual Vector2<float> get_rotation() const = 0;
+	virtual Vector2<float> get_trigger() const = 0;
 
 	void start_rumble();
 	void stop_rumble();
@@ -66,8 +66,9 @@ public:
 	MotionSample get_second_motion_data() const;
 
 	bool has_position() const;
-	glm::vec2 get_position() const;
-	glm::vec2 get_prev_position() const;
+	Vector2<float> get_position() const;
+	Vector2<float> get_prev_position() const;
+	void get_positions(Vector2<float>& position, Vector2<float>& prev) const;
 	PositionVisibility GetPositionVisibility() const;
 
 	void add_controller(std::shared_ptr<ControllerBase> controller);

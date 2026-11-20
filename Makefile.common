@@ -500,7 +500,7 @@ CORE_FLAGS := -DENABLE_LIBRETRO -DRETRO_CORE -DVK_NO_PROTOTYPES \
 	-I$(SRC_DIR)/input -I$(SRC_DIR)/config -I$(SRC_DIR)/audio \
 	-I$(SRC_DIR)/gui -I$(SRC_DIR)/gui/interface -I$(SRC_DIR)/libretro -I$(SRC_DIR)/resource \
 	-I$(DEP_DIR)/Vulkan-Headers/include \
-	-I$(DEP_DIR)/glm -I$(DEP_DIR)/fmt/include \
+	-I$(DEP_DIR)/fmt/include \
 	-I$(DEP_DIR)/boost-compat \
 	-I$(DEP_DIR)/libusb-config \
 	-I$(LRC_DIR)/include

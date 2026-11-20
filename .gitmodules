@@ -16,9 +16,6 @@
 [submodule "dependencies/fmt"]
 	path = dependencies/fmt
 	url = https://github.com/fmtlib/fmt.git
-[submodule "dependencies/glm"]
-	path = dependencies/glm
-	url = https://github.com/g-truc/glm.git
 [submodule "dependencies/libusb"]
 	path = dependencies/libusb
 	url = https://github.com/libusb/libusb.git

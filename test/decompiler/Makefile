@@ -9,7 +9,7 @@ CC ?= gcc
 FLAGS := -O1 -g -I$(SRC) -I$(SRC)/Cafe -I$(SRC)/Common -I$(SRC)/util -I$(LRC)/include -I$(DEP)/Vulkan-Headers/include \
 	-DENABLE_VULKAN -DVK_NO_PROTOTYPES -DRSLC_EXTENDED -DRSLC_NO_TEXT -DHAVE_THREADS
 # what the core's precompiled header wants
-CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include -I$(DEP)/glm \
+CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include \
 	-include $(SRC)/Common/precompiled.h
 ifneq ($(SANITIZER),)
    FLAGS += -fsanitize=$(SANITIZER) -fno-omit-frame-pointer

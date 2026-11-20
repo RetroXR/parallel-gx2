@@ -9,7 +9,7 @@ CXX ?= g++
 CC ?= gcc
 FLAGS := -O1 -g -I$(SRC) -I$(LRC)/include -DHAVE_THREADS
 # what the parser's headers want from the core's precompiled header
-CXXFLAGS_CORE := -include $(SRC)/Common/precompiled.h -I$(DEP)/boost-compat -I$(DEP)/fmt/include -I$(DEP)/glm
+CXXFLAGS_CORE := -include $(SRC)/Common/precompiled.h -I$(DEP)/boost-compat -I$(DEP)/fmt/include
 ifneq ($(SANITIZER),)
    FLAGS += -fsanitize=$(SANITIZER) -fno-omit-frame-pointer
 endif

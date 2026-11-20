@@ -10,7 +10,7 @@ CC ?= gcc
 DEP := ../../dependencies
 FLAGS := -O1 -g -I$(SRC) -I$(LRC)/include -Wno-multichar
 # what the core's precompiled header, which FileStream.h includes, wants
-CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include -I$(DEP)/glm -DFMT_HEADER_ONLY
+CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include -DFMT_HEADER_ONLY
 CXXFLAGS_CORE += -include $(SRC)/Common/precompiled.h
 ifneq ($(SANITIZER),)
    FLAGS += -fsanitize=$(SANITIZER) -fno-omit-frame-pointer

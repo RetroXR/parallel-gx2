@@ -120,8 +120,8 @@ public:
 	virtual MotionSample get_motion_sample() { return {}; }
 
 	virtual bool has_position() { return false; }
-	virtual glm::vec2 get_position() { return {}; }
-	virtual glm::vec2 get_prev_position() { return {}; }
+	virtual Vector2<float> get_position() { return {}; }
+	virtual Vector2<float> get_prev_position() { return {}; }
 	virtual PositionVisibility GetPositionVisibility() {return PositionVisibility::NONE;};
 
 	virtual bool has_rumble() { return false; }
@@ -153,7 +153,7 @@ public:
 	void set_rumble(float rumble);
 	void set_use_motion(bool state);
 
-	void apply_axis_setting(glm::vec2& axis, const glm::vec2& default_value, const AxisSetting& setting) const;
+	void apply_axis_setting(Vector2<float>& axis, const Vector2<float>& default_value, const AxisSetting& setting) const;
 
 	bool operator==(const ControllerBase& c) const;
 	bool operator!=(const ControllerBase& c) const { return !(*this == c); }

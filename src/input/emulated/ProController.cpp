@@ -94,7 +94,7 @@ std::string_view ProController::get_button_name(ButtonId id)
 }
 
 
-glm::vec2 ProController::get_axis() const
+Vector2<float> ProController::get_axis() const
 {
 	const auto left = get_axis_value(kButtonId_StickL_Left);
 	const auto right = get_axis_value(kButtonId_StickL_Right);
@@ -102,13 +102,13 @@ glm::vec2 ProController::get_axis() const
 	const auto up = get_axis_value(kButtonId_StickL_Up);
 	const auto down = get_axis_value(kButtonId_StickL_Down);
 
-	glm::vec2 result;
+	Vector2<float> result;
 	result.x = (left > right) ? -left : right;
 	result.y = (up > down) ? up : -down;
 	return result;
 }
 
-glm::vec2 ProController::get_rotation() const
+Vector2<float> ProController::get_rotation() const
 {
 	const auto left = get_axis_value(kButtonId_StickR_Left);
 	const auto right = get_axis_value(kButtonId_StickR_Right);
@@ -116,13 +116,13 @@ glm::vec2 ProController::get_rotation() const
 	const auto up = get_axis_value(kButtonId_StickR_Up);
 	const auto down = get_axis_value(kButtonId_StickR_Down);
 
-	glm::vec2 result;
+	Vector2<float> result;
 	result.x = (left > right) ? -left : right;
 	result.y = (up > down) ? up : -down;
 	return result;
 }
 
-glm::vec2 ProController::get_trigger() const
+Vector2<float> ProController::get_trigger() const
 {
 	const auto left = get_axis_value(kButtonId_ZL);
 	const auto right = get_axis_value(kButtonId_ZR);

@@ -9,7 +9,7 @@ CXX ?= g++
 CC ?= gcc
 FLAGS := -O1 -g -I$(SRC) -I$(LRC)/include
 # what the core's precompiled header, which XMLConfig.h includes, wants
-CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include -I$(DEP)/glm -DFMT_HEADER_ONLY
+CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include -DFMT_HEADER_ONLY
 ifneq ($(SANITIZER),)
    FLAGS += -fsanitize=$(SANITIZER) -fno-omit-frame-pointer
 endif
