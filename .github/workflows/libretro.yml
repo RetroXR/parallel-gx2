@@ -637,6 +637,17 @@ jobs:
           SANITIZER=address,undefined ./test/fetch_shader/run_tests.sh
           make -C test/fetch_shader clean
           SANITIZER=thread ./test/fetch_shader/run_tests.sh
+      - name: "Surface copy slots"
+        # the surface copies' framebuffers and descriptor sets by pipeline,
+        # texture, slice and mip, against a reference map, released with
+        # their textures, nothing allocated; plain, under ASan + UBSan and
+        # under TSan
+        run: |
+          ./test/surface_copy/run_tests.sh
+          make -C test/surface_copy clean
+          SANITIZER=address,undefined ./test/surface_copy/run_tests.sh
+          make -C test/surface_copy clean
+          SANITIZER=thread ./test/surface_copy/run_tests.sh
       - name: "Pinned objects"
         # the H.264 decoder sessions' table: held, put back, released once;
         # plain, under ASan + UBSan and under TSan

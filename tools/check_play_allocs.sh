@@ -2718,6 +2718,8 @@ src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.cpp VulkanPipelineSt
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.cpp VulkanPipelineStableCache::DeserializePipeline
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.cpp VulkanPipelineStableCache::WaitForCompileProgress
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.cpp VulkanPipelineStableCache::WorkerThread
+src/Cafe/HW/Latte/Renderer/Metal/MetalPipelineCache.cpp MetalPipelineCache::AddCurrentStateToCache
+src/Cafe/HW/Latte/Renderer/Metal/MetalPipelineCache.cpp MetalPipelineCache::WorkerThread
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanQuery.cpp LatteQueryObjectVk::getResult
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanQuery.cpp LatteQueryObjectVk::beginFragment
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanQuery.cpp LatteQueryObjectVk::begin
@@ -2854,6 +2856,8 @@ src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRendererCore.cpp VulkanRenderer::draw_en
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRendererCore.cpp VulkanRenderer::debug_genericBarrier
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanSurfaceCopy.cpp VulkanRenderer::copySurface_getPipelineStateHash
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanSurfaceCopy.cpp VulkanRenderer::copySurface_createRenderpass
+src/Cafe/HW/Latte/Renderer/Vulkan/VulkanSurfaceCopy.cpp VulkanRenderer::surfaceCopy_prepare
+src/Cafe/HW/Latte/Renderer/Vulkan/VulkanSurfaceCopy.cpp VulkanRenderer::copySurface_buildPipeline
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanSurfaceCopy.cpp VulkanRenderer::surfaceCopy_initShaders
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanSurfaceCopy.cpp VulkanRenderer::copySurface_getOrCreateGraphicsPipeline
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanSurfaceCopy.cpp VulkanRenderer::surfaceCopy_createImageView
@@ -3829,7 +3833,7 @@ grep -v -e 'cemuLog_' -e 'UnrecoverableError' -e 'cemu_assert' -e 'PSO_TRACE' "$
 {
 	grep -E \
 		-e 'std::(vector|string|wstring|u8string|deque|queue|list|map|multimap|set|unordered_map|unordered_set|function)(<[^;()&]*>)?[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*([;=({]|$)' \
-		-e 'fs::path[[:space:]]+[A-Za-z_]' -e 'fmt::format\(' -e 'std::to_string\(' -e 'make_(unique|shared)<' \
+		-e 'fs::path[[:space:]]+[A-Za-z_]' -e '(^|[^A-Za-z0-9_:])MemStreamWriter[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*[;=({]' -e 'fmt::format\(' -e 'std::to_string\(' -e 'make_(unique|shared)<' \
 		-e '(^|[^A-Za-z0-9_])(malloc|calloc|realloc|strdup)\(' -e 'new[[:space:]]+[A-Za-z_][A-Za-z0-9_:<>, ]*\[' "$tmp/code" | grep -v -e ':[[:space:]]*static[[:space:]]' -e 'thread_local'
 	# a log call formats only when its kind of logging is on; one handed a
 	# string formatted beforehand formats it every time, logging on or not

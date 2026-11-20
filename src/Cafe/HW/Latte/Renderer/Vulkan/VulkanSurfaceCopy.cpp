@@ -9,72 +9,9 @@ struct CopyShaderPushConstantData_t
 	sint32 srcTexelOffset[2];
 };
 
-struct CopySurfacePipelineInfo
+// from a pool (PoolNew.h): made at the first texture of its format
+struct CopySurfacePipelineInfo : PoolNew<CopySurfacePipelineInfo, 16>
 {
-	template<typename T>
-	struct TexSliceMipMapping
-	{
-		TexSliceMipMapping(LatteTextureVk* texture) : m_texture(texture) {};
-		~TexSliceMipMapping()
-		{
-			//delete vkObjPipeline;
-			//delete vkObjRenderPass;
-			for (auto itr : m_array)
-			{
-				if (itr != nullptr)
-					delete itr;
-			}
-		}
-
-		T* create(sint32 sliceIndex, sint32 mipIndex)
-		{
-			sint32 idx = m_texture->GetSliceMipArrayIndex(sliceIndex, mipIndex);
-			if (idx >= m_array.size())
-				m_array.resize(idx + 1);
-			T* v = new T();
-			m_array[idx] = v;
-			return v;
-		}
-
-		T* get(sint32 sliceIndex, sint32 mipIndex) const
-		{
-			sint32 idx = m_texture->GetSliceMipArrayIndex(sliceIndex, mipIndex);
-			if (idx >= m_array.size())
-				return nullptr;
-			return m_array[idx];
-		}
-
-		TexSliceMipMapping(const TexSliceMipMapping&) = delete;
-		TexSliceMipMapping& operator=(const TexSliceMipMapping&) = delete;
-		TexSliceMipMapping(TexSliceMipMapping&& rhs)
-		{
-			m_texture = rhs.m_texture;
-			m_array = std::move(rhs.m_array);
-		}
-
-		TexSliceMipMapping& operator=(TexSliceMipMapping&& rhs)
-		{
-			m_texture = rhs.m_texture;
-			m_array = std::move(rhs.m_array);
-		}
-
-		LatteTextureVk* m_texture;
-		std::vector<T*> m_array;
-	};
-
-	struct FramebufferValue
-	{
-		VKRObjectFramebuffer* vkObjFramebuffer;
-		VKRObjectTextureView* vkObjImageView;
-	};
-
-	struct DescriptorValue
-	{
-		VKRObjectDescriptorSet* vkObjDescriptorSet;
-		VKRObjectTextureView* vkObjImageView;
-		//VKRObjectSampler* vkObjSampler;
-	};
-
 	CopySurfacePipelineInfo(VkFormat format, bool isDepth) : dstFormat(format), dstIsDepth(isDepth) {}
 	CopySurfacePipelineInfo(const CopySurfacePipelineInfo& info) = delete;
 	~CopySurfacePipelineInfo()
@@ -88,24 +25,6 @@ struct CopySurfacePipelineInfo
 		if (vkObjRenderPass)
 			renderer->ReleaseDestructibleObject(vkObjRenderPass);
 		renderer->ReleaseDestructibleObject(vkObjPipeline);
-
-		for(auto& i : map_framebuffers)
-		{
-			for(auto& fb : i.second.m_array)
-			{
-				renderer->ReleaseDestructibleObject(fb->vkObjFramebuffer);
-				renderer->ReleaseDestructibleObject(fb->vkObjImageView);
-			}
-		}
-
-		for(auto& i : map_descriptors)
-		{
-			for(auto& descriptor : i.second.m_array)
-			{
-				renderer->ReleaseDestructibleObject(descriptor->vkObjImageView);
-				renderer->ReleaseDestructibleObject(descriptor->vkObjDescriptorSet);
-			}
-		}
 	}
 
 	// what the pipeline copies into
@@ -114,12 +33,6 @@ struct CopySurfacePipelineInfo
 
 	VKRObjectPipeline* vkObjPipeline{};
 	VKRObjectRenderPass* vkObjRenderPass{};
-
-	// map of framebuffers used with this pipeline
-	std::unordered_map<LatteTextureVk*, TexSliceMipMapping<FramebufferValue>> map_framebuffers;
-
-	// map of descriptor sets used with this pipeline
-	std::unordered_map<LatteTextureVk*, TexSliceMipMapping<DescriptorValue>> map_descriptors;
 
 	// built on a compile thread from the members above, which it reads; last,
 	// so that it is destroyed first
@@ -262,18 +175,15 @@ void VulkanRenderer::surfaceCopy_initShaders()
 CopySurfacePipelineInfo* VulkanRenderer::surfaceCopy_prepare(VkFormat dstFormat, bool dstIsDepth, bool dstHasStencil)
 {
 	const uint64 stateHash = copySurface_getPipelineStateHash(dstFormat, !dstIsDepth, dstIsDepth);
-	const auto it = m_copySurfacePipelineCache.find(stateHash);
-	if (it != m_copySurfacePipelineCache.cend())
-		return it->second;
+	if (CopySurfacePipelineInfo* found = m_copySurfacePipelineCache.Find(stateHash))
+		return found;
 	if (defaultShaders.copySurface_vs == nullptr)
 		surfaceCopy_initShaders();
 
 	CopySurfacePipelineInfo* copyPipeline = new CopySurfacePipelineInfo(dstFormat, dstIsDepth);
-	m_copySurfacePipelineCache.try_emplace(stateHash, copyPipeline);
+	m_copySurfacePipelineCache.Put(stateHash, copyPipeline);
 	VKRObjectPipeline* vkObjPipeline = new VKRObjectPipeline();
 	copyPipeline->vkObjPipeline = vkObjPipeline;
-
-	std::vector<VkDescriptorSetLayoutBinding> descriptorSetLayoutBindings;
 
 	VkDescriptorSetLayoutBinding entry{};
 	entry.binding = 0;
@@ -281,15 +191,14 @@ CopySurfacePipelineInfo* VulkanRenderer::surfaceCopy_prepare(VkFormat dstFormat,
 	entry.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	entry.pImmutableSamplers = nullptr;
 	entry.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-	descriptorSetLayoutBindings.emplace_back(entry);
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = (uint32_t)descriptorSetLayoutBindings.size();
-	layoutInfo.pBindings = descriptorSetLayoutBindings.data();
+	layoutInfo.bindingCount = 1;
+	layoutInfo.pBindings = &entry;
 
 	if (vkCreateDescriptorSetLayout(m_logicalDevice, &layoutInfo, nullptr, &vkObjPipeline->m_pixelDSL) != VK_SUCCESS)
-		UnrecoverableError(fmt::format("Failed to create descriptor set layout for surface copy shader").c_str());
+		UnrecoverableError("Failed to create descriptor set layout for surface copy shader");
 
 	// ##########################################################################################################################################
 
@@ -325,10 +234,10 @@ VkPipeline VulkanRenderer::copySurface_buildPipeline(CopySurfacePipelineInfo& in
 	RendererShaderVk* vertexShader = defaultShaders.copySurface_vs;
 	RendererShaderVk* pixelShader = info.dstIsDepth ? defaultShaders.copySurface_psColor2Depth : defaultShaders.copySurface_psDepth2Color;
 
-	std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
-
-	shaderStages.emplace_back(CreatePipelineShaderStageCreateInfo(VK_SHADER_STAGE_VERTEX_BIT, vertexShader->GetShaderModule(), "main"));
-	shaderStages.emplace_back(CreatePipelineShaderStageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT, pixelShader->GetShaderModule(), "main"));
+	const VkPipelineShaderStageCreateInfo shaderStages[2] = {
+		CreatePipelineShaderStageCreateInfo(VK_SHADER_STAGE_VERTEX_BIT, vertexShader->GetShaderModule(), "main"),
+		CreatePipelineShaderStageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT, pixelShader->GetShaderModule(), "main"),
+	};
 
 	// ##########################################################################################################################################
 
@@ -405,19 +314,19 @@ VkPipeline VulkanRenderer::copySurface_buildPipeline(CopySurfacePipelineInfo& in
 
 	// ##########################################################################################################################################
 
-	std::vector<VkDynamicState> dynamicStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+	const VkDynamicState dynamicStates[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
 
 	VkPipelineDynamicStateCreateInfo dynamicState = {};
 	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-	dynamicState.dynamicStateCount = (uint32_t)dynamicStates.size();
-	dynamicState.pDynamicStates = dynamicStates.data();
+	dynamicState.dynamicStateCount = 2;
+	dynamicState.pDynamicStates = dynamicStates;
 
 	// ##########################################################################################################################################
 
 	VkGraphicsPipelineCreateInfo pipelineInfo{};
 	pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-	pipelineInfo.stageCount = (uint32_t)shaderStages.size();
-	pipelineInfo.pStages = shaderStages.data();
+	pipelineInfo.stageCount = 2;
+	pipelineInfo.pStages = shaderStages;
 	pipelineInfo.pVertexInputState = &vertexInputInfo;
 	pipelineInfo.pInputAssemblyState = &inputAssembly;
 	pipelineInfo.pViewportState = &viewportState;
@@ -493,15 +402,13 @@ VKRObjectTextureView* VulkanRenderer::surfaceCopy_createImageView(LatteTextureVk
 	return new VKRObjectTextureView(textureVk->GetImageObj(), imageView);
 }
 
+// A pipeline's framebuffers and its descriptor sets are told apart in
+// m_surfaceCopySlots by the owner they are kept under: its render pass member
+// for the one, its pipeline member for the other
 VKRObjectFramebuffer* VulkanRenderer::surfaceCopy_getOrCreateFramebuffer(VkCopySurfaceState_t& state, CopySurfacePipelineInfo* pipelineInfo)
 {
-	auto itr = pipelineInfo->map_framebuffers.find(state.destinationTexture);
-	if (itr != pipelineInfo->map_framebuffers.end())
-	{
-		auto p = itr->second.get(state.dstSlice, state.dstMip);
-		if (p != nullptr)
-			return p->vkObjFramebuffer;
-	}
+	if (SurfaceCopyValue* v = m_surfaceCopySlots.Find(&pipelineInfo->vkObjRenderPass, state.destinationTexture, state.dstSlice, state.dstMip))
+		return (VKRObjectFramebuffer*)v->obj;
 
 	// create view
 	VKRObjectTextureView* vkObjTextureView = surfaceCopy_createImageView(state.destinationTexture, state.dstSlice, state.dstMip);
@@ -516,23 +423,17 @@ VKRObjectFramebuffer* VulkanRenderer::surfaceCopy_getOrCreateFramebuffer(VkCopyS
 	VKRObjectFramebuffer* vkObjFramebuffer = new VKRObjectFramebuffer(pipelineInfo->vkObjRenderPass, fbAttachments, Vector2i(effectiveWidth, effectiveHeight));
 
 	// register
-	auto insertResult = pipelineInfo->map_framebuffers.try_emplace(state.destinationTexture, state.destinationTexture);
-	CopySurfacePipelineInfo::FramebufferValue* framebufferVal = insertResult.first->second.create(state.dstSlice, state.dstMip);
-	framebufferVal->vkObjFramebuffer = vkObjFramebuffer;
-	framebufferVal->vkObjImageView = vkObjTextureView;
+	SurfaceCopyValue* v = m_surfaceCopySlots.Add(&pipelineInfo->vkObjRenderPass, state.destinationTexture, state.dstSlice, state.dstMip);
+	v->obj = vkObjFramebuffer;
+	v->view = vkObjTextureView;
 	
 	return vkObjFramebuffer;
 }
 
 VKRObjectDescriptorSet* VulkanRenderer::surfaceCopy_getOrCreateDescriptorSet(VkCopySurfaceState_t& state, CopySurfacePipelineInfo* pipelineInfo)
 {
-	auto itr = pipelineInfo->map_descriptors.find(state.sourceTexture);
-	if (itr != pipelineInfo->map_descriptors.end())
-	{
-		auto p = itr->second.get(state.srcSlice, state.srcMip);
-		if (p != nullptr)
-			return p->vkObjDescriptorSet;
-	}
+	if (SurfaceCopyValue* v = m_surfaceCopySlots.Find(&pipelineInfo->vkObjPipeline, state.sourceTexture, state.srcSlice, state.srcMip))
+		return (VKRObjectDescriptorSet*)v->obj;
 
 	VKRObjectDescriptorSet* vkObjDescriptorSet = new VKRObjectDescriptorSet();
 
@@ -591,10 +492,9 @@ VKRObjectDescriptorSet* VulkanRenderer::surfaceCopy_getOrCreateDescriptorSet(VkC
 	vkUpdateDescriptorSets(m_logicalDevice, 1, &write_descriptor, 0, nullptr);
 
 	// register
-	auto insertResult = pipelineInfo->map_descriptors.try_emplace(state.sourceTexture, state.sourceTexture);
-	CopySurfacePipelineInfo::DescriptorValue* descriptorValue = insertResult.first->second.create(state.srcSlice, state.srcMip);
-	descriptorValue->vkObjDescriptorSet = vkObjDescriptorSet;
-	descriptorValue->vkObjImageView = vkObjImageView;
+	SurfaceCopyValue* v = m_surfaceCopySlots.Add(&pipelineInfo->vkObjPipeline, state.sourceTexture, state.srcSlice, state.srcMip);
+	v->obj = vkObjDescriptorSet;
+	v->view = vkObjImageView;
 	
 	return vkObjDescriptorSet;
 }
@@ -845,49 +745,20 @@ void VulkanRenderer::surfaceCopy_copySurfaceWithFormatConversion(LatteTexture* s
 // it is guaranteed that the texture is not in use and all associated resources (descriptor sets, framebuffers) can be destroyed safely
 void VulkanRenderer::surfaceCopy_notifyTextureRelease(LatteTextureVk* hostTexture)
 {
-	for (auto& itr : m_copySurfacePipelineCache)
-	{
-		auto& pipelineInfo = itr.second;
-		
-		auto itrDescriptors = pipelineInfo->map_descriptors.find(hostTexture);
-		if (itrDescriptors != pipelineInfo->map_descriptors.end())
-		{
-			for (auto p : itrDescriptors->second.m_array)
-			{
-				if (p)
-				{
-					VulkanRenderer::GetInstance()->ReleaseDestructibleObject(p->vkObjDescriptorSet);
-					p->vkObjDescriptorSet = nullptr;
-					VulkanRenderer::GetInstance()->ReleaseDestructibleObject(p->vkObjImageView);
-					p->vkObjImageView = nullptr;
-				}
-			}
-			pipelineInfo->map_descriptors.erase(itrDescriptors);
-		}
-
-		auto itrFramebuffers = pipelineInfo->map_framebuffers.find(hostTexture);
-		if (itrFramebuffers != pipelineInfo->map_framebuffers.end())
-		{
-			for (auto p : itrFramebuffers->second.m_array)
-			{
-				if (p)
-				{
-					VulkanRenderer::GetInstance()->ReleaseDestructibleObject(p->vkObjFramebuffer);
-					p->vkObjFramebuffer = nullptr;
-					VulkanRenderer::GetInstance()->ReleaseDestructibleObject(p->vkObjImageView);
-					p->vkObjImageView = nullptr;
-				}
-			}
-			pipelineInfo->map_framebuffers.erase(itrFramebuffers);
-		}
-	}
+	m_surfaceCopySlots.ReleaseTexture(hostTexture, [this](SurfaceCopyValue& v) {
+		ReleaseDestructibleObject(v.obj);
+		ReleaseDestructibleObject(v.view);
+	});
 }
 
 void VulkanRenderer::surfaceCopy_cleanup()
 {
-	for(auto& i : m_copySurfacePipelineCache)
-	{
-		delete i.second;
-	}
-	m_copySurfacePipelineCache = {};
+	// the framebuffers and descriptor sets first: their pipelines' render
+	// passes and layouts after them
+	m_surfaceCopySlots.ReleaseAll([this](SurfaceCopyValue& v) {
+		ReleaseDestructibleObject(v.obj);
+		ReleaseDestructibleObject(v.view);
+	});
+	m_copySurfacePipelineCache.ForEach([](uint64, CopySurfacePipelineInfo* info) { delete info; });
+	m_copySurfacePipelineCache.Clear();
 }

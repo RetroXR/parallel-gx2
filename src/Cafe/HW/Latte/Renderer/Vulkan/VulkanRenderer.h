@@ -370,7 +370,10 @@ private:
 
 	VKRObjectRenderPass* copySurface_createRenderpass(VkFormat dstFormat, bool dstIsDepth, bool dstHasStencil);
 
-	std::unordered_map<uint64, struct CopySurfacePipelineInfo*> m_copySurfacePipelineCache;
+	U64Table<struct CopySurfacePipelineInfo> m_copySurfacePipelineCache;
+	// their framebuffers and descriptor sets, by pipeline, texture, slice and
+	// mip: sized at init
+	SurfaceCopySlots m_surfaceCopySlots;
 
 public:
 	// renderer interface

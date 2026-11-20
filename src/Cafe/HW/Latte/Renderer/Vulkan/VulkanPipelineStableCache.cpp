@@ -550,6 +550,7 @@ int VulkanPipelineStableCache::CompilerThread()
 void VulkanPipelineStableCache::WorkerThread()
 {
 	SetThreadName("plCacheWriter");
+	MemStreamWriter& memWriter = m_writeBuffer;
 	while (true)
 	{
 		CachedPipeline* job;
@@ -573,7 +574,7 @@ void VulkanPipelineStableCache::WorkerThread()
 			continue;
 		}
 		// serialize
-		MemStreamWriter memWriter(1024 * 4);
+		memWriter.reset();
 		SerializePipeline(memWriter, *job);
 		auto blob = memWriter.getResult();
 		// file name is derived from data hash

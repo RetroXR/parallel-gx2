@@ -285,6 +285,7 @@ VulkanRenderer::VulkanRenderer(VkInstance instance, VkPhysicalDevice physDevice,
 	// while a game plays
 	m_destructionQueue.reserve(4096);
 	m_pipeline_info_cache.Reserve(16384);
+	m_surfaceCopySlots.Reserve(2048);
 
 	// Use externally provided objects
 	m_instance = instance;

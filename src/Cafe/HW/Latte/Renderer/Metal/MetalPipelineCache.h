@@ -4,6 +4,7 @@
 #include "util/helpers/MpmcQueue.h"
 #include "util/helpers/RecycledBuffers.h"
 #include "util/helpers/MpscList.h"
+#include "util/helpers/Serializer.h"
 #include "util/math/vector2.h"
 
 class MetalPipelineCache
@@ -35,6 +36,9 @@ private:
     void TakeLoadedPipelines();
 
 	std::thread* m_pipelineCacheStoreThread;
+	// the writer thread's, emptied for each pipeline and grown only past the
+	// largest it has written: made with the cache, not when the thread starts
+	MemStreamWriter m_writeBuffer{ 1024 * 4 };
 
 	class FileCache* s_cache;
 

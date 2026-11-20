@@ -613,6 +613,7 @@ int MetalPipelineCache::CompilerThread()
 void MetalPipelineCache::WorkerThread()
 {
 	SetThreadName("plCacheWriter");
+	MemStreamWriter& memWriter = m_writeBuffer;
 	while (true)
 	{
 		MetalCachedPipeline* job;
@@ -623,7 +624,7 @@ void MetalPipelineCache::WorkerThread()
 			continue;
 		}
 		// serialize
-		MemStreamWriter memWriter(1024 * 4);
+		memWriter.reset();
 		SerializePipeline(memWriter, *job);
 		auto blob = memWriter.getResult();
 		// file name is derived from data hash

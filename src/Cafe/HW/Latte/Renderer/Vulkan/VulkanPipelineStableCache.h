@@ -4,6 +4,7 @@
 #include "util/helpers/MpmcQueue.h"
 #include "util/helpers/RecycledBuffers.h"
 #include "util/helpers/U64Table.h"
+#include "util/helpers/Serializer.h"
 
 struct VulkanPipelineHash
 {
@@ -55,6 +56,9 @@ private:
 	void WorkerThread();  // runs on: this cache's own plCacheWriter thread
 
 	std::thread* m_pipelineCacheStoreThread;
+	// the writer thread's, emptied for each pipeline and grown only past the
+	// largest it has written: made with the cache, not when the thread starts
+	MemStreamWriter m_writeBuffer{ 1024 * 4 };
 	// Upstream detaches both kinds of thread and never waits for them, which
 	// costs nothing in a process that is about to end. A core outlives the
 	// title: the compiler threads build pipelines that are registered with the

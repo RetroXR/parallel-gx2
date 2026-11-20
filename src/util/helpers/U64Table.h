@@ -48,6 +48,16 @@ public:
 			u64_map_take(&m_map, key);
 	}
 
+	// f(key, obj) for every entry, in no order; f changes nothing in the table
+	template<typename F>
+	void ForEach(F f) const
+	{
+		size_t cursor = 0;
+		uint64_t key;
+		while (void* v = u64_map_next(&m_map, &cursor, &key))
+			f(key, static_cast<T*>(v));
+	}
+
 	size_t Count() const { return m_map.count; }
 	size_t Capacity() const { return m_slots.size(); }
 

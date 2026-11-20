@@ -851,6 +851,23 @@ test-fetch-shader:
     - make -C test/fetch_shader clean
     - SANITIZER=thread ./test/fetch_shader/run_tests.sh
 
+# The surface copies' framebuffers and descriptor sets by pipeline, texture,
+# slice and mip: released with their textures, nothing allocated.
+test-surface-copy:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+    CC: gcc-12
+    CXX: g++-12
+  script:
+    - ./test/surface_copy/run_tests.sh
+    - make -C test/surface_copy clean
+    - SANITIZER=address,undefined ./test/surface_copy/run_tests.sh
+    - make -C test/surface_copy clean
+    - SANITIZER=thread ./test/surface_copy/run_tests.sh
+
 test-pin-table:
   stage: test
   image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports

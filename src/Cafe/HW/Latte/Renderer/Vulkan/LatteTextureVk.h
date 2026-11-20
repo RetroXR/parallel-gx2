@@ -5,6 +5,18 @@
 #include "util/ChunkedHeap/ChunkedHeap.h"
 
 #include "Cafe/HW/Latte/Renderer/Vulkan/VKRBase.h"
+#include "Cafe/HW/Latte/Renderer/Vulkan/SurfaceCopyTable.h"
+
+class LatteTextureVk;
+
+// a surface copy's framebuffer of a texture's slice and mip, or its
+// descriptor set reading one, with the view it is made on
+struct SurfaceCopyValue
+{
+	VKRDestructibleObject* obj;
+	VKRObjectTextureView* view;
+};
+using SurfaceCopySlots = SurfaceCopyTable<LatteTextureVk, SurfaceCopyValue>;
 
 // from a pool (PoolNew.h): made as a game reaches new textures
 class LatteTextureVk : public LatteTexture, public PoolNew<LatteTextureVk, 64>
@@ -24,6 +36,9 @@ public:
 	void AllocateOnHost() override;
 
 	VKRObjectTexture* GetImageObj() const { return vkObjTex; };
+
+	// the surface copies' framebuffers and descriptor sets of it
+	SurfaceCopySlots::Slot* surfaceCopySlots{};
 	
 	VkFormat GetFormat() const { return vkObjTex->m_format; }
 	VkImageAspectFlags GetImageAspect() const { return vkObjTex->m_imageAspect; }
