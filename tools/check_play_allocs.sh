@@ -2661,6 +2661,8 @@ src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::I
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::InitFromCurrentGPUState
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::TakeOptimizedPipeline
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::CompileFromLibraries
+src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::MakeLibraryPart
+src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::GatherLibraryPartsTogether
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp Build
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::RetireAheadParts
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::LinkOptimized

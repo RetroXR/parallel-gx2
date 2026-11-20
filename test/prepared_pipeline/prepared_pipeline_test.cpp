@@ -14,7 +14,11 @@
 //    it, and what it built is there to take;
 //  - tickets dropped with the queue, unrun: nothing leaks (LeakSanitizer);
 //  - tickets come from a pool (ClaimTicket.h, PoolNew.h): once as many have
-//    been out as a game keeps, queuing another allocates nothing.
+//    been out as a game keeps, queuing another allocates nothing;
+//  - built together (BuildTogether, a waiting draw's missing pipeline parts):
+//    each built once, the queued ones on the compile threads while the
+//    others are built here when threads are free - the builds overlapping -
+//    and here, one after the other, when none is.
 #include "Cafe/HW/Latte/Renderer/Vulkan/PreparedPipeline.h"
 #include "util/helpers/MpmcQueue.h"
 
@@ -243,6 +247,65 @@ static void Pooled()
 	CHECK(laterAllocs == 0);
 }
 
+// a build that takes a while and counts how many run at once
+static std::atomic<int> s_running{0};
+static std::atomic<int> s_mostRunning{0};
+struct SlowEntry
+{
+	std::atomic<int> builds{0};
+	std::atomic<int> onCompileThread{-1};
+	PreparedPipeline prepared{[](void* self, bool onCompileThread) {
+		SlowEntry* e = (SlowEntry*)self;
+		const int now = ++s_running;
+		int most = s_mostRunning.load();
+		while (now > most && !s_mostRunning.compare_exchange_weak(most, now))
+			;
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+		--s_running;
+		e->onCompileThread = onCompileThread;
+		e->builds++;
+		return (VkPipeline)(uintptr_t)1;
+	}, this};
+};
+
+static void Together()
+{
+	// compile threads free: the queued ones built there, overlapping the
+	// ones built here
+	{
+		Pool pool;
+		pool.Start(2);
+		SlowEntry e[4];
+		PreparedPipeline* here[2] = { &e[0].prepared, &e[1].prepared };
+		PreparedPipeline* queued[2] = { &e[2].prepared, &e[3].prepared };
+		s_mostRunning = 0;
+		const auto t0 = std::chrono::steady_clock::now();
+		PreparedPipeline::BuildTogether(here, 2, queued, 2, [&](PreparedPipeline& item) { pool.queue.push(item.Queue()); });
+		const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+		for (auto& x : e)
+			CHECK(x.builds == 1 && x.prepared.IsBuilt());
+		CHECK(e[0].onCompileThread == 0 && e[1].onCompileThread == 0);
+		CHECK(s_mostRunning >= 2);
+		std::printf("together: 4 builds of 20 ms in %.0f ms, %d at once at most\n", ms, s_mostRunning.load());
+		pool.Stop();
+	}
+	// no compile thread: all here, one after the other, none waited for
+	{
+		Pool pool; // never started
+		SlowEntry e[3];
+		PreparedPipeline* here[1] = { &e[0].prepared };
+		PreparedPipeline* queued[2] = { &e[1].prepared, &e[2].prepared };
+		s_mostRunning = 0;
+		PreparedPipeline::BuildTogether(here, 1, queued, 2, [&](PreparedPipeline& item) { pool.queue.push(item.Queue()); });
+		for (auto& x : e)
+			CHECK(x.builds == 1 && x.onCompileThread == 0);
+		CHECK(s_mostRunning == 1);
+		pool.Stop(); // the tickets left in the queue find nothing to build
+		for (auto& x : e)
+			CHECK(x.builds == 1);
+	}
+}
+
 int main()
 {
 	MadeAhead();
@@ -250,6 +313,7 @@ int main()
 	Retired();
 	Dropped();
 	Pooled();
+	Together();
 	if (s_failures)
 	{
 		std::printf("%d failed\n", s_failures);

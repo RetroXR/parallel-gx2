@@ -59,6 +59,23 @@ public:
 		return m_pipeline;
 	}
 
+	// Several built at once for the thread that needs every one of them: the
+	// queued ones handed to the compile threads (queue(item)), the others
+	// built here meanwhile, then each queued one taken - built here as well
+	// where no compile thread has started on it, waited for where one has.
+	// With compile threads free the wait is for the slowest build rather
+	// than their sum; with none, the same builds one after the other, here.
+	template<typename QueueFn>
+	static void BuildTogether(PreparedPipeline* const* here, size_t hereCount, PreparedPipeline* const* queued, size_t queuedCount, QueueFn queue)
+	{
+		for (size_t i = 0; i < queuedCount; i++)
+			queue(*queued[i]);
+		for (size_t i = 0; i < hereCount; i++)
+			here[i]->Take();
+		for (size_t i = 0; i < queuedCount; i++)
+			queued[i]->Take();
+	}
+
 	bool IsBuilt() const { return m_built.load(std::memory_order_acquire); }
 
 	// From here on no compile thread builds it, and none is: for the owner,

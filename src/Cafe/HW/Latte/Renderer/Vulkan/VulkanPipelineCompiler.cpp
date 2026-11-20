@@ -753,6 +753,133 @@ bool PipelineCompiler::TakeOptimizedPipeline(OptimizedPipeline& result)
 // the parts are linked as they are, a link and no compile, and a compile
 // thread links them optimized, which then takes its place; otherwise they
 // are linked optimized at once.
+VkPipeline PipelineCompiler::MakeLibraryPart(int p, uint64 key, bool claimed, const VkGraphicsPipelineCreateInfo& full, bool forceCompile, bool isRenderThread, VkResult& result)
+{
+	VulkanRenderer* vkRenderer = VulkanRenderer::GetInstance();
+	VulkanPipelineLibraryCache& cache = *vkRenderer->m_pipelineLibraries;
+	const VulkanPipelineLibraryPart part = (VulkanPipelineLibraryPart)p;
+	// made here: under the claim, or adopted by the cache when the key is
+	// another thread's (a pipeline needs its parts for as long as it lives);
+	// without forceCompile only out of the driver's cache
+	VkGraphicsPipelineCreateInfo ci = full;
+	if (!forceCompile)
+		ci.flags |= VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT;
+	else
+		ci.flags &= ~VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT;
+	PSO_TRACE_SCOPE(isRenderThread ? (forceCompile ? "pipeline library sync" : "pipeline library from cache") : "pipeline library", key);
+	VkPipeline library = VK_NULL_HANDLE;
+	vkRenderer->m_pipeline_cache_builds.Enter();
+	result = VulkanPipelineLibrary_Create(vkRenderer->m_logicalDevice, vkRenderer->m_pipeline_cache, part, ci, m_partLayout[p], &library);
+	vkRenderer->m_pipeline_cache_builds.Leave();
+	if (result != VK_SUCCESS)
+		library = VK_NULL_HANDLE;
+	if (claimed)
+		cache.Publish(part, key, library);
+	else if (library != VK_NULL_HANDLE)
+		cache.Adopt(library);
+	return library;
+}
+
+namespace
+{
+	// a part a waiting draw needs, made by a compile thread or by the GPU
+	// thread taking it (PreparedPipeline::BuildTogether)
+	struct LibraryPartBuild
+	{
+		PipelineCompiler* compiler;
+		const VkGraphicsPipelineCreateInfo* full;
+		int part;
+		uint64 key;
+		VkResult result{VK_SUCCESS};
+		// last: retired first
+		PreparedPipeline prepared{[](void* self, bool onCompileThread) {
+			LibraryPartBuild* b = (LibraryPartBuild*)self;
+			return b->compiler->MakeLibraryPart(b->part, b->key, true, *b->full, true, !onCompileThread, b->result);
+		}, this};
+	};
+}
+
+// The parts of a pipeline a draw waits for, on the GPU thread: those made
+// already taken, those another thread makes waited for, and the missing
+// ones claimed and made together - the shader parts (the costly ones) but
+// the first queued for the compile threads while this thread makes the
+// first, then each taken - where they were made one after the other. False
+// when one could not be made.
+bool PipelineCompiler::GatherLibraryPartsTogether(const VkGraphicsPipelineCreateInfo& full, const uint64 keys[], VkPipeline libraries[])
+{
+	VulkanPipelineLibraryCache& cache = *VulkanRenderer::GetInstance()->m_pipelineLibraries;
+	bool pending[VULKAN_PIPELINE_LIBRARY_PARTS]{};
+	int toMake[VULKAN_PIPELINE_LIBRARY_PARTS];
+	int makeCount = 0;
+	for (int p = 0; p < VULKAN_PIPELINE_LIBRARY_PARTS; p++)
+	{
+		const VulkanPipelineLibraryPart part = (VulkanPipelineLibraryPart)p;
+		VkPipeline library = VK_NULL_HANDLE;
+		const VulkanPipelineLibraryCache::State state = cache.Find(part, keys[p], library);
+		if (state == VulkanPipelineLibraryCache::State::Ready)
+			libraries[p] = library;
+		else if (state == VulkanPipelineLibraryCache::State::Missing && cache.Claim(part, keys[p]))
+			toMake[makeCount++] = p;
+		else
+			pending[p] = true; // another thread's
+	}
+	// the costly ones (the shader parts) but the first to the compile
+	// threads; the first and the cheap ones made here meanwhile
+	std::stable_partition(toMake, toMake + makeCount, [](int p) {
+		return p == VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION || p == VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER;
+	});
+	int costly = 0;
+	while (costly < makeCount && (toMake[costly] == VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION || toMake[costly] == VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER))
+		costly++;
+	LibraryPartBuild builds[VULKAN_PIPELINE_LIBRARY_PARTS];
+	PreparedPipeline* here[VULKAN_PIPELINE_LIBRARY_PARTS];
+	PreparedPipeline* queued[VULKAN_PIPELINE_LIBRARY_PARTS];
+	size_t hereCount = 0, queuedCount = 0;
+	for (int i = 0; i < makeCount; i++)
+	{
+		builds[i].compiler = this;
+		builds[i].full = &full;
+		builds[i].part = toMake[i];
+		builds[i].key = keys[toMake[i]];
+		if (i > 0 && i < costly)
+			queued[queuedCount++] = &builds[i].prepared;
+		else
+			here[hereCount++] = &builds[i].prepared;
+	}
+	PreparedPipeline::BuildTogether(here, hereCount, queued, queuedCount, [](PreparedPipeline& item) { CompileThreadPool_QueuePrepared(item); });
+	bool ok = true;
+	for (int i = 0; i < makeCount; i++)
+	{
+		VkPipeline library = builds[i].prepared.Take();
+		if (library == VK_NULL_HANDLE)
+		{
+			cemuLog_log(LogType::Force, "Failed to create graphics pipeline library part {}: {}", builds[i].part, (sint32)builds[i].result);
+			ok = false;
+		}
+		libraries[builds[i].part] = library;
+	}
+	for (int p = 0; p < VULKAN_PIPELINE_LIBRARY_PARTS; p++)
+	{
+		if (!pending[p])
+			continue;
+		PSO_TRACE_SCOPE("pipeline library wait", keys[p]);
+		VkPipeline library = VK_NULL_HANDLE;
+		if (cache.WaitFor((VulkanPipelineLibraryPart)p, keys[p], library) != VulkanPipelineLibraryCache::State::Ready)
+		{
+			// failed on the thread that claimed it: made here, as before
+			VkResult result;
+			library = MakeLibraryPart(p, keys[p], cache.Claim((VulkanPipelineLibraryPart)p, keys[p]), full, true, true, result);
+			if (library == VK_NULL_HANDLE)
+			{
+				cemuLog_log(LogType::Force, "Failed to create graphics pipeline library part {}: {}", p, (sint32)result);
+				ok = false;
+			}
+		}
+		libraries[p] = library;
+	}
+	return ok;
+}
+
 bool PipelineCompiler::CompileFromLibraries(const VkGraphicsPipelineCreateInfo& full, bool forceCompile, bool isRenderThread)
 {
 	VulkanRenderer* vkRenderer = VulkanRenderer::GetInstance();
@@ -776,7 +903,16 @@ bool PipelineCompiler::CompileFromLibraries(const VkGraphicsPipelineCreateInfo& 
 
 	VkPipeline libraries[VULKAN_PIPELINE_LIBRARY_PARTS]{};
 	bool ok = true;
-	for (int p = 0; p < VULKAN_PIPELINE_LIBRARY_PARTS && ok; p++)
+	if (forceCompile && isRenderThread)
+	{
+		// a draw waits: what is missing made at once, not one after the other
+		uint64 keys[VULKAN_PIPELINE_LIBRARY_PARTS];
+		for (int p = 0; p < VULKAN_PIPELINE_LIBRARY_PARTS; p++)
+			keys[p] = VulkanPipelineLibrary_Key((VulkanPipelineLibraryPart)p, full, identity);
+		if (!GatherLibraryPartsTogether(full, keys, libraries))
+			return true; // a part failed: no use trying again
+	}
+	else for (int p = 0; p < VULKAN_PIPELINE_LIBRARY_PARTS && ok; p++)
 	{
 		const VulkanPipelineLibraryPart part = (VulkanPipelineLibraryPart)p;
 		const uint64 key = VulkanPipelineLibrary_Key(part, full, identity);
@@ -799,24 +935,8 @@ bool PipelineCompiler::CompileFromLibraries(const VkGraphicsPipelineCreateInfo& 
 			ok = false; // being made elsewhere
 			break;
 		}
-		// made here: under the claim, or adopted by the cache when the key is
-		// another thread's (a pipeline needs its parts for as long as it
-		// lives); without forceCompile only out of the driver's cache
-		VkGraphicsPipelineCreateInfo ci = full;
-		if (!forceCompile)
-			ci.flags |= VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT;
-		else
-			ci.flags &= ~VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT;
-		PSO_TRACE_SCOPE(isRenderThread ? (forceCompile ? "pipeline library sync" : "pipeline library from cache") : "pipeline library", key);
-		vkRenderer->m_pipeline_cache_builds.Enter();
-		const VkResult result = VulkanPipelineLibrary_Create(device, vkRenderer->m_pipeline_cache, part, ci, m_partLayout[p], &library);
-		vkRenderer->m_pipeline_cache_builds.Leave();
-		if (result != VK_SUCCESS)
-			library = VK_NULL_HANDLE;
-		if (claimed)
-			cache.Publish(part, key, library);
-		else if (library != VK_NULL_HANDLE)
-			cache.Adopt(library);
+		VkResult result;
+		library = MakeLibraryPart(p, key, claimed, full, forceCompile, isRenderThread, result);
 		if (library == VK_NULL_HANDLE)
 		{
 			if (result != VK_PIPELINE_COMPILE_REQUIRED_EXT)

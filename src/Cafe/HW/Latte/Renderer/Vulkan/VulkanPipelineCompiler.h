@@ -114,6 +114,9 @@ public:
 
 	// returns true if the shader was compiled (even if errors occurred)
 	bool Compile(bool forceCompile, bool isRenderThread, bool showInOverlay);
+	// a part made by this thread, under the key's claim when claimed (else
+	// adopted by the cache); VK_NULL_HANDLE with result when it was not
+	VkPipeline MakeLibraryPart(int part, uint64 key, bool claimed, const VkGraphicsPipelineCreateInfo& full, bool forceCompile, bool isRenderThread, VkResult& result);
 
 	/* graphics pipeline libraries (VulkanPipelineLibrary.h) */
 
@@ -155,6 +158,8 @@ public:
 
 private:
 	bool CompileFromLibraries(const VkGraphicsPipelineCreateInfo& full, bool forceCompile, bool isRenderThread);
+	// the parts a draw waits for, the missing ones made together (BuildTogether)
+	bool GatherLibraryPartsTogether(const VkGraphicsPipelineCreateInfo& full, const uint64 keys[], VkPipeline libraries[]);
 	void LogCompileFailure(VkResult result, sint32 topology);
 public:
 

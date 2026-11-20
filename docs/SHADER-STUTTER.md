@@ -332,6 +332,15 @@ before, a compile that found its part pending made it again and kept both.
 for none, and eight threads waiting for 200 parts another makes (each the
 one published, a failed one missing, none made twice; TSan in CI).
 
+A draw that waits for its pipeline - essential, or with Async Shader
+Compile off - and finds parts missing has them made at once rather than one
+after the other: the shader parts but the first queued for the compile
+threads while the GPU thread makes the first and the cheap ones, then each
+taken - made on the GPU thread as well where no compile thread has started
+on it (`PreparedPipeline::BuildTogether`). Its wait is for the slowest part,
+not their sum. `test/prepared_pipeline` checks the builds overlap with
+compile threads free and run one after the other here with none.
+
 Next: the draws async skips while the parts are made.
 
 - **Graphics pipeline libraries** where the device has them
