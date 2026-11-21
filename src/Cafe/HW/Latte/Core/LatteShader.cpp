@@ -429,6 +429,8 @@ void LatteSHRC_RegisterShader(LatteDecompilerShader* shader, uint64 baseHash, ui
 	auto& cache = LatteSHRC_GetCacheByType(shader->shaderType);
 	if (shader->shaderType == LatteConst::ShaderType::Pixel)
 		LatteShaderAhead_NotePixelShader(baseHash);
+	else if (shader->shaderType == LatteConst::ShaderType::Vertex)
+		LatteShaderAhead_NoteVertexShader(baseHash);
 	shader->baseHash = baseHash;
 	shader->auxHash = auxHash;
 
@@ -546,12 +548,18 @@ void LatteSHRC_UpdateVSBaseHash(uint8* vertexShaderPtr, uint32 vertexShaderSize,
 	uint64 vsHash1 = 0;
 	uint64 vsHash2 = 0;
 	_calculateShaderProgramHash(vsProgramCode, vertexShaderSize, &hashCacheVS, &vsHash1, &vsHash2);
-	uint64 vsHash = vsHash1 + vsHash2 + fetchShader->key + _activePSImportTable.key + (usesGeometryShader ? 0x1111ULL : 0ULL);
+	_shaderBaseHash_vs = LatteSHRC_VertexBaseHash(vsHash1, vsHash2, fetchShader, _activePSImportTable.key, usesGeometryShader, LatteGPUState.contextRegister);
+}
 
-	uint32 tmp = LatteGPUState.contextNew.PA_CL_VTE_CNTL.getRawValue() ^ 0x43F;
+uint64 LatteSHRC_VertexBaseHash(uint64 vsHash1, uint64 vsHash2, LatteFetchShader* fetchShader, uint64 psImportKey, bool usesGeometryShader, uint32* regs)
+{
+	const LatteContextRegister& context = *reinterpret_cast<const LatteContextRegister*>(regs);
+	uint64 vsHash = vsHash1 + vsHash2 + fetchShader->key + psImportKey + (usesGeometryShader ? 0x1111ULL : 0ULL);
+
+	uint32 tmp = context.PA_CL_VTE_CNTL.getRawValue() ^ 0x43F;
 	vsHash += tmp;
 
-	auto primitiveType = LatteGPUState.contextNew.VGT_PRIMITIVE_TYPE.get_PRIMITIVE_MODE();
+	auto primitiveType = context.VGT_PRIMITIVE_TYPE.get_PRIMITIVE_MODE();
 	// TODO: include always in the hash in case of geometry shader or rect shader on Metal
 	if (primitiveType == Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::RECTS)
 	{
@@ -562,9 +570,9 @@ void LatteSHRC_UpdateVSBaseHash(uint8* vertexShaderPtr, uint32 vertexShaderSize,
 		// required for Vulkan since we have to write the pointsize in the shader
 		vsHash += 71ULL;
 	}
-	vsHash += (LatteGPUState.contextRegister[mmVGT_STRMOUT_EN] ? 21 : 0);
+	vsHash += (regs[mmVGT_STRMOUT_EN] ? 21 : 0);
 	// halfZ
-	if (LatteGPUState.contextNew.PA_CL_CLIP_CNTL.get_DX_CLIP_SPACE_DEF())
+	if (context.PA_CL_CLIP_CNTL.get_DX_CLIP_SPACE_DEF())
 		vsHash += 0x1537;
 
 #ifdef ENABLE_METAL
@@ -579,7 +587,7 @@ void LatteSHRC_UpdateVSBaseHash(uint8* vertexShaderPtr, uint32 vertexShaderSize,
            	    LatteParsedFetchShaderBufferGroup& group = fetchShader->bufferGroups[g];
           		uint32 bufferIndex = group.attributeBufferIndex;
           		uint32 bufferBaseRegisterIndex = mmSQ_VTX_ATTRIBUTE_BLOCK_START + bufferIndex * 7;
-          		uint32 bufferStride = (LatteGPUState.contextRegister[bufferBaseRegisterIndex + 2] >> 11) & 0xFFFF;
+          		uint32 bufferStride = (regs[bufferBaseRegisterIndex + 2] >> 11) & 0xFFFF;
 
                 vsHash += (uint64)bufferStride;
           		vsHash = std::rotl<uint64>(vsHash, 7);
@@ -588,7 +596,7 @@ void LatteSHRC_UpdateVSBaseHash(uint8* vertexShaderPtr, uint32 vertexShaderSize,
 
 	    if (!(usesGeometryShader || isRectVertexShader))
 		{
-      		if (LatteGPUState.contextNew.IsRasterizationEnabled())
+      		if (context.IsRasterizationEnabled())
       		    vsHash += 51ULL;
 
             // Vertex fetch
@@ -598,7 +606,7 @@ void LatteSHRC_UpdateVSBaseHash(uint8* vertexShaderPtr, uint32 vertexShaderSize,
 	}
 #endif
 
-	_shaderBaseHash_vs = vsHash;
+	return vsHash;
 }
 
 void LatteSHRC_UpdateGSBaseHash(uint8* geometryShaderPtr, uint32 geometryShaderSize, uint8* geometryCopyShader, uint32 geometryCopyShaderSize)
@@ -894,6 +902,15 @@ void LatteShader_DecompilePixelShaderAhead(uint32* regs, uint8* program, uint32 
 	t_psInputTableAhead = nullptr;
 }
 
+void LatteShader_DecompileVertexShaderAhead(uint32* regs, uint8* program, uint32 programSize, LatteFetchShader* fetchShader, LatteShaderPSInputTable* inputs, uint64 baseHash, LatteDecompilerOutput_t* output)
+{
+	LatteDecompilerOptions options;
+	LatteShader_GetDecompilerOptions(options, LatteConst::ShaderType::Vertex, false);
+	t_psInputTableAhead = inputs;
+	LatteDecompiler_DecompileVertexShader(baseHash, regs, program, programSize, fetchShader, options, output);
+	t_psInputTableAhead = nullptr;
+}
+
 // A separable shader's decompile, which any thread may run: it reads the
 // context registers, its program and the pixel shader's input table, which
 // the GPU thread leaves as they are until it has the output, and writes only
@@ -1077,18 +1094,25 @@ static void LatteSHRC_GetOrCreateVertexAndPixelShader(uint8* vertexShaderPtr, ui
 	{
 		LatteSeparableDecompile vs(LatteConst::ShaderType::Vertex, _shaderBaseHash_vs, vertexShaderPtr, vertexShaderSize, usesGeometryShader, fetchShader);
 		LatteSeparableDecompile ps(LatteConst::ShaderType::Pixel, _shaderBaseHash_ps, pixelShaderPtr, pixelShaderSize, usesGeometryShader, nullptr);
-		// a pixel shader a compile thread decompiled ahead, for these registers
+		// shaders a compile thread decompiled ahead, for these registers
+		bool vertexAhead = false;
 		bool pixelAhead = false;
+		if (!vertexShader && !usesGeometryShader)
+		{
+			PSO_TRACE_SCOPE("vertex shader decompiled ahead?", vs.baseHash);
+			vertexAhead = LatteShaderAhead_TakeVertexShader(vs.baseHash, fetchShader, vs.output);
+		}
 		if (!pixelShader && !usesGeometryShader)
 		{
 			PSO_TRACE_SCOPE("pixel shader decompiled ahead?", ps.baseHash);
 			pixelAhead = LatteShaderAhead_TakePixelShader(ps.baseHash, ps.output);
 		}
+		const bool decompileVertex = !vertexShader && !vertexAhead;
 		const bool decompilePixel = !pixelShader && !pixelAhead;
 		performanceMonitor.gpuTime_shaderCreate.beginMeasuring();
-		if (!vertexShader && decompilePixel)
+		if (decompileVertex && decompilePixel)
 			LatteShader_DecompileTogether(vs, ps);
-		else if (!vertexShader)
+		else if (decompileVertex)
 		{
 			PSO_TRACE_SCOPE("decompile vs", vs.baseHash);
 			vs.Run();

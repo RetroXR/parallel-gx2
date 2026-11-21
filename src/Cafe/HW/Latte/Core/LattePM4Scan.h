@@ -35,3 +35,5 @@ void LattePM4_Scan(LattePM4Scan& scan, const uint32be* words, uint32 count);
 // geometry shader), as one value: equal where the decompile would be
 // (LatteShaderAhead.cpp takes a shader decompiled ahead only then)
 uint64 LattePM4_PixelShaderInputs(const uint32* regs);
+// the same for a vertex shader's (its fetch shader's parse included)
+uint64 LattePM4_VertexShaderInputs(const uint32* regs);

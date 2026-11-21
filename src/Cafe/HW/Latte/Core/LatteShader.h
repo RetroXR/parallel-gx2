@@ -123,6 +123,12 @@ void LatteShader_FreeDecompilerOutput(LatteDecompilerOutput_t& output);
 // table of the caller's, no geometry shader (LatteShaderAhead.cpp)
 void LatteShader_DecompilePixelShaderAhead(uint32* regs, uint8* program, uint32 programSize, LatteShaderPSInputTable* inputs, uint64 baseHash, LatteDecompilerOutput_t* output);
 uint64 LatteSHRC_CalcPSAuxHash(LatteDecompilerShader* pixelShader, uint32* contextRegisters);
+// the same for a vertex shader, with its fetch shader
+void LatteShader_DecompileVertexShaderAhead(uint32* regs, uint8* program, uint32 programSize, struct LatteFetchShader* fetchShader, LatteShaderPSInputTable* inputs, uint64 baseHash, LatteDecompilerOutput_t* output);
+uint64 LatteSHRC_CalcVSAuxHash(LatteDecompilerShader* vertexShader, uint32* contextRegisters);
+// a vertex shader's base hash from its program's, for registers of the
+// caller's (LatteSHRC_UpdateVSBaseHash takes the GPU's)
+uint64 LatteSHRC_VertexBaseHash(uint64 vsHash1, uint64 vsHash2, struct LatteFetchShader* fetchShader, uint64 psImportKey, bool usesGeometryShader, uint32* regs);
 
 #define SHADER_DUMP_TYPE_FETCH		0
 #define SHADER_DUMP_TYPE_VERTEX		1

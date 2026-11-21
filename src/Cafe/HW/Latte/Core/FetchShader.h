@@ -77,6 +77,12 @@ struct LatteFetchShader : PoolNew<LatteFetchShader>
 
 	void CalculateFetchShaderVkHash();
 
+	// emptied, to parse again (LatteFetchShader_Parse); for one never registered
+	void Reset();
+	// everything parsed, as one value: equal where a vertex shader's decompile
+	// would read the same from either (key alone leaves out some of it)
+	uint64 Fingerprint() const;
+
 #ifdef ENABLE_METAL
 	void CheckIfVerticesNeedManualFetchMtl(uint32* contextRegister);
 #endif
@@ -95,3 +101,6 @@ struct LatteFetchShader : PoolNew<LatteFetchShader>
 };
 
 LatteFetchShader* LatteShaderRecompiler_createFetchShader(LatteFetchShader::CacheHash fsHash, uint32* contextRegister, uint32* fsProgramCode, uint32 fsProgramSize);
+// the fetch shader program parsed into fs, from registers of the caller's;
+// on any thread, for one not registered (createFetchShader registers it)
+void LatteFetchShader_Parse(LatteFetchShader* fs, LatteFetchShader::CacheHash fsHash, uint32* contextRegister, uint32* fsProgramCode, uint32 fsProgramSize);

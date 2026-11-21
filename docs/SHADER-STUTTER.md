@@ -368,9 +368,20 @@ in play: four register copies and 64 slots are made at the renderer's
 start; a read that finds nothing doubles the command buffers passed over
 before the next, up to 63. `test/shader_ahead` checks the read against
 the command processor's packets, the registers compared, and the
-hand-over, four producers racing a consumer (TSan in CI). Next: vertex
-shaders (their fetch shader with them), then each shader's module and
-parts made from it ahead too, so that its first draw links.
+hand-over, four producers racing a consumer (TSan in CI).
+
+Vertex shaders are decompiled ahead the same way, each with its fetch
+shader parsed on the compile thread from the read's registers into an
+object of its own, never registered (`LatteFetchShader_Parse`). The draw
+takes one where the registers its decompile reads
+(`LattePM4_VertexShaderInputs`), its hashes and the draw's own fetch
+shader - which the GPU thread may have parsed for other registers before
+- match (`LatteFetchShader::Fingerprint`, everything parsed, where the key
+leaves out offsets past their low bits); the draw's fetch shader then
+becomes the shader's compatible one. `test/fetch_shader` parses into one
+object again and again on four threads, each the same as made fresh.
+Next: each shader's module and parts made ahead from what is decompiled,
+so that its first draw links.
 
 Next: the draws async skips while the parts are made.
 

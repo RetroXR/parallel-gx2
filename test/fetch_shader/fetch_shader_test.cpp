@@ -3,7 +3,12 @@
 // attributes together, in the order they were fetched, as the key, the
 // pipeline and the decompiler read them; more buffers or attributes than
 // there is room for left out, not written past; and a fetch shader made and
-// deleted again and again taking nothing from the allocator.
+// deleted again and again taking nothing from the allocator. A fetch shader
+// parsed again and again into one object (Reset, LatteFetchShader_Parse), as
+// a compile thread parses the ones it decompiles vertex shaders ahead with,
+// is each time the same as one made fresh (its Fingerprint and key), on
+// four threads at once (TSan in CI); and the Fingerprint tells apart two
+// that the key does not (an offset past its low bits).
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "Cafe/HW/Latte/ISA/LatteReg.h"
 
@@ -11,6 +16,7 @@
 #include <cstdlib>
 #include <new>
 #include <random>
+#include <thread>
 #include <vector>
 
 #if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
@@ -146,6 +152,63 @@ int main()
 		fs = Make(fetches);
 		CHECK(fs->bufferGroupsInvalid.size() == LatteFetchShader::kMaxGroups);
 		delete fs;
+	}
+	// parsed into one object again and again, on four threads at once: each
+	// the same as made fresh
+	{
+		std::vector<std::vector<uint32>> programs;
+		std::vector<uint64> fresh, freshKey;
+		for (int i = 0; i < 64; i++)
+		{
+			std::vector<Fetch> fetches;
+			const int n = 1 + rng() % 16;
+			for (int k = 0; k < n; k++)
+				fetches.push_back({ (uint32)(rng() % 20), (uint32)(rng() % 256), (uint32)(rng() % 64) * 4 });
+			programs.push_back(Program(fetches));
+			LatteFetchShader* fs = Make(fetches);
+			fresh.push_back(fs->Fingerprint());
+			freshKey.push_back(fs->key);
+			delete fs;
+		}
+		std::vector<std::thread> threads;
+		std::vector<int> diff(4, 0), count(4, 0);
+		for (int t = 0; t < 4; t++)
+		{
+			threads.emplace_back([&, t] {
+				LatteFetchShader mine;
+				for (int round = 0; round < 8; round++)
+					for (size_t i = (size_t)t; i < programs.size() + (size_t)t; i++)
+					{
+						const auto& p = programs[i % programs.size()];
+						mine.Reset();
+						LatteFetchShader_Parse(&mine, LatteFetchShader::CalculateCacheHash((void*)p.data(), (uint32)p.size() * 4), s_regs,
+							(uint32*)p.data(), (uint32)p.size() * 4);
+						count[t]++;
+						if (mine.Fingerprint() != fresh[i % programs.size()] || mine.key != freshKey[i % programs.size()])
+							diff[t]++;
+					}
+			});
+		}
+		for (auto& th : threads)
+			th.join();
+		int differing = 0, compared = 0;
+		for (int t = 0; t < 4; t++)
+		{
+			differing += diff[t];
+			compared += count[t];
+		}
+		std::printf("fetch_shader: %d parsed into a reused object on four threads, %d not as made fresh\n", compared, differing);
+		CHECK(compared == 4 * 8 * 64 && differing == 0);
+		// an offset past the low bits, the group's range the same: the same
+		// key, another fingerprint
+		LatteFetchShader* a = Make({ { 0, 1, 0 }, { 0, 2, 4 }, { 0, 3, 16 } });
+		LatteFetchShader* b = Make({ { 0, 1, 0 }, { 0, 2, 8 }, { 0, 3, 16 } });
+		CHECK(a->bufferGroups.size() == 1 && b->bufferGroups.size() == 1 && a->bufferGroups[0].minOffset == b->bufferGroups[0].minOffset &&
+			a->bufferGroups[0].totalAttribRangeSize == b->bufferGroups[0].totalAttribRangeSize);
+		CHECK(a->key == b->key);
+		CHECK(a->Fingerprint() != b->Fingerprint());
+		delete a;
+		delete b;
 	}
 	if (COUNT_ALLOCS)
 	{

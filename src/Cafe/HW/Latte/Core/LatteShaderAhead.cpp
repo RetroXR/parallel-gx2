@@ -1,6 +1,7 @@
 #include "Cafe/HW/Latte/Core/LatteShaderAhead.h"
 #include "Cafe/HW/Latte/Core/LattePM4Scan.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
+#include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "Cafe/HW/Latte/Core/LattePM4.h"
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/HW/Latte/Core/LatteConst.h"
@@ -17,27 +18,32 @@ void _calcShaderHashGeneric(uint32* programCode, uint32 programSize, uint64& out
 
 namespace
 {
-	struct AheadPixelShader
+	struct AheadShader
 	{
-		uint64 digest;
+		uint64 digest; // the registers its decompile read (LattePM4Scan.h)
 		uint64 auxHash;
+		uint64 fetchShader; // a vertex shader's: its fetch shader's Fingerprint
 		uint32 scan; // the read it was made in, to let one never taken go
 		LatteDecompilerOutput_t output;
 	};
 	// one key a slot (AheadSlots.h); a shader whose slot is taken is left to
 	// its draw
-	AheadSlots<AheadPixelShader, 64> s_pixel;
-	// the pixel shaders the GPU thread has: none decompiled ahead again
-	SeenKeys<1u << 15> s_seenPixel;
+	using Slots = AheadSlots<AheadShader, 64>;
+	// the shaders the GPU thread has: none decompiled ahead again
+	using Seen = SeenKeys<1u << 15>;
+	Slots s_pixel, s_vertex;
+	Seen s_seenPixel, s_seenVertex;
 
 	constexpr uint32 kJobs = 4;
 	constexpr uint32 kMaxProgram = 128 * 1024;
+	constexpr uint32 kMaxFetchProgram = 16 * 1024;
 	constexpr uint32 kMaxPerScan = 8;
 	// a shader made ahead and not taken by this many reads later goes
 	constexpr uint32 kStaleScans = 64;
 
-	// the registers copied from the GPU's for a read: what a pixel shader's
-	// decompile and its hashes read is in these (LattePM4_PixelShaderInputs)
+	// the registers copied from the GPU's for a read: what a shader's
+	// decompile and its hashes read is in these (LattePM4_PixelShaderInputs,
+	// LattePM4_VertexShaderInputs)
 	constexpr struct { uint32 start, count; } kCopied[] = {
 		{LATTE_REG_BASE_CONFIG, 0x1000},
 		{LATTE_REG_BASE_CONTEXT, 0x1000},
@@ -47,7 +53,13 @@ namespace
 	struct Job
 	{
 		uint32 regs[LATTE_MAX_REGISTER];
-		uint8 program[kMaxProgram];
+		// copies of the programs, each the one hashed and decompiled: guest
+		// memory may change under the read
+		uint8 psProgram[kMaxProgram];
+		uint8 vsProgram[kMaxProgram];
+		uint8 fsProgram[kMaxFetchProgram];
+		// the vertex shader's fetch shader, parsed here, never registered
+		LatteFetchShader fetchShader;
 		LatteShaderPSInputTable inputs;
 		uint32 physAddr;
 		uint32 words;
@@ -73,44 +85,101 @@ namespace
 		return reinterpret_cast<const uint32be*>(memory_getPointerFromPhysicalOffset(physAddr));
 	}
 
+	// size bytes of guest memory at a physical address, copied; false where
+	// they cannot be read or do not fit
+	bool CopyGuest(uint8* to, uint32 addr, uint32 size, uint32 room)
+	{
+		if (size > room || (size && (addr == 0 || !memory_isAddressRangeAccessible(addr, size))))
+			return false;
+		if (size)
+			memcpy(to, memory_getPointerFromPhysicalOffset(addr), size);
+		return true;
+	}
+
+	// decompile(output) for baseHash, published for its draw with finish(it)
+	// filling in what the draw checks it by
+	template<typename Decompile, typename Finish>
+	bool MakeAhead(Slots& slots, Seen& seen, uint64 baseHash, uint32 scan, Decompile decompile, Finish finish)
+	{
+		if (seen.Contains(baseHash))
+			return false;
+		bool hadPayload;
+		auto held = slots.Claim(baseHash, [&seen, scan](uint64 key, const AheadShader& p) {
+			return seen.Contains(key) || scan - p.scan > kStaleScans;
+		}, &hadPayload);
+		if (!held)
+			return false;
+		if (hadPayload)
+			LatteShader_FreeDecompilerOutput(held.payload->output);
+		held.payload->output = {};
+		decompile(held.payload->output);
+		if (!held.payload->output.shader)
+		{
+			slots.Abandon(held);
+			return false;
+		}
+		finish(*held.payload);
+		held.payload->scan = scan;
+		slots.Publish(held);
+		return true;
+	}
+
+	void PixelAhead(Job* job, uint32* regs)
+	{
+		const uint32 size = regs[mmSQ_PGM_START_PS + 1] << 3;
+		if (size == 0 || !CopyGuest(job->psProgram, regs[mmSQ_PGM_START_PS] << 8, size, kMaxProgram))
+			return;
+		uint64 h1, h2;
+		_calcShaderHashGeneric(reinterpret_cast<uint32*>(job->psProgram), size, h1, h2);
+		const uint64 baseHash = h1 + h2 + job->inputs.key; // LatteSHRC_UpdatePSBaseHash, no geometry shader
+		job->found += MakeAhead(s_pixel, s_seenPixel, baseHash, job->scan,
+			[&](LatteDecompilerOutput_t& out) {
+				LatteShader_DecompilePixelShaderAhead(regs, job->psProgram, size, &job->inputs, baseHash, &out);
+			},
+			[&](AheadShader& p) {
+				p.auxHash = LatteSHRC_CalcPSAuxHash(p.output.shader, regs);
+				p.digest = LattePM4_PixelShaderInputs(regs);
+				p.fetchShader = 0;
+			});
+	}
+
+	void VertexAhead(Job* job, uint32* regs)
+	{
+		const uint32 size = regs[mmSQ_PGM_START_VS + 1] << 3;
+		const uint32 fsSize = regs[mmSQ_PGM_START_FS + 1] << 3;
+		if (size == 0 || !CopyGuest(job->vsProgram, regs[mmSQ_PGM_START_VS] << 8, size, kMaxProgram) ||
+			!CopyGuest(job->fsProgram, regs[mmSQ_PGM_START_FS] << 8, fsSize, kMaxFetchProgram))
+			return;
+		// the fetch shader parsed as LatteFetchShader::FindByGPUState would parse it
+		// for these registers; the draw's own, which may have been parsed for
+		// others, has to match it (its Fingerprint)
+		job->fetchShader.Reset();
+		LatteFetchShader_Parse(&job->fetchShader, LatteFetchShader::CalculateCacheHash(job->fsProgram, fsSize), regs,
+			reinterpret_cast<uint32*>(job->fsProgram), fsSize);
+		uint64 h1, h2;
+		_calcShaderHashGeneric(reinterpret_cast<uint32*>(job->vsProgram), size, h1, h2);
+		const uint64 baseHash = LatteSHRC_VertexBaseHash(h1, h2, &job->fetchShader, job->inputs.key, false, regs);
+		job->found += MakeAhead(s_vertex, s_seenVertex, baseHash, job->scan,
+			[&](LatteDecompilerOutput_t& out) {
+				LatteShader_DecompileVertexShaderAhead(regs, job->vsProgram, size, &job->fetchShader, &job->inputs, baseHash, &out);
+			},
+			[&](AheadShader& p) {
+				p.auxHash = LatteSHRC_CalcVSAuxHash(p.output.shader, regs);
+				p.digest = LattePM4_VertexShaderInputs(regs);
+				p.fetchShader = job->fetchShader.Fingerprint();
+				p.output.shader->compatibleFetchShader = nullptr; // the draw's, once taken
+			});
+	}
+
 	bool OnDraw(void* ctx, uint32* regs)
 	{
 		Job* job = static_cast<Job*>(ctx);
 		if ((regs[Latte::REGADDR::VGT_GS_MODE] & 3) != 0)
-			return true; // the pixel shader's hash takes the geometry shader's: left to the draw
-		const uint32 addr = regs[mmSQ_PGM_START_PS] << 8;
-		const uint32 size = regs[mmSQ_PGM_START_PS + 1] << 3;
-		if (addr == 0 || size == 0 || size > kMaxProgram || !memory_isAddressRangeAccessible(addr, size))
-			return true;
-		// decompiled from a copy, the one hashed: guest memory may change under the read
-		memcpy(job->program, memory_getPointerFromPhysicalOffset(addr), size);
-		uint64 h1, h2;
-		_calcShaderHashGeneric(reinterpret_cast<uint32*>(job->program), size, h1, h2);
+			return true; // the shaders' hashes take the geometry shader's: left to the draw
 		LatteShader_CreatePSInputTable(&job->inputs, regs);
-		const uint64 baseHash = h1 + h2 + job->inputs.key; // LatteSHRC_UpdatePSBaseHash, no geometry shader
-		if (s_seenPixel.Contains(baseHash))
-			return true;
-		const uint32 scan = job->scan;
-		bool hadPayload;
-		auto held = s_pixel.Claim(baseHash, [scan](uint64 key, const AheadPixelShader& p) {
-			return s_seenPixel.Contains(key) || scan - p.scan > kStaleScans;
-		}, &hadPayload);
-		if (!held)
-			return true;
-		if (hadPayload)
-			LatteShader_FreeDecompilerOutput(held.payload->output);
-		held.payload->output = {};
-		LatteShader_DecompilePixelShaderAhead(regs, job->program, size, &job->inputs, baseHash, &held.payload->output);
-		if (!held.payload->output.shader)
-		{
-			s_pixel.Abandon(held);
-			return true;
-		}
-		held.payload->auxHash = LatteSHRC_CalcPSAuxHash(held.payload->output.shader, regs);
-		held.payload->digest = LattePM4_PixelShaderInputs(regs);
-		held.payload->scan = scan;
-		s_pixel.Publish(held);
-		return ++job->found < kMaxPerScan;
+		PixelAhead(job, regs);
+		VertexAhead(job, regs);
+		return job->found < kMaxPerScan;
 	}
 
 	void RunJob(Job* job)
@@ -161,11 +230,15 @@ void LatteShaderAhead_Shutdown()
 		s_jobs = nullptr;
 	}
 #endif
-	s_pixel.DrainPublished([](AheadPixelShader& p) {
-		LatteShader_FreeDecompilerOutput(p.output);
-		p.output = {};
-	});
+	for (Slots* slots : {&s_pixel, &s_vertex})
+	{
+		slots->DrainPublished([](AheadShader& p) {
+			LatteShader_FreeDecompilerOutput(p.output);
+			p.output = {};
+		});
+	}
 	s_seenPixel.Clear();
+	s_seenVertex.Clear();
 }
 
 void LatteShaderAhead_OnCommandBuffer(uint32 physAddr, uint32 words)
@@ -213,7 +286,7 @@ bool LatteShaderAhead_TakePixelShader(uint64 baseHash, LatteDecompilerOutput_t& 
 	auto held = s_pixel.Take(baseHash);
 	if (!held)
 		return false;
-	AheadPixelShader& p = *held.payload;
+	AheadShader& p = *held.payload;
 	const bool same = p.digest == LattePM4_PixelShaderInputs(LatteGPUState.contextRegister) &&
 		p.auxHash == LatteSHRC_CalcPSAuxHash(p.output.shader, LatteGPUState.contextRegister);
 	if (same)
@@ -225,7 +298,33 @@ bool LatteShaderAhead_TakePixelShader(uint64 baseHash, LatteDecompilerOutput_t& 
 	return same;
 }
 
+bool LatteShaderAhead_TakeVertexShader(uint64 baseHash, LatteFetchShader* fetchShader, LatteDecompilerOutput_t& output)
+{
+	auto held = s_vertex.Take(baseHash);
+	if (!held)
+		return false;
+	AheadShader& p = *held.payload;
+	const bool same = p.digest == LattePM4_VertexShaderInputs(LatteGPUState.contextRegister) &&
+		p.fetchShader == fetchShader->Fingerprint() &&
+		p.auxHash == LatteSHRC_CalcVSAuxHash(p.output.shader, LatteGPUState.contextRegister);
+	if (same)
+	{
+		output = p.output;
+		output.shader->compatibleFetchShader = fetchShader;
+	}
+	else
+		LatteShader_FreeDecompilerOutput(p.output);
+	p.output = {};
+	s_vertex.Release(held);
+	return same;
+}
+
 void LatteShaderAhead_NotePixelShader(uint64 baseHash)
 {
 	s_seenPixel.Insert(baseHash);
+}
+
+void LatteShaderAhead_NoteVertexShader(uint64 baseHash)
+{
+	s_seenVertex.Insert(baseHash);
 }

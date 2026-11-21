@@ -394,9 +394,73 @@ void _fetchShaderDecompiler_parseCF(LatteFetchShader* parsedFetchShader, uint32*
 // parse fetch shader and create LatteFetchShader object
 // also registers the fs in the cache (s_fetchShaderByHash)
 // can be assumed to be thread-safe, if called simultaneously on the same fetch shader only one shader will become registered. The others will be destroyed
+void LatteFetchShader::Reset()
+{
+	bufferGroups.clear();
+	bufferGroupsInvalid.clear();
+	m_attribCount = 0;
+	key = 0;
+	attributeBufferMask = 0;
+	vkPipelineHashFragment = 0;
+	mtlFetchVertexManually = false;
+	m_cacheHash = 0;
+}
+
+uint64 LatteFetchShader::Fingerprint() const
+{
+	uint64 h = 0x84222325cbf29ce4ull ^ key;
+	auto mix = [&h](uint64 v) {
+		h ^= v;
+		h *= 0x100000001b3ull;
+		h ^= h >> 31;
+	};
+	for (const auto* groups : {&bufferGroups, &bufferGroupsInvalid})
+	{
+		mix(groups->size());
+		for (const LatteParsedFetchShaderBufferGroup& g : *groups)
+		{
+			mix(g.attributeBufferIndex);
+			mix((uint64)(sint64)g.attribCount);
+			mix((g.hasVtxIndexAccess ? 1 : 0) | (g.hasInstanceIndexAccess ? 2 : 0));
+			mix(g.minOffset);
+			mix(g.totalAttribRangeSize);
+			for (sint32 i = 0; i < g.attribCount; i++)
+			{
+				const LatteParsedFetchShaderAttribute& a = g.attrib[i];
+				mix(a.attributeBufferIndex | (a.semanticId << 8) | ((uint64)a.format << 16) | ((uint64)a.fetchType << 32));
+				mix(a.nfa | (a.isSigned << 8) | ((uint64)a.endianSwap << 16) | ((uint64)a.ds[0] << 24) | ((uint64)a.ds[1] << 32) |
+					((uint64)a.ds[2] << 40) | ((uint64)a.ds[3] << 48));
+				mix((uint64)(uint32)a.aluDivisor | ((uint64)a.offset << 32));
+			}
+		}
+	}
+	mix(attributeBufferMask);
+	mix(vkPipelineHashFragment);
+	return h;
+}
+
 LatteFetchShader* LatteShaderRecompiler_createFetchShader(LatteFetchShader::CacheHash fsHash, uint32* contextRegister, uint32* fsProgramCode, uint32 fsProgramSize)
 {
 	LatteFetchShader* newFetchShader = new LatteFetchShader();
+	LatteFetchShader_Parse(newFetchShader, fsHash, contextRegister, fsProgramCode, fsProgramSize);
+	if (fsProgramSize == 0)
+		return newFetchShader; // as before: kept out of the cache
+
+	// register in cache; one with the same hash already there is used instead
+	LatteFetchShader* registeredFS = newFetchShader->RegisterInCache(fsHash);
+	if (!registeredFS)
+		newFetchShader->m_isRegistered = true;
+	else if (registeredFS != newFetchShader)
+	{
+		delete newFetchShader;
+		newFetchShader = registeredFS;
+	}
+	// else the cache is full: this one is used, not kept in it
+	return newFetchShader;
+}
+
+void LatteFetchShader_Parse(LatteFetchShader* newFetchShader, LatteFetchShader::CacheHash fsHash, uint32* contextRegister, uint32* fsProgramCode, uint32 fsProgramSize)
+{
 	newFetchShader->m_cacheHash = fsHash;
 	if( (fsProgramSize&0xF) != 0 )
 		debugBreakpoint();
@@ -432,7 +496,7 @@ LatteFetchShader* LatteShaderRecompiler_createFetchShader(LatteFetchShader::Cach
 #ifdef ENABLE_METAL
 		newFetchShader->CheckIfVerticesNeedManualFetchMtl(contextRegister);
 #endif
-		return newFetchShader;
+		return;
 	}
 
 	if ((fsProgramCode[0] & 1) == 0 && fsProgramCode[0] <= 0x30 && (fsProgramCode[1]&~((3 << 10)| (1 << 19))) == 0x01800000)
@@ -481,18 +545,6 @@ LatteFetchShader* LatteShaderRecompiler_createFetchShader(LatteFetchShader::Cach
 #ifdef ENABLE_METAL
 	newFetchShader->CheckIfVerticesNeedManualFetchMtl(contextRegister);
 #endif
-
-	// register in cache; one with the same hash already there is used instead
-	LatteFetchShader* registeredFS = newFetchShader->RegisterInCache(fsHash);
-	if (!registeredFS)
-		newFetchShader->m_isRegistered = true;
-	else if (registeredFS != newFetchShader)
-	{
-		delete newFetchShader;
-		newFetchShader = registeredFS;
-	}
-	// else the cache is full: this one is used, not kept in it
-	return newFetchShader;
 }
 
 LatteFetchShader::~LatteFetchShader()

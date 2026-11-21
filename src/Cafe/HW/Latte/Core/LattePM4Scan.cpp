@@ -196,9 +196,31 @@ void LattePM4_Scan(LattePM4Scan& scan, const uint32be* words, uint32 count)
 	}
 }
 
+namespace
+{
+	struct RegRange
+	{
+		uint32 start, count;
+	};
+
+	template<size_t N>
+	uint64 DigestOf(const uint32* regs, const RegRange (&ranges)[N])
+	{
+		uint64 h = 0xcbf29ce484222325ull;
+		for (const RegRange& r : ranges)
+			for (uint32 i = 0; i < r.count; i++)
+			{
+				h ^= regs[r.start + i];
+				h *= 0x100000001b3ull;
+				h ^= h >> 29;
+			}
+		return h;
+	}
+}
+
 uint64 LattePM4_PixelShaderInputs(const uint32* regs)
 {
-	static constexpr struct { uint32 start, count; } kRead[] = {
+	static constexpr RegRange kRead[] = {
 		{mmCB_SHADER_MASK, 1},
 		{Latte::REGADDR::SX_ALPHA_TEST_CONTROL, 1},
 		{mmSPI_VS_OUT_ID_0, 10},
@@ -213,13 +235,33 @@ uint64 LattePM4_PixelShaderInputs(const uint32* regs)
 		{Latte::REGADDR::VGT_PRIMITIVE_TYPE, 1},
 		{Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS, Latte::GPU_LIMITS::NUM_TEXTURES_PER_STAGE * 7},
 	};
-	uint64 h = 0xcbf29ce484222325ull;
-	for (const auto& r : kRead)
-		for (uint32 i = 0; i < r.count; i++)
-		{
-			h ^= regs[r.start + i];
-			h *= 0x100000001b3ull;
-			h ^= h >> 29;
-		}
-	return h;
+	return DigestOf(regs, kRead);
+}
+
+uint64 LattePM4_VertexShaderInputs(const uint32* regs)
+{
+	static constexpr RegRange kRead[] = {
+		{mmSQ_VTX_SEMANTIC_0, 32},
+		{mmCB_SHADER_MASK, 1},
+		{Latte::REGADDR::SX_ALPHA_TEST_CONTROL, 1},
+		{mmSPI_VS_OUT_ID_0, 10},
+		{mmSPI_PS_INPUT_CNTL_0, 32}, // the PS input table the vertex shader writes for
+		{mmSPI_VS_OUT_CONFIG, 1},
+		{mmSPI_PS_IN_CONTROL_0, 3}, // and _1, SPI_INTERP_CONTROL_0
+		{mmCB_SHADER_CONTROL, 1},
+		{mmDB_SHADER_CONTROL, 5}, // PA_CL_CLIP_CNTL, PA_CL_VTE_CNTL, PA_CL_VS_OUT_CNTL
+		{mmSQ_PGM_START_VS, 5}, // its size, resources
+		{mmSQ_PGM_START_FS, 5}, // the fetch shader's
+		{mmSQ_GSVS_RING_ITEMSIZE, 1},
+		{mmSQ_GS_VERT_ITEMSIZE, 1},
+		{Latte::REGADDR::VGT_GS_MODE, 1},
+		{mmVGT_GS_OUT_PRIM_TYPE, 1},
+		{mmVGT_PRIMITIVEID_EN, 1},
+		{Latte::REGADDR::VGT_INSTANCE_STEP_RATE_0, 2}, // the fetch shader's parse
+		{mmVGT_STRMOUT_EN, 1},
+		{mmVGT_STRMOUT_VTX_STRIDE_0, 13}, // the four, four apart
+		{Latte::REGADDR::VGT_PRIMITIVE_TYPE, 1},
+		{Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS, Latte::GPU_LIMITS::NUM_TEXTURES_PER_STAGE * 7},
+	};
+	return DigestOf(regs, kRead);
 }

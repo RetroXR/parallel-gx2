@@ -8,8 +8,10 @@
 //    there, and stops at a wait on memory, at a packet it cannot read, at a
 //    buffer it cannot map, at the packet limit and where the reader asks;
 //    random buffers of noise end the read without reading out of bounds;
-//  - the registers a pixel shader's decompile reads, as one value
-//    (LattePM4_PixelShaderInputs): moved by each of them, by no other;
+//  - the registers a pixel or vertex shader's decompile reads, as one
+//    value (LattePM4_PixelShaderInputs, LattePM4_VertexShaderInputs): moved
+//    by each of them, not by the vertex buffers, constants or the other
+//    stage's textures;
 //  - the hand-over (AheadSlots.h): a key's slot claimed once, published,
 //    taken once by that key only, a stale one claimed back for another key,
 //    one never published left to the draw; four producers and a consumer
@@ -247,6 +249,40 @@ static void PixelShaderInputs()
 	CHECK(still == (int)(sizeof(notRead) / sizeof(notRead[0])));
 }
 
+static void VertexShaderInputs()
+{
+	std::vector<uint32> regs(LATTE_MAX_REGISTER, 0);
+	const uint64 base = LattePM4_VertexShaderInputs(regs.data());
+	const uint32 read[] = {mmSQ_VTX_SEMANTIC_0, mmSQ_VTX_SEMANTIC_0 + 31, mmSPI_VS_OUT_ID_0, mmSPI_PS_INPUT_CNTL_0 + 5,
+		mmSPI_VS_OUT_CONFIG, mmSPI_PS_IN_CONTROL_0, mmSPI_INTERP_CONTROL_0, Latte::REGADDR::PA_CL_CLIP_CNTL,
+		Latte::REGADDR::PA_CL_VTE_CNTL, mmPA_CL_VS_OUT_CNTL, mmSQ_PGM_START_VS, mmSQ_PGM_START_VS + 1, mmSQ_PGM_RESOURCES_VS,
+		mmSQ_PGM_START_FS, mmSQ_PGM_START_FS + 1, mmSQ_PGM_RESOURCES_FS, mmSQ_GSVS_RING_ITEMSIZE, mmSQ_GS_VERT_ITEMSIZE,
+		Latte::REGADDR::VGT_GS_MODE, mmVGT_GS_OUT_PRIM_TYPE, mmVGT_PRIMITIVEID_EN, Latte::REGADDR::VGT_INSTANCE_STEP_RATE_0,
+		Latte::REGADDR::VGT_INSTANCE_STEP_RATE_0 + 1, mmVGT_STRMOUT_EN, mmVGT_STRMOUT_VTX_STRIDE_0, mmVGT_STRMOUT_VTX_STRIDE_0 + 12,
+		Latte::REGADDR::VGT_PRIMITIVE_TYPE, Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS,
+		Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS + Latte::GPU_LIMITS::NUM_TEXTURES_PER_STAGE * 7 - 1};
+	int moved = 0;
+	for (uint32 r : read)
+	{
+		regs[r] = 1;
+		moved += LattePM4_VertexShaderInputs(regs.data()) != base;
+		regs[r] = 0;
+	}
+	CHECK(moved == (int)(sizeof(read) / sizeof(read[0])));
+	// the vertex buffers' own registers (their addresses and strides, set per
+	// draw), the pixel shaders' textures, the constants: not read
+	const uint32 notRead[] = {LATTE_REG_BASE_ALU_CONST, mmSQ_VTX_ATTRIBUTE_BLOCK_START + 2, Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS,
+		0xA10F /* PA_CL_VPORT_XSCALE */, Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS + Latte::GPU_LIMITS::NUM_TEXTURES_PER_STAGE * 7};
+	int still = 0;
+	for (uint32 r : notRead)
+	{
+		regs[r] = 1;
+		still += LattePM4_VertexShaderInputs(regs.data()) == base;
+		regs[r] = 0;
+	}
+	CHECK(still == (int)(sizeof(notRead) / sizeof(notRead[0])));
+}
+
 // --- the hand-over -----------------------------------------------------------
 
 struct Payload
@@ -383,6 +419,7 @@ int main()
 	Registers();
 	Ends();
 	PixelShaderInputs();
+	VertexShaderInputs();
 	SlotsOneThread();
 	SlotsRacing();
 	SeenKeysFill();
