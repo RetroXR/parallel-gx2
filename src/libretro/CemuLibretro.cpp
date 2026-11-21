@@ -1447,6 +1447,9 @@ static bool s_motion_active = false;
 // emulated CPU and the frame that samples the sensors never wait on each other
 static WiiUMotionHandler s_motion_handler;
 static SeqlockValue<MotionSample> s_motion_sample;
+// GamePad Motion Filter, kept apart from the handler: a reset of the handler
+// (s_motion_handler = {}) must not drop it.
+static bool s_motion_exact = false;
 static std::chrono::steady_clock::time_point s_motion_last{};
 
 static void libretro_set_motion(bool want)
@@ -1473,6 +1476,7 @@ static void libretro_set_motion(bool want)
 			s_sensor_interface.set_sensor_state(0, RETRO_SENSOR_GYROSCOPE_DISABLE, 0);
 		}
 		s_motion_handler = {};
+		s_motion_handler.setExactSensors(s_motion_exact);
 		s_motion_sample.Store(MotionSample{});
 		s_motion_last = {};
 		return;
@@ -1501,6 +1505,22 @@ static void libretro_poll_motion()
 	s_motion_handler.processMotionSample(std::clamp(dt, 0.0001f, 0.25f),
 		gx, -gy, -gz, -ax, ay, az);
 	s_motion_sample.Store(s_motion_handler.getMotionSample());
+}
+
+// GamePad Motion Filter: Exact Sensors skips the IMU's bias learning and its
+// slow-turn gate (Mahony.h), which are for real gyroscopes.
+static void libretro_set_motion_exact(bool exact)
+{
+	// retro_run's thread, as the handler is (the core options are applied there)
+	static int s_last = -1;
+	s_motion_exact = exact;
+	s_motion_handler.setExactSensors(exact);
+	if (s_last != (int)exact)
+	{
+		s_last = (int)exact;
+		cemuLog_log(LogType::Force, "libretro: GamePad Motion Filter: {}", exact
+			? "Exact Sensors (no bias learning, no slow-turn gate)" : "Real Sensors (standalone's filtering)");
+	}
 }
 
 // For vpad.cpp: the GamePad's motion, false when GamePad Motion is off or
@@ -3012,6 +3032,8 @@ static void libretro_apply_core_options()
 	// GamePad Motion, on or off as the option changes
 	if (const char* v = libretro_get_option_value("cemu_gamepad_motion"))
 		libretro_set_motion(libretro_iequals(v, "enabled"));
+	if (const char* v = libretro_get_option_value("cemu_gamepad_motion_filter"))
+		libretro_set_motion_exact(libretro_iequals(v, "exact"));
 
 	// Console language
 	if (const char* v = libretro_get_option_value("cemu_console_language"))

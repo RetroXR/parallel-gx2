@@ -13,6 +13,19 @@ public:
 		m_imuQ.Assign(sqrtf(0.5), sqrtf(0.5), 0.0f, 0.0f);
 	}
 
+	// For a source with no noise or bias (libretro: motion worked out from a
+	// tracked pose). Switching it on forgets any bias learnt so far.
+	void setExactSensors(bool exact)
+	{
+		m_exact = exact;
+		if (exact)
+		{
+			m_gyroBias[0] = m_gyroBias[1] = m_gyroBias[2] = 0.0f;
+			m_gyroTotalSum[0] = m_gyroTotalSum[1] = m_gyroTotalSum[2] = 0.0;
+			m_gyroTotalSampleCount = 0;
+		}
+	}
+
 	// gx, gy, gz are in radians/sec
 	void updateIMU(float deltaTime, float gx, float gy, float gz, float ax, float ay, float az)
 	{
@@ -20,18 +33,23 @@ public:
 		Vector3f gv(gx, gy, gz);
 		if (deltaTime > 0.2f)
 			deltaTime = 0.2f; // dont let stutter mess up the internal state
-		updateGyroBias(gx, gy, gz);
-		gv.x -= m_gyroBias[0];
-		gv.y -= m_gyroBias[1];
-		gv.z -= m_gyroBias[2];
+		// Exact sensors (setExactSensors) have no bias to learn and no noise to
+		// gate: both would only eat real slow turns.
+		if (!m_exact)
+		{
+			updateGyroBias(gx, gy, gz);
+			gv.x -= m_gyroBias[0];
+			gv.y -= m_gyroBias[1];
+			gv.z -= m_gyroBias[2];
 
-		// ignore small angles to avoid drift due to bias (especially on yaw)
-		if (fabs(gv.x) < 0.015f)
-			gv.x = 0.0f;
-		if (fabs(gv.y) < 0.015f)
-			gv.y = 0.0f;
-		if (fabs(gv.z) < 0.015f)
-			gv.z = 0.0f;
+			// ignore small angles to avoid drift due to bias (especially on yaw)
+			if (fabs(gv.x) < 0.015f)
+				gv.x = 0.0f;
+			if (fabs(gv.y) < 0.015f)
+				gv.y = 0.0f;
+			if (fabs(gv.z) < 0.015f)
+				gv.z = 0.0f;
+		}
 
 		// cemuLog_logDebug(LogType::Force, "[IMU Quat] time {:7.4} | {:7.2} {:7.2} {:7.2} {:7.2} | gyro( - bias) {:7.4} {:7.4} {:7.4} | acc {:7.2} {:7.2} {:7.2} | GyroBias {:7.4} {:7.4} {:7.4}", deltaTime, m_imuQ.x, m_imuQ.y, m_imuQ.z, m_imuQ.w, gv.x, gv.y, gv.z, ax, ay, az, m_gyroBias[0], m_gyroBias[1], m_gyroBias[2]);
 
@@ -162,4 +180,5 @@ private:
 		float m_gyroBias[3]{};
 		double m_gyroTotalSum[3]{};
 		uint64 m_gyroTotalSampleCount{};
+		bool m_exact{};
 };

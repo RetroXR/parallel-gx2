@@ -30,6 +30,8 @@ public:
 		m_orientation[2] = _radToOrientation(m_imu.getRollRadians());
 	}
 
+	void setExactSensors(bool exact) { m_imu.setExactSensors(exact); }
+
 	MotionSample getMotionSample()
 	{
 		float q[4];

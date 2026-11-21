@@ -367,6 +367,20 @@ struct retro_core_option_v2_definition option_defs_us[] = {
 		"disabled"
 	},
 	{
+		"cemu_gamepad_motion_filter",
+		"GamePad Motion Filter",
+		NULL,
+		"How the GamePad's gyroscope is cleaned before it is turned into the GamePad's attitude. Real Sensors: standalone's own, for a real gyroscope's noise and bias - turns slower than about 0.9 degrees a second are ignored, and the average of every slow reading is taken as bias and subtracted. Exact Sensors: neither, for a frontend whose sensors have no noise or bias (motion worked out from a tracked pose): with Real Sensors there, small slow turns do not count at all and slow turns are learnt as bias, which then drifts.",
+		NULL,
+		"controller",
+		{
+			{ "real", "Real Sensors" },
+			{ "exact", "Exact Sensors" },
+			{ NULL, NULL },
+		},
+		"real"
+	},
+	{
 		"cemu_number_of_screen_layouts",
 		"# of Screen Layouts",
 		NULL,
