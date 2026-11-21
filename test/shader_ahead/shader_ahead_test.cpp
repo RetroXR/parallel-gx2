@@ -41,7 +41,9 @@
 //    never says unseen for a key added; and the registered shaders'
 //    table (PublishedMap): a key's first value found, none for a key never
 //    added or past the table's room, one thread adding while three find -
-//    never a value another key's, every key found once added (TSan in CI).
+//    never a value another key's, every key found once added (TSan in CI);
+//    and a payload never claimed back while a pipeline is made from it
+//    (AheadSlotStale).
 #include <atomic>
 #include <cstdio>
 #include <cstring>
@@ -415,6 +417,17 @@ static void IdleSnapshot()
 	guest.join();
 	std::printf("idle snapshot: %u taken by the guest's thread, %u torn\n", taken.load(), torn.load());
 	CHECK(torn.load() == 0 && taken.load() > 0);
+}
+
+static void Stale()
+{
+	CHECK(!AheadSlotStale(false, false, 64, 64)); // waited, not past
+	CHECK(AheadSlotStale(false, false, 65, 64));
+	CHECK(AheadSlotStale(false, true, 0, 64)); // known another way
+	// a pipeline being made from it: kept, known or waited
+	CHECK(!AheadSlotStale(true, true, 0, 64));
+	CHECK(!AheadSlotStale(true, false, 1000, 64));
+	CHECK(!AheadSlotStale(true, true, 1000, 64));
 }
 
 static void Published()
@@ -852,6 +865,7 @@ int main()
 	ReadTo();
 	IdleSnapshot();
 	Published();
+	Stale();
 	PixelShaderInputs();
 	VertexShaderInputs();
 	GeometryShaderInputs();

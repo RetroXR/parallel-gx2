@@ -58,6 +58,13 @@ public:
 	{
 		list_pipelineInfo.Remove(p);
 	}
+	// a pipeline is made from it, or uses it: not to go while one is
+	// (LatteShaderAhead.cpp's shaders made ahead, freed when no draw took
+	// them)
+	bool InPipelines() const
+	{
+		return !list_pipelineInfo.Empty();
+	}
 
 	// its pipeline parts made ahead for the render passes and state seen so
 	// far (VulkanPipelineCompiler.cpp): queued once, by the GPU thread

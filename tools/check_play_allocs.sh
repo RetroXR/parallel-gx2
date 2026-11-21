@@ -141,6 +141,8 @@ src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp PipelineAhead
 src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp TakePipelineSlot
 src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp LetPipelineGo
 src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp RunPipelineSlot
+src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp Registered
+src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp HoldAhead
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_FindRegistered
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_FindRegisteredBase
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_RegisteredKey

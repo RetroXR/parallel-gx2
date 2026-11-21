@@ -128,6 +128,15 @@ private:
 	Slot m_slots[N];
 };
 
+// Whether a payload published and not taken may be claimed back for
+// another key (AheadSlots::Claim's stale): never while something made from
+// it is in use (inUse), else once its key is known another way (known) or
+// it has waited past maxAge
+inline bool AheadSlotStale(bool inUse, bool known, uint32_t age, uint32_t maxAge)
+{
+	return !inUse && (known || age > maxAge);
+}
+
 // Keys seen, for any thread to ask about while one adds them: insert-only,
 // open addressing over a fixed table. A key that no longer fits is reported
 // unseen, never the other way round (0 is kept as 1), so it is a filter:

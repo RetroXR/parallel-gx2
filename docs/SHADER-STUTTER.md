@@ -457,11 +457,25 @@ links from; without, the pipeline, for the driver's cache. Four at a time,
 from pools, in the compile threads' common queue - behind the reads and
 the compiles of pipelines whose draws are being skipped now. A geometry
 shader's draw has its geometry shader found by the key the draw takes
-(its program's, and the ring of the vertex shader found). `test/shader_
+(its program's, and the ring of the vertex shader found).
+
+A draw whose shader the read has just had made ahead - its other shader
+registered, or new as well - has its pipeline made ahead too, from the
+shaders made ahead: queued behind their decompiles with a copy of the
+draw's registers, it holds each one (a draw that comes meanwhile, for the
+few microseconds, decompiles its own), checks it was made for these
+registers and this fetch shader, sets the pipeline up from it and puts it
+back, then makes the parts from the modules. A shader made ahead is not
+claimed back for another key while a pipeline is made from its module
+(`RendererShaderVk::InPipelines`, `AheadSlotStale`), so the module
+outlives the compile; one a draw takes the GPU thread keeps for good. So
+a new shader in new state - an effect with a blend no pipeline had - is
+ready before its first draw too. `test/shader_
 ahead` checks the table, one thread adding while three find. What is left: shaders
 whose first draw comes before any read reaches it (an idle GPU thread
 starts each buffer as it is submitted), and the render passes and states
-no pipeline had before where no read got to them.
+no pipeline had before where no read got to them, and a new geometry
+shader's first draw.
 
 The reads ahead go to the compile threads in a lane of their own, taken
 before any pipeline compile queued (`CompileThreadPool_QueuePreparedUrgent`,
