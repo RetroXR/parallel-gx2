@@ -4,6 +4,7 @@
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
+#include "Cafe/HW/Latte/Core/LatteShaderAhead.h"
 #include "Cafe/HW/Latte/Core/LatteAsyncCommands.h"
 #include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
 #include "Cafe/HW/Latte/Core/LatteIndices.h"
@@ -302,6 +303,8 @@ void LatteCP_itIndirectBufferDepr(LatteCMDPtr cmd, uint32 nWords)
 	if (GetAsyncKeyState('A'))
 		LatteCP_DebugPrintCmdBuffer(MEMPTR<uint32be>(physicalAddress), displayListSize);
 #endif
+	// a compile thread reads it ahead, for the pixel shaders its draws will need
+	LatteShaderAhead_OnCommandBuffer(physicalAddress, sizeInU32s);
 
 	if (sizeInU32s > 0)
 	{

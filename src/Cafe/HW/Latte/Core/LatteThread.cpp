@@ -10,6 +10,7 @@
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/HW/Latte/Core/LatteDraw.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
+#include "Cafe/HW/Latte/Core/LatteShaderAhead.h"
 #include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.h"
 #include "util/helpers/thread_end.h"
 #include "Cafe/HW/Latte/Core/LatteAsyncCommands.h"
@@ -566,6 +567,9 @@ void Latte_TeardownGpuState(const char* reason)
 		LatteGpuWake_Notify(); // libretro_wait_for_gpu_handover
 		return;
 	}
+	// the compile threads' reads ahead finished before the renderer and the
+	// shaders go
+	LatteShaderAhead_Shutdown();
 	LatteShaderCache_Close();
 	g_renderer->Shutdown();
 	LatteIndices_invalidateAll();

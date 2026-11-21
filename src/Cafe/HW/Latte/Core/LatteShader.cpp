@@ -3,6 +3,7 @@
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
 #include "Cafe/HW/Latte/ISA/LatteReg.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
+#include "Cafe/HW/Latte/Core/LatteShaderAhead.h"
 #include "Cafe/HW/Latte/Core/PsoTrace.h"
 #include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.h"
 #include "Cafe/HW/Latte/Core/FetchShader.h"
@@ -153,8 +154,14 @@ void LatteSHRC_ResetCachedShaderHash()
 
 LatteShaderPSInputTable _activePSImportTable;
 
+// a compile thread's, while it decompiles a pixel shader ahead from registers
+// of its own (LatteShaderAhead.cpp): the table they give
+static thread_local LatteShaderPSInputTable* t_psInputTableAhead;
+
 LatteShaderPSInputTable* LatteSHRC_GetPSInputTable()
 {
+	if (t_psInputTableAhead) [[unlikely]]
+		return t_psInputTableAhead;
 	return &_activePSImportTable;
 }
 
@@ -211,6 +218,15 @@ void LatteSHRC_RemoveFromCacheByHash(uint64 shader_base_hash, uint64 shader_aux_
 		shader = LatteSHRC_FindPixelShader(shader_base_hash, shader_aux_hash);
 	if (shader)
 		LatteSHRC_RemoveFromCaches(shader);
+}
+
+void LatteShader_FreeDecompilerOutput(LatteDecompilerOutput_t& output)
+{
+	if (!output.shader)
+		return;
+	LatteShader_CleanupAfterCompile(output.shader);
+	delete output.shader;
+	output.shader = nullptr;
 }
 
 void LatteShader_free(LatteDecompilerShader* shader) // todo - make this ~LatteDecompilerShader()
@@ -411,6 +427,8 @@ void LatteShader_FinishCompilation(LatteDecompilerShader* shader)
 void LatteSHRC_RegisterShader(LatteDecompilerShader* shader, uint64 baseHash, uint64 auxHash)
 {
 	auto& cache = LatteSHRC_GetCacheByType(shader->shaderType);
+	if (shader->shaderType == LatteConst::ShaderType::Pixel)
+		LatteShaderAhead_NotePixelShader(baseHash);
 	shader->baseHash = baseHash;
 	shader->auxHash = auxHash;
 
@@ -867,6 +885,15 @@ LatteDecompilerShader* LatteShader_CompileSeparableVertexShader2(uint64 baseHash
 	return nullptr;
 }
 
+void LatteShader_DecompilePixelShaderAhead(uint32* regs, uint8* program, uint32 programSize, LatteShaderPSInputTable* inputs, uint64 baseHash, LatteDecompilerOutput_t* output)
+{
+	LatteDecompilerOptions options;
+	LatteShader_GetDecompilerOptions(options, LatteConst::ShaderType::Pixel, false);
+	t_psInputTableAhead = inputs;
+	LatteDecompiler_DecompilePixelShader(baseHash, regs, program, programSize, options, output);
+	t_psInputTableAhead = nullptr;
+}
+
 // A separable shader's decompile, which any thread may run: it reads the
 // context registers, its program and the pixel shader's input table, which
 // the GPU thread leaves as they are until it has the output, and writes only
@@ -1050,15 +1077,23 @@ static void LatteSHRC_GetOrCreateVertexAndPixelShader(uint8* vertexShaderPtr, ui
 	{
 		LatteSeparableDecompile vs(LatteConst::ShaderType::Vertex, _shaderBaseHash_vs, vertexShaderPtr, vertexShaderSize, usesGeometryShader, fetchShader);
 		LatteSeparableDecompile ps(LatteConst::ShaderType::Pixel, _shaderBaseHash_ps, pixelShaderPtr, pixelShaderSize, usesGeometryShader, nullptr);
+		// a pixel shader a compile thread decompiled ahead, for these registers
+		bool pixelAhead = false;
+		if (!pixelShader && !usesGeometryShader)
+		{
+			PSO_TRACE_SCOPE("pixel shader decompiled ahead?", ps.baseHash);
+			pixelAhead = LatteShaderAhead_TakePixelShader(ps.baseHash, ps.output);
+		}
+		const bool decompilePixel = !pixelShader && !pixelAhead;
 		performanceMonitor.gpuTime_shaderCreate.beginMeasuring();
-		if (!vertexShader && !pixelShader)
+		if (!vertexShader && decompilePixel)
 			LatteShader_DecompileTogether(vs, ps);
 		else if (!vertexShader)
 		{
 			PSO_TRACE_SCOPE("decompile vs", vs.baseHash);
 			vs.Run();
 		}
-		else
+		else if (decompilePixel)
 		{
 			PSO_TRACE_SCOPE("decompile ps", ps.baseHash);
 			ps.Run();
@@ -1416,6 +1451,7 @@ void LatteSHRC_Init()
 	sVertexShaders.reserve(4096);
 	sGeometryShaders.reserve(1024);
 	sPixelShaders.reserve(4096);
+	LatteShaderAhead_Init();
 }
 
 void LatteSHRC_UnloadAll()

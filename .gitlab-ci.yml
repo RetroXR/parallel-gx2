@@ -1112,6 +1112,24 @@ test-note-log:
     - make -C test/note_log clean
     - SANITIZER=thread ./test/note_log/run_tests.sh
 
+# Pixel shaders decompiled ahead of their draw: a command buffer read ahead
+# as the command processor reads it, the registers a pixel shader's decompile
+# reads, the hand-over of what is made ahead (LatteShaderAhead.cpp).
+test-shader-ahead:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: normal
+    GIT_SUBMODULE_PATHS: dependencies/fmt
+    CXX: g++-12
+  script:
+    - ./test/shader_ahead/run_tests.sh
+    - make -C test/shader_ahead clean
+    - SANITIZER=address,undefined ./test/shader_ahead/run_tests.sh
+    - make -C test/shader_ahead clean
+    - SANITIZER=thread ./test/shader_ahead/run_tests.sh
+
 # Objects a thread made for itself destroyed once, intact, as it ends, with
 # no thread_local destructor (thread_end.h).
 test-thread-end:

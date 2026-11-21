@@ -1,0 +1,31 @@
+#pragma once
+
+#include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.h"
+
+// Pixel shaders decompiled ahead of the draw that first uses them. As the
+// GPU thread starts a command buffer from the ring, a compile thread reads
+// it ahead (LattePM4Scan.h) from a copy of the registers as they are then,
+// and at each draw whose pixel shader the GPU thread has never seen, it
+// decompiles that shader from the copy as they are at that draw. The draw,
+// when the GPU thread gets to it, takes the result only where the shader's
+// base and aux hashes and every register a pixel shader's decompile reads
+// are what its own decompile would have had (LattePM4_PixelShaderInputs);
+// otherwise, or with the compile thread not done, it decompiles the shader
+// itself, as before. Vulkan, whose compile threads it runs on; geometry
+// shaders' draws are left to the draw. Nothing allocated while a game plays:
+// the copies and slots are made at the start (LatteShaderAhead_Init).
+
+// GPU thread, at the renderer's start and end (the end waits for a read
+// under way and frees what no draw took)
+void LatteShaderAhead_Init();
+void LatteShaderAhead_Shutdown();
+
+// GPU thread: a command buffer the ring calls, about to be processed
+void LatteShaderAhead_OnCommandBuffer(uint32 physAddr, uint32 words);
+
+// GPU thread: the pixel shader for baseHash decompiled ahead, if it was, for
+// the registers as they are now; false to decompile it here
+bool LatteShaderAhead_TakePixelShader(uint64 baseHash, LatteDecompilerOutput_t& output);
+
+// GPU thread: a pixel shader now known, never decompiled ahead again
+void LatteShaderAhead_NotePixelShader(uint64 baseHash);

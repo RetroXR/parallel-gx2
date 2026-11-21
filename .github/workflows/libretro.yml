@@ -796,6 +796,18 @@ jobs:
           SANITIZER=address,undefined ./test/note_log/run_tests.sh
           make -C test/note_log clean
           SANITIZER=thread ./test/note_log/run_tests.sh
+      - name: "Pixel shaders decompiled ahead"
+        # a command buffer read ahead applies its register writes as the
+        # command processor does and stops where it must; the registers a
+        # pixel shader's decompile reads; the hand-over of what is made
+        # ahead, four producers racing a consumer; plain, under ASan +
+        # UBSan and under TSan
+        run: |
+          ./test/shader_ahead/run_tests.sh
+          make -C test/shader_ahead clean
+          SANITIZER=address,undefined ./test/shader_ahead/run_tests.sh
+          make -C test/shader_ahead clean
+          SANITIZER=thread ./test/shader_ahead/run_tests.sh
       - name: "What a thread keeps, freed as it ends"
         # objects a thread made for itself destroyed once, intact, as it
         # ends, with no thread_local destructor (thread_end.h); plain, under
@@ -1067,6 +1079,10 @@ jobs:
         # on Windows' own threads, where MinGW frees a thread_local's
         # storage before its destructor runs (thread_end.h)
         run: CC=gcc CXX=g++ EXE=.exe ./test/thread_end/run_tests.sh
+
+      - name: "Pixel shaders decompiled ahead"
+        # the hand-over and the read ahead on Windows' own threads
+        run: CXX=g++ EXE=.exe ./test/shader_ahead/run_tests.sh
 
       - name: "Shader decompiler on several threads"
         # shaders decompiled on four threads at once as on one, each thread

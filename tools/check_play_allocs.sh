@@ -88,6 +88,15 @@ src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_CompileSeparablePixelShader
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_RegisterShader
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_GetOrCreateVertexAndPixelShader
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_DecompileTogether
+src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_DecompilePixelShaderAhead
+src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_FreeDecompilerOutput
+src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp LatteShaderAhead_OnCommandBuffer
+src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp LatteShaderAhead_TakePixelShader
+src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp LatteShaderAhead_NotePixelShader
+src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp OnDraw
+src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp RunJob
+src/Cafe/HW/Latte/Core/LattePM4Scan.cpp LattePM4_Scan
+src/Cafe/HW/Latte/Core/LattePM4Scan.cpp LattePM4_PixelShaderInputs
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_GetOrCreateGeometryShader
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_UpdateActiveShaders
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_CleanupShaderStateCache

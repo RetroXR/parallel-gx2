@@ -117,6 +117,12 @@ void LatteShader_prepareSeparableUniforms(LatteDecompilerShader* shader);
 void LatteSHRC_RegisterShader(LatteDecompilerShader* shader, uint64 baseHash, uint64 auxHash);
 
 void LatteShader_CleanupAfterCompile(LatteDecompilerShader* shader);
+// a decompile's shader, never registered, freed with its buffers
+void LatteShader_FreeDecompilerOutput(LatteDecompilerOutput_t& output);
+// A pixel shader decompiled on any thread from registers and a PS input
+// table of the caller's, no geometry shader (LatteShaderAhead.cpp)
+void LatteShader_DecompilePixelShaderAhead(uint32* regs, uint8* program, uint32 programSize, LatteShaderPSInputTable* inputs, uint64 baseHash, LatteDecompilerOutput_t* output);
+uint64 LatteSHRC_CalcPSAuxHash(LatteDecompilerShader* pixelShader, uint32* contextRegisters);
 
 #define SHADER_DUMP_TYPE_FETCH		0
 #define SHADER_DUMP_TYPE_VERTEX		1

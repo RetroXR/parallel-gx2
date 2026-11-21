@@ -351,8 +351,26 @@ rather than their sum. The decompiler runs on any thread at once with any
 other - its lists and writer each thread's own, made as the thread starts
 and freed as it ends, what threads share lock-free; `test/decompiler`
 decompiles on four threads at once under TSan, each shader the same as
-alone. The decompile itself is still at the draw: next, on the compile
-threads as soon as the guest sets a new program, ahead of the draw.
+alone.
+
+Pixel shaders are decompiled ahead of the draw that first uses them. As
+the GPU thread starts a command buffer from the ring, a compile thread
+reads it ahead (`LattePM4Scan.cpp`) from a copy of the registers as they
+are then - its register writes applied as the command processor applies
+them, the buffers it calls followed, stopping at a wait on memory - and
+at each draw whose pixel shader the GPU thread has never seen it
+decompiles that shader from the copy (`LatteShaderAhead.cpp`). The draw
+takes it only where the base and aux hashes and every register a pixel
+shader's decompile reads (`LattePM4_PixelShaderInputs`) are what its own
+decompile would have had, and decompiles it itself otherwise - a
+compile thread not done included, never waited for. Nothing is allocated
+in play: four register copies and 64 slots are made at the renderer's
+start; a read that finds nothing doubles the command buffers passed over
+before the next, up to 63. `test/shader_ahead` checks the read against
+the command processor's packets, the registers compared, and the
+hand-over, four producers racing a consumer (TSan in CI). Next: vertex
+shaders (their fetch shader with them), then each shader's module and
+parts made from it ahead too, so that its first draw links.
 
 Next: the draws async skips while the parts are made.
 

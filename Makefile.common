@@ -161,6 +161,8 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Core/LatteRenderTarget.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Core/LatteRingBuffer.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Core/LatteShader.cpp \
+	$(CORE_DIR)/src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp \
+	$(CORE_DIR)/src/Cafe/HW/Latte/Core/LattePM4Scan.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Core/LatteShaderCache.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Core/LatteStreamoutGPU.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Core/LatteSurfaceCopy.cpp \
