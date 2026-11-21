@@ -129,6 +129,12 @@ uint64 LatteSHRC_CalcVSAuxHash(LatteDecompilerShader* vertexShader, uint32* cont
 // and for a geometry shader, with its copy shader and the ring its vertex
 // shader writes
 void LatteShader_DecompileGeometryShaderAhead(uint32* regs, uint8* program, uint32 programSize, uint8* copyProgram, uint32 copyProgramSize, uint32 vsRingParameterCount, LatteShaderPSInputTable* inputs, uint64 baseHash, LatteDecompilerOutput_t* output);
+// A registered shader, from any thread (they are freed only together, with
+// no read ahead under way): by its hashes, or by its base hash alone any of
+// its aux variants (to work its aux hash out with); null where not
+// registered
+LatteDecompilerShader* LatteSHRC_FindRegistered(LatteConst::ShaderType type, uint64 baseHash, uint64 auxHash);
+LatteDecompilerShader* LatteSHRC_FindRegisteredBase(LatteConst::ShaderType type, uint64 baseHash);
 // a shader decompiled ahead given its module, from the
 // SPIR-V written directly (Vulkan), on any thread; false where it is not
 // made (an error, GLSL, another renderer). LatteShader_CreateRendererShader

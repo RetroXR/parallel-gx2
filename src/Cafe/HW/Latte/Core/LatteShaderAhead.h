@@ -69,3 +69,6 @@ bool LatteShaderAhead_TakeGeometryShader(uint64 baseHash, uint32 vsRingParameter
 void LatteShaderAhead_NotePixelShader(uint64 baseHash);
 void LatteShaderAhead_NoteVertexShader(uint64 baseHash);
 void LatteShaderAhead_NoteGeometryShader(uint64 baseHash);
+// GPU thread: a pipeline it has (VulkanRenderer::draw_calculateGraphicsPipelineHash),
+// made or loaded from the cache: never made ahead
+void LatteShaderAhead_NotePipeline(uint64 pipelineHash);

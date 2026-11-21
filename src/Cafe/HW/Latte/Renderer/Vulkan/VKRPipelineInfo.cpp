@@ -92,6 +92,6 @@ PipelineInfo::~PipelineInfo()
 	// There is nothing to unregister from at that point, and the registry is
 	// going with it, so leaving quietly is right - faulting here was
 	// a quick close of the content taking RetroArch down with it.
-	if (g_renderer)
+	if (g_renderer && registered)
 		VulkanRenderer::GetInstance()->unregisterGraphicsPipeline(this);
 }

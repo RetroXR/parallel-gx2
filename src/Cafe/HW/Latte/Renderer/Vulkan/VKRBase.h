@@ -294,12 +294,22 @@ public:
 
 public:
 	VKRObjectRenderPass(AttachmentInfo_t& attachmentInfo, sint32 colorAttachmentCount = Latte::GPU_LIMITS::NUM_COLOR_ATTACHMENTS);
+	// m_hashForPipeline of the render pass these attachments make, without
+	// making it
+	static uint64 HashForPipeline(const AttachmentInfo_t& attachmentInfo);
 	~VKRObjectRenderPass() override;
 	VkRenderPass m_renderPass{ VK_NULL_HANDLE };
 	VkFormat m_colorAttachmentFormat[Latte::GPU_LIMITS::NUM_COLOR_ATTACHMENTS];
 	VkFormat m_depthAttachmentFormat;
 	uint64 m_hashForPipeline; // helper var. Holds hash of all the renderpass creation parameters (mainly the formats) that affect the pipeline state
 };
+
+// The attachments a draw's registers and pixel shader name, as the render
+// pass made for them has them (VulkanPipelineStableCache.cpp): for a
+// pipeline made on any thread from registers alone - the cache's, or a
+// read ahead's
+void VulkanPipelineStableCache_Attachments(const struct LatteDecompilerShader* pixelShader, const struct LatteContextRegister& lcr,
+	VKRObjectRenderPass::AttachmentInfo_t& attachmentInfo);
 
 class VKRObjectFramebuffer : public VKRDestructibleObject, public PoolNew<VKRObjectFramebuffer>
 {

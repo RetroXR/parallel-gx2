@@ -136,6 +136,16 @@ src/Cafe/OS/libs/TCL/TCL.cpp TCLGPURingReadIndex
 src/Cafe/OS/libs/TCL/TCL.cpp TCLRingWriteIndex
 src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp LatteShaderAhead_OnIdle
 src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp LatteShaderAhead_OnGuestCommands
+src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp LatteShaderAhead_NotePipeline
+src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp PipelineAhead
+src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp TakePipelineSlot
+src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp LetPipelineGo
+src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp RunPipelineSlot
+src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_FindRegistered
+src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_FindRegisteredBase
+src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_RegisteredKey
+src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.cpp VKRObjectRenderPass::HashForPipeline
+src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.cpp VulkanPipelineStableCache_Attachments
 src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2Command_ReadAhead
 src/Cafe/OS/libs/gx2/GX2_Command.cpp GX2Command_SetupCoreCommandBuffer
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_GetOrCreateGeometryShader

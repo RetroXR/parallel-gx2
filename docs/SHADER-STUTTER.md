@@ -439,10 +439,27 @@ doubled, the guest's thread takes the copy if it has submitted nothing
 since and queues a read of what it has written (`GX2Command_ReadAhead`,
 `LatteShaderAhead_OnGuestCommands`). Neither thread waits for the other;
 a read of the guest's still under way is never waited for either.
-`test/shader_ahead` races the hand-over, every copy taken read whole. What is left: shaders
+`test/shader_ahead` races the hand-over, every copy taken read whole.
+
+A draw whose shaders the GPU thread has, but whose pipeline it has never
+made - a render pass or state no pipeline had - has its pipeline made by
+the read too, on a compile thread of its own: the read finds the shaders
+in a table the GPU thread publishes them to as it registers them
+(`LatteSHRC_FindRegistered`; insert-only, freed only together after the
+reads are done), works the key the draw looks its pipeline up by out from
+its registers and the render pass they name (the pipeline cache's way,
+`VulkanPipelineStableCache_Attachments`, `VKRObjectRenderPass::
+HashForPipeline`), and where neither the GPU thread (`LatteShaderAhead_
+NotePipeline`, its own and the cache's) nor a read made it, makes it from
+the read's registers. With graphics pipeline libraries only its parts are
+made (`m_partsOnly`), into the cache of parts the draw's pipeline then
+links from; without, the pipeline, for the driver's cache. Four at a time,
+from pools; geometry shaders' draws are left to the draw. `test/shader_
+ahead` checks the table, one thread adding while three find. What is left: shaders
 whose first draw comes before any read reaches it (an idle GPU thread
 starts each buffer as it is submitted), and the render passes and states
-no pipeline had before.
+no pipeline had before where the read does not reach them (a geometry
+shader's draw, or one no read got to).
 
 The reads ahead go to the compile threads in a lane of their own, taken
 before any pipeline compile queued (`CompileThreadPool_QueuePreparedUrgent`,

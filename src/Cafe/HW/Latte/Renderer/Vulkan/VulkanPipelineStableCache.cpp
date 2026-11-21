@@ -3,6 +3,7 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
+#include "Cafe/HW/Latte/Core/LatteShaderAhead.h"
 #include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
 #include "Cafe/HW/Latte/Core/LatteCachedFBO.h"
 #include "Cafe/OS/libs/gx2/GX2.h"
@@ -271,6 +272,12 @@ void __getDepthBufferVkFormat(const LatteContextRegister& lcr, VkFormat& dbForma
 VKRObjectRenderPass* __CreateTemporaryRenderPass(const LatteDecompilerShader* pixelShader, const LatteContextRegister& lcr)
 {
 	VKRObjectRenderPass::AttachmentInfo_t attachmentInfo;
+	VulkanPipelineStableCache_Attachments(pixelShader, lcr, attachmentInfo);
+	return new VKRObjectRenderPass(attachmentInfo);
+}
+
+void VulkanPipelineStableCache_Attachments(const LatteDecompilerShader* pixelShader, const LatteContextRegister& lcr, VKRObjectRenderPass::AttachmentInfo_t& attachmentInfo)
+{
 
 	uint8 cbMask = LatteMRT::GetActiveColorBufferMask(pixelShader, lcr);
 	bool dbMask = LatteMRT::GetActiveDepthBufferMask(lcr);
@@ -305,8 +312,6 @@ VKRObjectRenderPass* __CreateTemporaryRenderPass(const LatteDecompilerShader* pi
 		attachmentInfo.depthAttachment.viewObj = nullptr;
 		attachmentInfo.depthAttachment.isPresent = false;
 	}
-
-	return new VKRObjectRenderPass(attachmentInfo);
 }
 
 void VulkanPipelineStableCache::LoadPipelineFromCache(std::span<uint8> fileData)
@@ -393,7 +398,10 @@ void VulkanPipelineStableCache::LoadPipelineFromCache(std::span<uint8> fileData)
 // hand it what they loaded through a FixedList instead of a lock on it
 void VulkanPipelineStableCache::TakeLoadedHashes()
 {
-	m_pipelinesLoaded.TakeAll([this](PipelineHash&& hash) { MarkCached(hash.h0, hash.h1); });
+	m_pipelinesLoaded.TakeAll([this](PipelineHash&& hash) {
+		MarkCached(hash.h0, hash.h1);
+		LatteShaderAhead_NotePipeline(hash.h1);
+	});
 }
 
 bool VulkanPipelineStableCache::HasPipelineCached(uint64 baseHash, uint64 pipelineStateHash)

@@ -3671,13 +3671,8 @@ void VKRObjectSampler::DestroyCache()
 	}
 }
 
-VKRObjectRenderPass::VKRObjectRenderPass(AttachmentInfo_t& attachmentInfo, sint32 colorAttachmentCount)
+uint64 VKRObjectRenderPass::HashForPipeline(const AttachmentInfo_t& attachmentInfo)
 {
-	VulkanRenderer* vkRenderer = VulkanRenderer::GetInstance();
-	bool useAttachmentFeedbackLoop = vkRenderer->UseAttachmentFeedbackLoop();
-	VkImageLayout attachmentLayout = useAttachmentFeedbackLoop ? VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT : VK_IMAGE_LAYOUT_GENERAL;
-
-	// generate helper hash for pipeline state
 	uint64 stateHash = 0;
 	for (int i = 0; i < Latte::GPU_LIMITS::NUM_COLOR_ATTACHMENTS; ++i)
 	{
@@ -3692,7 +3687,17 @@ VKRObjectRenderPass::VKRObjectRenderPass(AttachmentInfo_t& attachmentInfo, sint3
 		stateHash += attachmentInfo.depthAttachment.format;
 		stateHash = std::rotl<uint64>(stateHash, 7);
 	}
-	m_hashForPipeline = stateHash;
+	return stateHash;
+}
+
+VKRObjectRenderPass::VKRObjectRenderPass(AttachmentInfo_t& attachmentInfo, sint32 colorAttachmentCount)
+{
+	VulkanRenderer* vkRenderer = VulkanRenderer::GetInstance();
+	bool useAttachmentFeedbackLoop = vkRenderer->UseAttachmentFeedbackLoop();
+	VkImageLayout attachmentLayout = useAttachmentFeedbackLoop ? VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT : VK_IMAGE_LAYOUT_GENERAL;
+
+	// generate helper hash for pipeline state
+	m_hashForPipeline = HashForPipeline(attachmentInfo);
 
 	// setup Vulkan renderpass
 	// the color attachments and depth, in place: a new render pass allocates

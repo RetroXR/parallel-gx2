@@ -22,6 +22,7 @@
 #include "util/containers/flat_hash_map.hpp"
 #include "Cafe/HW/Latte/Core/ShaderStateTable.h"
 #include "util/helpers/StateHasher.h"
+#include "util/helpers/AheadSlots.h"
 #ifdef ENABLE_METAL
 #include "Cafe/HW/Latte/Renderer/Metal/LatteToMtl.h"
 #endif
@@ -479,6 +480,32 @@ void LatteShader_FinishCompilation(LatteDecompilerShader* shader)
 	LatteShader_CleanupAfterCompile(shader);
 }
 
+// The registered shaders, for any thread to find (LatteSHRC_FindRegistered):
+// a shader is registered from one thread at a time (the GPU thread, the
+// cache's load before it) and freed only with all of them
+// (LatteSHRC_UnloadAll), after the reads ahead are done. By base hash and
+// aux hash, and by base hash alone the first one registered.
+static PublishedMap<LatteDecompilerShader, 1u << 16> s_registered;
+static PublishedMap<LatteDecompilerShader, 1u << 15> s_registeredBase;
+
+static uint64 LatteSHRC_RegisteredKey(LatteConst::ShaderType type, uint64 baseHash, uint64 auxHash, bool any)
+{
+	uint64 k = baseHash * 0x9E3779B97F4A7C15ull + (uint64)type * 0x632BE59BD9B4E019ull;
+	return any ? k ^ 0xA0761D6478BD642Full : k + std::rotl<uint64>(auxHash, 29);
+}
+
+LatteDecompilerShader* LatteSHRC_FindRegistered(LatteConst::ShaderType type, uint64 baseHash, uint64 auxHash)
+{
+	LatteDecompilerShader* shader = s_registered.Find(LatteSHRC_RegisteredKey(type, baseHash, auxHash, false));
+	return shader && shader->baseHash == baseHash && shader->auxHash == auxHash && shader->shaderType == type ? shader : nullptr;
+}
+
+LatteDecompilerShader* LatteSHRC_FindRegisteredBase(LatteConst::ShaderType type, uint64 baseHash)
+{
+	LatteDecompilerShader* shader = s_registeredBase.Find(LatteSHRC_RegisteredKey(type, baseHash, 0, true));
+	return shader && shader->baseHash == baseHash && shader->shaderType == type ? shader : nullptr;
+}
+
 void LatteSHRC_RegisterShader(LatteDecompilerShader* shader, uint64 baseHash, uint64 auxHash)
 {
 	auto& cache = LatteSHRC_GetCacheByType(shader->shaderType);
@@ -502,6 +529,9 @@ void LatteSHRC_RegisterShader(LatteDecompilerShader* shader, uint64 baseHash, ui
 		shader->next = it->second->next;
 		it->second->next = shader;
 	}
+	// made: published last
+	s_registered.Insert(LatteSHRC_RegisteredKey(shader->shaderType, baseHash, auxHash, false), shader);
+	s_registeredBase.Insert(LatteSHRC_RegisteredKey(shader->shaderType, baseHash, 0, true), shader);
 }
 
 LatteDecompilerShader* LatteSHRC_GetFromChain(LatteDecompilerShader* baseShader, uint64 baseHash, uint64 auxHash)
@@ -1546,6 +1576,8 @@ void LatteSHRC_Init()
 
 void LatteSHRC_UnloadAll()
 {
+	s_registered.Clear();
+	s_registeredBase.Clear();
     while(!sVertexShaders.empty())
         LatteShader_free(sVertexShaders.begin()->second);
     cemu_assert_debug(sVertexShaders.empty());

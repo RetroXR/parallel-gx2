@@ -181,6 +181,10 @@ public:
 
 	// hack - accurate barrier needed for this pipeline
 	bool neverSkipAccurateBarrier{false};
+	// in the GPU thread's table of them (m_pipeline_info_cache): a pipeline
+	// the cache loads, or a read makes ahead, never is, and goes on another
+	// thread without touching it
+	bool registered{false};
 };
 
 namespace WindowSystem

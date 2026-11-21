@@ -1,3 +1,4 @@
+#include "Cafe/HW/Latte/Core/LatteShaderAhead.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/LatteTextureVk.h"
@@ -125,6 +126,8 @@ PipelineInfo* VulkanRenderer::draw_createGraphicsPipeline(uint32 indexCount)
 	// register pipeline
 	uint64 vsBaseHash = vertexShader->baseHash;
 	m_pipeline_info_cache.Put(pipelineHash, pipelineInfo);
+	pipelineInfo->registered = true;
+	LatteShaderAhead_NotePipeline(pipelineHash);
 
 	// init pipeline compiler
 	PipelineCompiler* pipelineCompiler = new PipelineCompiler();

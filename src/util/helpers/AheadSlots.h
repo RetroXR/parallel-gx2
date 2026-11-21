@@ -184,3 +184,73 @@ private:
 	}
 	std::atomic<uint64_t> m_keys[Capacity]{};
 };
+
+// Values by key, one thread adding while any read: insert-only, open
+// addressing over a fixed table, a value written before its key is
+// published and never changed after. A key added twice keeps its first
+// value; one that no longer fits is not found. The values must outlive
+// the readers.
+template<typename T, size_t Capacity>
+class PublishedMap
+{
+	static_assert((Capacity & (Capacity - 1)) == 0, "a power of two");
+	static constexpr size_t kProbe = 32;
+
+public:
+	// the adding thread's
+	void Insert(uint64_t key, T* value)
+	{
+		key = key ? key : 1;
+		for (size_t i = 0, at = Mix(key); i < kProbe; i++, at++)
+		{
+			Entry& e = m_entries[at & (Capacity - 1)];
+			const uint64_t cur = e.key.load(std::memory_order_relaxed);
+			if (cur == key)
+				return;
+			if (cur == 0)
+			{
+				e.value.store(value, std::memory_order_relaxed);
+				e.key.store(key, std::memory_order_release);
+				return;
+			}
+		}
+	}
+	T* Find(uint64_t key) const
+	{
+		key = key ? key : 1;
+		for (size_t i = 0, at = Mix(key); i < kProbe; i++, at++)
+		{
+			const Entry& e = m_entries[at & (Capacity - 1)];
+			const uint64_t cur = e.key.load(std::memory_order_acquire);
+			if (cur == key)
+				return e.value.load(std::memory_order_relaxed);
+			if (cur == 0)
+				return nullptr;
+		}
+		return nullptr;
+	}
+	// with nobody adding or asking
+	void Clear()
+	{
+		for (Entry& e : m_entries)
+		{
+			e.key.store(0, std::memory_order_relaxed);
+			e.value.store(nullptr, std::memory_order_relaxed);
+		}
+	}
+
+private:
+	static size_t Mix(uint64_t key)
+	{
+		key ^= key >> 33;
+		key *= 0xc4ceb9fe1a85ec53ull;
+		key ^= key >> 33;
+		return (size_t)key;
+	}
+	struct Entry
+	{
+		std::atomic<uint64_t> key{0};
+		std::atomic<T*> value{nullptr};
+	};
+	Entry m_entries[Capacity];
+};

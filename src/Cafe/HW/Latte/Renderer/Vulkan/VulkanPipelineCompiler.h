@@ -84,6 +84,10 @@ public:
 	// alone; false without VK_EXT_pipeline_robustness (the device's then)
 	bool m_robustVertex{false};
 	bool m_robustPixel{false};
+	// with graphics pipeline libraries, its parts made and no pipeline
+	// linked: one made ahead of its draw, which links them (without, the
+	// pipeline is made as before)
+	bool m_partsOnly{false};
 
 	/* shader stages */
 	VkPipelineShaderStageCreateInfo shaderStages[3]{};

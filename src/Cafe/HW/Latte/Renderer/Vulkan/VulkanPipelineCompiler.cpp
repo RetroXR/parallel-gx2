@@ -1015,6 +1015,8 @@ bool PipelineCompiler::CompileFromLibraries(const VkGraphicsPipelineCreateInfo& 
 		}
 		libraries[p] = library;
 	}
+	if (m_partsOnly)
+		return true;
 	VkPipeline pipeline = VK_NULL_HANDLE;
 	bool optimize = false, queueOptimized = false;
 	if (ok)

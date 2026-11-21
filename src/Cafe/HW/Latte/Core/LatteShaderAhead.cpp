@@ -15,6 +15,8 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/PreparedPipeline.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/RendererShaderVk.h"
+#include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
+#include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h"
 #endif
 
 void _calcShaderHashGeneric(uint32* programCode, uint32 programSize, uint64& outputHash1, uint64& outputHash2);
@@ -425,30 +427,33 @@ namespace
 	}
 
 	// (gs: a geometry shader's draw, gsHash1 its program's first hash)
-	void PixelAhead(Job* job, uint32* regs, bool gs, uint64 gsHash1)
+	// the shader's base hash, 0 where not read
+	uint64 PixelAhead(Job* job, uint32* regs, bool gs, uint64 gsHash1)
 	{
 		const uint32 size = regs[mmSQ_PGM_START_PS + 1] << 3;
 		if (size == 0 || !CopyGuest(job->psProgram, regs[mmSQ_PGM_START_PS] << 8, size, kMaxProgram))
-			return;
+			return 0;
 		uint64 h1, h2;
 		_calcShaderHashGeneric(reinterpret_cast<uint32*>(job->psProgram), size, h1, h2);
 		const uint64 baseHash = LatteSHRC_PixelBaseHash(h1, h2, job->inputs.key, gs, gsHash1);
 		Slots::Held held = ClaimAhead(s_pixel, s_seenPixel, s_countsPixel, baseHash, job->scan);
 		if (!held)
-			return;
+			return baseHash;
 		Make(job, ReadSources(job, regs, false, size, gs, 0, gsHash1, 0, 0), false, held, baseHash, 0);
 		job->found++;
+		return baseHash;
 	}
 
-	// the export shader where a geometry shader runs (gs), with that after it
-	void VertexAhead(Job* job, uint32* regs, bool gs, uint32 gsSize, uint64 gsHash1, uint64 gsHash2, uint32 copySize)
+	// the export shader where a geometry shader runs (gs), with that after
+	// it; its base hash, 0 where not read (the fetch shader then parsed)
+	uint64 VertexAhead(Job* job, uint32* regs, bool gs, uint32 gsSize, uint64 gsHash1, uint64 gsHash2, uint32 copySize)
 	{
 		const uint32 program = gs ? mmSQ_PGM_START_ES : mmSQ_PGM_START_VS;
 		const uint32 size = regs[program + 1] << 3;
 		const uint32 fsSize = regs[mmSQ_PGM_START_FS + 1] << 3;
 		if (size == 0 || !CopyGuest(job->vsProgram, regs[program] << 8, size, kMaxProgram) ||
 			!CopyGuest(job->fsProgram, regs[mmSQ_PGM_START_FS] << 8, fsSize, kMaxFetchProgram))
-			return;
+			return 0;
 		// the fetch shader parsed as LatteFetchShader::FindByGPUState would parse it
 		// for these registers; the draw's own, which may have been parsed for
 		// others, has to match it (its Fingerprint)
@@ -460,10 +465,134 @@ namespace
 		const uint64 baseHash = LatteSHRC_VertexBaseHash(h1, h2, &job->fetchShader, job->inputs.key, gs, regs);
 		Slots::Held held = ClaimAhead(s_vertex, s_seenVertex, s_countsVertex, baseHash, job->scan);
 		if (!held)
-			return;
+			return baseHash;
 		Make(job, ReadSources(job, regs, true, size, gs, gsSize, gsHash1, gsHash2, copySize), true, held, baseHash, fsSize);
 		job->found++;
+		return baseHash;
 	}
+
+#ifdef ENABLE_VULKAN
+	// A pipeline made ahead of its draw: from the read's registers, on a
+	// compile thread of its own, its render pass the one the registers name
+	// (as the pipeline cache's are made, VulkanPipelineStableCache_Attachments)
+	constexpr uint32 kPipelineSlots = 4;
+	struct PipelineSlot
+	{
+		LatteFetchShader fetchShader; // the draw's, parsed here
+		VKRObjectRenderPass* renderPass;
+		PipelineInfo* info;
+		PipelineCompiler* compiler;
+		std::atomic<bool> busy;
+		bool queued;
+		bool ran;
+		alignas(PreparedPipeline) unsigned char prepared[sizeof(PreparedPipeline)];
+		PreparedPipeline* Prepared() { return reinterpret_cast<PreparedPipeline*>(prepared); }
+	};
+	PipelineSlot* s_pipelineSlots;
+	// the pipelines the GPU thread has (made, or the cache's loaded), and
+	// those made ahead: none made ahead again
+	SeenKeys<1u << 16> s_pipelinesKnown, s_pipelinesAhead;
+	std::atomic<uint64> s_pipelinesMade{0};
+
+	PipelineSlot* TakePipelineSlot()
+	{
+		for (uint32 i = 0; s_pipelineSlots && i < kPipelineSlots; i++)
+		{
+			PipelineSlot& slot = s_pipelineSlots[i];
+			bool expected = false;
+			if (slot.busy.load(std::memory_order_relaxed) ||
+				!slot.busy.compare_exchange_strong(expected, true, std::memory_order_acquire, std::memory_order_relaxed))
+				continue;
+			if (slot.queued)
+			{
+				if (!slot.Prepared()->IsBuilt())
+				{
+					slot.busy.store(false, std::memory_order_release);
+					continue;
+				}
+				slot.Prepared()->~PreparedPipeline();
+				slot.queued = false;
+			}
+			return &slot;
+		}
+		return nullptr;
+	}
+
+	// what the slot made goes: the pipeline (its parts kept by the cache of
+	// them), the compiler, the render pass
+	void LetPipelineGo(PipelineSlot& slot)
+	{
+		delete slot.compiler;
+		slot.compiler = nullptr;
+		delete slot.info;
+		slot.info = nullptr;
+		VulkanRenderer::GetInstance()->ReleaseDestructibleObject(slot.renderPass);
+		slot.renderPass = nullptr;
+	}
+
+	void RunPipelineSlot(PipelineSlot* slot)
+	{
+		slot->ran = true;
+		slot->compiler->Compile(true, false, false);
+		LetPipelineGo(*slot);
+		s_pipelinesMade.fetch_add(1, std::memory_order_relaxed);
+		slot->busy.store(false, std::memory_order_release);
+	}
+
+	// A draw whose shaders the GPU thread has, with a pipeline it has not
+	// made - a new render pass, or state no pipeline had - has it made here
+	// first: with graphics pipeline libraries its parts, which the draw's
+	// own pipeline then links, otherwise the pipeline, for the driver's cache
+	// to give the draw's. Geometry shaders' draws are left to the draw.
+	void PipelineAhead(Job* job, uint32* regs, uint64 vsBase, uint64 psBase)
+	{
+		if (!vsBase || !psBase)
+			return;
+		LatteDecompilerShader* vsAny = LatteSHRC_FindRegisteredBase(LatteConst::ShaderType::Vertex, vsBase);
+		LatteDecompilerShader* psAny = LatteSHRC_FindRegisteredBase(LatteConst::ShaderType::Pixel, psBase);
+		if (!vsAny || !psAny)
+			return;
+		LatteDecompilerShader* vs = LatteSHRC_FindRegistered(LatteConst::ShaderType::Vertex, vsBase, LatteSHRC_CalcVSAuxHash(vsAny, regs));
+		LatteDecompilerShader* ps = LatteSHRC_FindRegistered(LatteConst::ShaderType::Pixel, psBase, LatteSHRC_CalcPSAuxHash(psAny, regs));
+		if (!vs || !ps || vs->hasError || ps->hasError || !vs->shader || !ps->shader)
+			return;
+		const LatteContextRegister& lcr = *reinterpret_cast<const LatteContextRegister*>(regs);
+		VKRObjectRenderPass::AttachmentInfo_t attachments;
+		VulkanPipelineStableCache_Attachments(ps, lcr, attachments);
+		// the key the draw looks its pipeline up by
+		// (VulkanRenderer::draw_calculateGraphicsPipelineHash)
+		const uint64 hash = VulkanPipelineKey_Graphics(&job->fetchShader, vs->baseHash, 0, ps->baseHash + ps->auxHash,
+			VKRObjectRenderPass::HashForPipeline(attachments), lcr, VulkanRenderer::draw_pipelineKeyDynamicFlags());
+		if (s_pipelinesKnown.Contains(hash) || s_pipelinesAhead.Contains(hash))
+			return;
+		PipelineSlot* slot = TakePipelineSlot();
+		if (!slot)
+			return;
+		s_pipelinesAhead.Insert(hash);
+		const uint32 fsSize = regs[mmSQ_PGM_START_FS + 1] << 3;
+		slot->fetchShader.Reset();
+		LatteFetchShader_Parse(&slot->fetchShader, LatteFetchShader::CalculateCacheHash(job->fsProgram, fsSize), regs,
+			reinterpret_cast<uint32*>(job->fsProgram), fsSize);
+		slot->renderPass = new VKRObjectRenderPass(attachments);
+		slot->info = new PipelineInfo(0, hash, &slot->fetchShader, vs, ps, nullptr);
+		slot->compiler = new PipelineCompiler();
+		if (!slot->compiler->InitFromCurrentGPUState(slot->info, lcr, slot->renderPass, PipelineCompiler::CalcRobustBufferAccessRequirement(vs, ps, nullptr)))
+		{
+			LetPipelineGo(*slot);
+			slot->busy.store(false, std::memory_order_release);
+			return;
+		}
+		slot->compiler->m_partsOnly = true; // with graphics pipeline libraries; the pipeline without
+		slot->ran = false;
+		PreparedPipeline* prepared = new (slot->prepared) PreparedPipeline([](void* ctx, bool) {
+			RunPipelineSlot(static_cast<PipelineSlot*>(ctx));
+			return (VkPipeline)VK_NULL_HANDLE;
+		}, slot);
+		slot->queued = true;
+		PipelineCompiler::CompileThreadPool_QueuePreparedUrgent(*prepared);
+		job->found++;
+	}
+#endif
 
 	bool OnDraw(void* ctx, uint32* regs)
 	{
@@ -483,8 +612,12 @@ namespace
 				return true;
 			_calcShaderHashGeneric(reinterpret_cast<uint32*>(job->gsProgram), gsSize, gsHash1, gsHash2);
 		}
-		PixelAhead(job, regs, gs, gsHash1);
-		VertexAhead(job, regs, gs, gsSize, gsHash1, gsHash2, copySize);
+		const uint64 psBase = PixelAhead(job, regs, gs, gsHash1);
+		const uint64 vsBase = VertexAhead(job, regs, gs, gsSize, gsHash1, gsHash2, copySize);
+#ifdef ENABLE_VULKAN
+		if (!gs)
+			PipelineAhead(job, regs, vsBase, psBase);
+#endif
 		return job->found < kMaxPerScan;
 	}
 
@@ -529,6 +662,17 @@ void LatteShaderAhead_Init()
 		memset(s_jobs[i].regs, 0, sizeof(s_jobs[i].regs));
 		s_jobs[i].queued = false;
 	}
+	s_pipelineSlots = new PipelineSlot[kPipelineSlots];
+	for (uint32 i = 0; i < kPipelineSlots; i++)
+	{
+		PipelineSlot& slot = s_pipelineSlots[i];
+		slot.renderPass = nullptr;
+		slot.info = nullptr;
+		slot.compiler = nullptr;
+		slot.busy.store(false, std::memory_order_relaxed);
+		slot.queued = false;
+		slot.ran = false;
+	}
 	s_tasks = new Task[kTasks];
 	for (uint32 i = 0; i < kTasks; i++)
 	{
@@ -572,6 +716,24 @@ void LatteShaderAhead_Shutdown()
 			idle->job.Prepared()->~PreparedPipeline();
 		delete idle;
 	}
+	if (s_pipelineSlots)
+	{
+		// the reads are done: a pipeline under way finished, one not started
+		// let go here, before the renderer goes
+		for (uint32 i = 0; i < kPipelineSlots; i++)
+		{
+			PipelineSlot& slot = s_pipelineSlots[i];
+			if (!slot.queued)
+				continue;
+			slot.Prepared()->~PreparedPipeline();
+			if (!slot.ran)
+				LetPipelineGo(slot);
+		}
+		delete[] s_pipelineSlots;
+		s_pipelineSlots = nullptr;
+	}
+	s_pipelinesKnown.Clear();
+	s_pipelinesAhead.Clear();
 	if (s_tasks)
 	{
 		// the reads are done: no task taken again. One under way finished,
@@ -603,6 +765,10 @@ void LatteShaderAhead_Shutdown()
 	}
 	if (const uint64 reads = s_guestReads.exchange(0, std::memory_order_relaxed))
 		cemuLog_log(LogType::Force, "[ShaderAhead] {} reads of command buffers before their submission", reads);
+#ifdef ENABLE_VULKAN
+	if (const uint64 made = s_pipelinesMade.exchange(0, std::memory_order_relaxed))
+		cemuLog_log(LogType::Force, "[ShaderAhead] {} pipelines made ahead of their draw for shaders already known", made);
+#endif
 	for (Slots* slots : {&s_pixel, &s_vertex, &s_geometry})
 	{
 		slots->DrainPublished([](AheadShader& p) {
@@ -803,6 +969,13 @@ void LatteShaderAhead_NotePixelShader(uint64 baseHash)
 void LatteShaderAhead_NoteVertexShader(uint64 baseHash)
 {
 	s_seenVertex.Insert(baseHash);
+}
+
+void LatteShaderAhead_NotePipeline(uint64 pipelineHash)
+{
+#ifdef ENABLE_VULKAN
+	s_pipelinesKnown.Insert(pipelineHash);
+#endif
 }
 
 void LatteShaderAhead_NoteGeometryShader(uint64 baseHash)

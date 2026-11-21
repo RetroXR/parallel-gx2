@@ -37,8 +37,11 @@
 //    one never published left to the draw, one taken by its slot (to queue
 //    its parts) or by a draw that cannot use it published again; four producers and a consumer
 //    racing over 20000 keys, every payload published either taken or
-//    drained, none twice (TSan in CI); and the filter of keys seen, which
-//    never says unseen for a key added.
+//    drained, none twice (TSan in CI); the filter of keys seen, which
+//    never says unseen for a key added; and the registered shaders'
+//    table (PublishedMap): a key's first value found, none for a key never
+//    added or past the table's room, one thread adding while three find -
+//    never a value another key's, every key found once added (TSan in CI).
 #include <atomic>
 #include <cstdio>
 #include <cstring>
@@ -414,6 +417,87 @@ static void IdleSnapshot()
 	CHECK(torn.load() == 0 && taken.load() > 0);
 }
 
+static void Published()
+{
+	{
+		PublishedMap<int, 64> m;
+		int a = 1, b = 2;
+		CHECK(m.Find(5) == nullptr);
+		m.Insert(5, &a);
+		m.Insert(5, &b); // the first kept
+		CHECK(m.Find(5) == &a);
+		m.Insert(0, &b); // 0 is kept as 1
+		CHECK(m.Find(0) == &b && m.Find(1) == &b);
+		// past its room: not found, never another's
+		int values[200];
+		for (int i = 0; i < 200; i++)
+			m.Insert(1000 + i, &values[i]);
+		int found = 0;
+		for (int i = 0; i < 200; i++)
+		{
+			int* v = m.Find(1000 + i);
+			CHECK(v == nullptr || v == &values[i]);
+			found += v != nullptr;
+		}
+		CHECK(found > 0 && found <= 62); // two keys in already
+		m.Clear();
+		CHECK(m.Find(5) == nullptr);
+	}
+	// a key added again takes no more room: as many others fit after it
+	{
+		static PublishedMap<int, 64> once, again;
+		int value = 0;
+		once.Insert(77, &value);
+		for (int i = 0; i < 100; i++)
+			again.Insert(77, &value);
+		int fitOnce = 0, fitAgain = 0;
+		for (int i = 0; i < 200; i++)
+		{
+			once.Insert(5000 + i, &value);
+			again.Insert(5000 + i, &value);
+			fitOnce += once.Find(5000 + i) != nullptr;
+			fitAgain += again.Find(5000 + i) != nullptr;
+		}
+		CHECK(fitAgain == fitOnce);
+	}
+	// one thread adding, three finding
+	static PublishedMap<uint64, 1u << 14> shared;
+	static uint64 values[8000];
+	for (uint64 i = 0; i < 8000; i++)
+		values[i] = i * 7 + 3;
+	std::atomic<uint32> added{0};
+	std::atomic<uint32> wrong{0};
+	std::vector<std::thread> readers;
+	for (int r = 0; r < 3; r++)
+		readers.emplace_back([&] {
+			while (added.load(std::memory_order_acquire) < 8000)
+			{
+				const uint32 upTo = added.load(std::memory_order_acquire);
+				for (uint32 i = 0; i < 8000; i += 37)
+				{
+					const uint64* v = shared.Find(0x100000 + i);
+					if (v && *v != i * 7 + 3)
+						wrong++;
+					if (i < upTo && !v)
+						wrong++; // added before: found
+				}
+			}
+		});
+	for (uint32 i = 0; i < 8000; i++)
+	{
+		shared.Insert(0x100000 + i, &values[i]);
+		added.store(i + 1, std::memory_order_release);
+	}
+	for (auto& t : readers)
+		t.join();
+	CHECK(wrong.load() == 0);
+	uint32 all = 0;
+	for (uint32 i = 0; i < 8000; i++)
+		all += shared.Find(0x100000 + i) == &values[i];
+	CHECK(all == 8000);
+	shared.Clear();
+}
+
 static void PixelShaderInputs()
 {
 	std::vector<uint32> regs(LATTE_MAX_REGISTER, 0);
@@ -767,6 +851,7 @@ int main()
 	Ring();
 	ReadTo();
 	IdleSnapshot();
+	Published();
 	PixelShaderInputs();
 	VertexShaderInputs();
 	GeometryShaderInputs();
