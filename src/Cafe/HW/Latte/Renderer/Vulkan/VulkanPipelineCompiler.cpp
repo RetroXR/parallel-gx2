@@ -1257,6 +1257,10 @@ static std::vector<std::thread> s_compileThreads;
 static std::atomic_bool s_compileThreadsShutdownSignal{};
 // pushed by the GPU thread, taken by every compile thread: no lock
 static MpmcQueue<PipelineCompiler*> s_pipelineCompileRequests;
+// taken before any of those, by the next compile thread free: what is worth
+// nothing late (the reads ahead of the GPU thread, LatteShaderAhead.cpp);
+// each pushed with a null into the queue above, to wake a thread for it
+static MpmcQueue<PipelineCompiler*> s_urgentCompileRequests;
 
 static void compilePipeline_thread(sint32 threadIndex)
 {
@@ -1271,9 +1275,9 @@ static void compilePipeline_thread(sint32 threadIndex)
 #endif
 	while (!s_compileThreadsShutdownSignal)
 	{
-		PipelineCompiler* request = s_pipelineCompileRequests.pop();
+		PipelineCompiler* request = MpmcQueue_PopPreferring(s_urgentCompileRequests, s_pipelineCompileRequests);
 		if (!request)
-			continue;
+			continue; // an urgent one's wake (taken above, now or by another thread), or the end
 		if (request->m_preparedTicket)
 		{
 			PreparedPipeline::Run(request->m_preparedTicket);
@@ -1318,11 +1322,11 @@ void PipelineCompiler::CompileThreadPool_Stop()
 	}
 	for (auto& thread : s_compileThreads)
 		thread.join();
-	while (!s_pipelineCompileRequests.empty())
+	for (MpmcQueue<PipelineCompiler*>* queue : {&s_urgentCompileRequests, &s_pipelineCompileRequests})
 	{
-		PipelineCompiler* pipelineCompiler = s_pipelineCompileRequests.pop();
-		if (pipelineCompiler)
-			delete pipelineCompiler;
+		PipelineCompiler* pipelineCompiler;
+		while (queue->peek2(pipelineCompiler))
+			delete pipelineCompiler; // a ticket unrun dropped with it
 	}
 	s_compileThreads.clear();
 }
@@ -1337,4 +1341,11 @@ void PipelineCompiler::CompileThreadPool_QueuePrepared(PreparedPipeline& prepare
 	PipelineCompiler* job = new PipelineCompiler();
 	job->m_preparedTicket = prepared.Queue();
 	s_pipelineCompileRequests.push(job);
+}
+
+void PipelineCompiler::CompileThreadPool_QueuePreparedUrgent(PreparedPipeline& prepared)
+{
+	PipelineCompiler* job = new PipelineCompiler();
+	job->m_preparedTicket = prepared.Queue();
+	MpmcQueue_PushUrgent(s_urgentCompileRequests, s_pipelineCompileRequests, job);
 }

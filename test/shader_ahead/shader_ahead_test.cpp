@@ -324,6 +324,7 @@ static void SlotsOneThread()
 	// taken by its slot, as the GPU thread does to queue a shader's parts:
 	// only once published, its key with it, and published again after
 	CHECK(!slots.TakeAt(AheadSlots<Payload, 8>::SlotOf(13))); // still being made
+	CHECK(slots.InHand(13) && !slots.InHand(5) && !slots.InHand(21)); // its draw, come first, counts it late
 	d.payload->key = 13;
 	slots.Publish(d);
 	auto e = slots.TakeAt(AheadSlots<Payload, 8>::SlotOf(13));
@@ -339,6 +340,7 @@ static void SlotsOneThread()
 	CHECK(g && g.payload->key == 13);
 	slots.Release(g);
 	CHECK(!slots.TakeAt(AheadSlots<Payload, 8>::SlotOf(13))); // released: empty
+	CHECK(!slots.InHand(13));
 }
 
 static void SlotsRacing()

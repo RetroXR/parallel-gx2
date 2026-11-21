@@ -164,3 +164,24 @@ private:
 	std::atomic<size_t> m_count{0};
 	EventWake m_wake;
 };
+
+// Two queues a pool's threads take from, urgent's first: pushed to urgent
+// with a null pushed to rest, so a thread waiting on rest wakes for it
+template<typename T>
+inline void MpmcQueue_PushUrgent(MpmcQueue<T*>& urgent, MpmcQueue<T*>& rest, T* item)
+{
+	urgent.push(item);
+	rest.push(nullptr);
+}
+
+// The next item for such a thread: urgent's oldest, never waited for, else
+// rest's, waited for. Null for an urgent item's wake (taken already, here or
+// by another thread: ask again) or whatever else the pool pushes null for
+template<typename T>
+inline T* MpmcQueue_PopPreferring(MpmcQueue<T*>& urgent, MpmcQueue<T*>& rest)
+{
+	T* item = nullptr;
+	if (urgent.peek2(item))
+		return item;
+	return rest.pop();
+}

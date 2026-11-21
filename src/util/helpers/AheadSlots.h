@@ -38,7 +38,7 @@ public:
 		uint32_t state = kEmpty;
 		if (s.state.compare_exchange_strong(state, kBusy, std::memory_order_acquire))
 		{
-			s.key = key;
+			s.key.store(key, std::memory_order_relaxed);
 			return {&s.payload, i};
 		}
 		if (state != kReady)
@@ -46,12 +46,12 @@ public:
 		// a published one, read only once held
 		if (!s.state.compare_exchange_strong(state, kBusy, std::memory_order_acquire))
 			return {nullptr, i};
-		if (s.key == key || !stale(s.key, s.payload))
+		if (s.key.load(std::memory_order_relaxed) == key || !stale(s.key.load(std::memory_order_relaxed), s.payload))
 		{
 			s.state.store(kReady, std::memory_order_release);
 			return {nullptr, i};
 		}
-		s.key = key;
+		s.key.store(key, std::memory_order_relaxed);
 		*hadPayload = true;
 		return {&s.payload, i};
 	}
@@ -70,7 +70,7 @@ public:
 		uint32_t state = kReady;
 		if (!s.state.compare_exchange_strong(state, kBusy, std::memory_order_acquire))
 			return {nullptr, i};
-		if (s.key != key)
+		if (s.key.load(std::memory_order_relaxed) != key)
 		{
 			s.state.store(kReady, std::memory_order_release);
 			return {nullptr, i};
@@ -90,8 +90,16 @@ public:
 		return {&s.payload, index % N};
 	}
 	// the key of a slot held
-	uint64_t KeyOf(Held h) const { return m_slots[h.index].key; }
+	uint64_t KeyOf(Held h) const { return m_slots[h.index].key.load(std::memory_order_relaxed); }
 	static constexpr size_t SlotOf(uint64_t key) { return key % N; }
+	// Whether key's slot is held for it right now - by a producer filling it,
+	// where the consumer asking holds nothing itself: for counting, a guess
+	// that may be stale by the time it is read
+	bool InHand(uint64_t key) const
+	{
+		const Slot& s = m_slots[key % N];
+		return s.state.load(std::memory_order_acquire) == kBusy && s.key.load(std::memory_order_relaxed) == key;
+	}
 
 	// Every published payload handed to discard and its slot emptied: with
 	// no producer running (at the end)
@@ -114,7 +122,7 @@ private:
 	struct Slot
 	{
 		Payload payload{};
-		uint64_t key{};
+		std::atomic<uint64_t> key{0}; // atomic for InHand, which reads it unheld
 		std::atomic<uint32_t> state{kEmpty};
 	};
 	Slot m_slots[N];

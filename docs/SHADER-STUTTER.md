@@ -398,6 +398,15 @@ other stage asks for it, the part made ahead goes unused. What is left:
 shaders whose first draw comes before the read gets to it, geometry
 shaders, and the render passes and states no pipeline had before.
 
+The reads ahead go to the compile threads in a lane of their own, taken
+before any pipeline compile queued (`CompileThreadPool_QueuePreparedUrgent`,
+`MpmcQueue_PopPreferring`): when new shaders come, the compile threads are
+busiest, and a read queued behind them is late for the draws it reads.
+As a title stops, the log has, for vertex and pixel shaders, how many were
+made ahead, taken by their draw, not usable there, drawn while still being
+made, drawn with none made, and let go unused (`[ShaderAhead]`): the
+numbers to judge this by on real games.
+
 Next: the draws async skips while the parts are made.
 
 - **Graphics pipeline libraries** where the device has them

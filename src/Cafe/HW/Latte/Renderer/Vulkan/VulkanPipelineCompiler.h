@@ -72,6 +72,10 @@ public:
 	static void CompileThreadPool_QueueCompilation(PipelineCompiler* v);
 	// a pipeline made ahead, built by the compile threads (PreparedPipeline.h)
 	static void CompileThreadPool_QueuePrepared(PreparedPipeline& prepared);
+	// the same, taken before anything queued without it, by the next compile
+	// thread free: for work worth nothing late and short (the reads ahead of
+	// the GPU thread, LatteShaderAhead.cpp), never a pipeline's compile
+	static void CompileThreadPool_QueuePreparedUrgent(PreparedPipeline& prepared);
 
 	VkPipelineLayout m_pipelineLayout;
 	VKRObjectRenderPass* m_renderPassObj{};

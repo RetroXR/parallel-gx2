@@ -37,6 +37,15 @@ namespace
 	using Seen = SeenKeys<1u << 15>;
 	Slots s_pixel, s_vertex;
 	Seen s_seenPixel, s_seenVertex;
+	// what happened to them, logged as the title stops: made ahead, taken by
+	// their draw, not usable there, the draw first while one was being made,
+	// none there for the draw, let go unused (vertex, pixel)
+	struct Counts
+	{
+		std::atomic<uint64> made{0}, taken{0}, unusable{0}, late{0}, none{0}, letGo{0};
+	};
+	Counts s_countsVertex, s_countsPixel;
+
 	// the slots whose shader waits for the GPU thread to queue its parts
 	// (LatteShaderAhead_Poll), a bit each
 	std::atomic<uint64> s_partsPixel{0}, s_partsVertex{0};
@@ -107,7 +116,7 @@ namespace
 	// filling in what the draw checks it by, and its module made, for the
 	// GPU thread to queue its parts (parts: the slots' pending bits)
 	template<typename Decompile, typename Finish>
-	bool MakeAhead(Slots& slots, Seen& seen, std::atomic<uint64>& parts, uint64 baseHash, uint32 scan, Decompile decompile, Finish finish)
+	bool MakeAhead(Slots& slots, Seen& seen, std::atomic<uint64>& parts, Counts& counts, uint64 baseHash, uint32 scan, Decompile decompile, Finish finish)
 	{
 		if (seen.Contains(baseHash))
 			return false;
@@ -118,7 +127,10 @@ namespace
 		if (!held)
 			return false;
 		if (hadPayload)
+		{
 			LatteShader_FreeDecompilerOutput(held.payload->output);
+			counts.letGo.fetch_add(1, std::memory_order_relaxed);
+		}
 		held.payload->output = {};
 		decompile(held.payload->output);
 		if (!held.payload->output.shader)
@@ -138,6 +150,7 @@ namespace
 		const size_t index = held.index;
 		const bool pending = held.payload->partsPending;
 		slots.Publish(held);
+		counts.made.fetch_add(1, std::memory_order_relaxed);
 		if (pending)
 			parts.fetch_or(1ull << index, std::memory_order_release);
 		return true;
@@ -151,7 +164,7 @@ namespace
 		uint64 h1, h2;
 		_calcShaderHashGeneric(reinterpret_cast<uint32*>(job->psProgram), size, h1, h2);
 		const uint64 baseHash = h1 + h2 + job->inputs.key; // LatteSHRC_UpdatePSBaseHash, no geometry shader
-		job->found += MakeAhead(s_pixel, s_seenPixel, s_partsPixel, baseHash, job->scan,
+		job->found += MakeAhead(s_pixel, s_seenPixel, s_partsPixel, s_countsPixel, baseHash, job->scan,
 			[&](LatteDecompilerOutput_t& out) {
 				LatteShader_DecompilePixelShaderAhead(regs, job->psProgram, size, &job->inputs, baseHash, &out);
 			},
@@ -178,7 +191,7 @@ namespace
 		uint64 h1, h2;
 		_calcShaderHashGeneric(reinterpret_cast<uint32*>(job->vsProgram), size, h1, h2);
 		const uint64 baseHash = LatteSHRC_VertexBaseHash(h1, h2, &job->fetchShader, job->inputs.key, false, regs);
-		job->found += MakeAhead(s_vertex, s_seenVertex, s_partsVertex, baseHash, job->scan,
+		job->found += MakeAhead(s_vertex, s_seenVertex, s_partsVertex, s_countsVertex, baseHash, job->scan,
 			[&](LatteDecompilerOutput_t& out) {
 				LatteShader_DecompileVertexShaderAhead(regs, job->vsProgram, size, &job->fetchShader, &job->inputs, baseHash, &out);
 			},
@@ -249,6 +262,18 @@ void LatteShaderAhead_Shutdown()
 		s_jobs = nullptr;
 	}
 #endif
+	for (Counts* c : {&s_countsVertex, &s_countsPixel})
+	{
+		if (c->made.load(std::memory_order_relaxed) || c->none.load(std::memory_order_relaxed))
+			cemuLog_log(LogType::Force, "[ShaderAhead] {} shaders: {} decompiled ahead, {} taken by their draw, {} not usable there, {} drawn while being made, {} drawn with none made, {} let go unused",
+				c == &s_countsVertex ? "vertex" : "pixel", c->made.load(), c->taken.load(), c->unusable.load(), c->late.load(), c->none.load(), c->letGo.load());
+		c->made = 0;
+		c->taken = 0;
+		c->unusable = 0;
+		c->late = 0;
+		c->none = 0;
+		c->letGo = 0;
+	}
 	for (Slots* slots : {&s_pixel, &s_vertex})
 	{
 		slots->DrainPublished([](AheadShader& p) {
@@ -295,7 +320,7 @@ void LatteShaderAhead_OnCommandBuffer(uint32 physAddr, uint32 words)
 		return (VkPipeline)VK_NULL_HANDLE;
 	}, job);
 	job->queued = true;
-	PipelineCompiler::CompileThreadPool_QueuePrepared(*prepared);
+	PipelineCompiler::CompileThreadPool_QueuePreparedUrgent(*prepared);
 	s_skip = (1u << s_backoff.load(std::memory_order_relaxed)) - 1;
 #endif
 }
@@ -304,7 +329,10 @@ bool LatteShaderAhead_TakePixelShader(uint64 baseHash, LatteDecompilerOutput_t& 
 {
 	auto held = s_pixel.Take(baseHash);
 	if (!held)
+	{
+		(s_pixel.InHand(baseHash) ? s_countsPixel.late : s_countsPixel.none).fetch_add(1, std::memory_order_relaxed);
 		return false;
+	}
 	AheadShader& p = *held.payload;
 	const bool same = p.digest == LattePM4_PixelShaderInputs(LatteGPUState.contextRegister) &&
 		p.auxHash == LatteSHRC_CalcPSAuxHash(p.output.shader, LatteGPUState.contextRegister);
@@ -314,8 +342,10 @@ bool LatteShaderAhead_TakePixelShader(uint64 baseHash, LatteDecompilerOutput_t& 
 		// (destroying them would wait); a read frees it once its base hash is
 		// known, which the draw's own decompile makes it
 		s_pixel.Publish(held);
+		s_countsPixel.unusable.fetch_add(1, std::memory_order_relaxed);
 		return false;
 	}
+	s_countsPixel.taken.fetch_add(1, std::memory_order_relaxed);
 	output = p.output;
 	p.output = {};
 	s_pixel.Release(held);
@@ -326,7 +356,10 @@ bool LatteShaderAhead_TakeVertexShader(uint64 baseHash, LatteFetchShader* fetchS
 {
 	auto held = s_vertex.Take(baseHash);
 	if (!held)
+	{
+		(s_vertex.InHand(baseHash) ? s_countsVertex.late : s_countsVertex.none).fetch_add(1, std::memory_order_relaxed);
 		return false;
+	}
 	AheadShader& p = *held.payload;
 	const bool same = p.digest == LattePM4_VertexShaderInputs(LatteGPUState.contextRegister) &&
 		p.fetchShader == fetchShader->Fingerprint() &&
@@ -334,8 +367,10 @@ bool LatteShaderAhead_TakeVertexShader(uint64 baseHash, LatteFetchShader* fetchS
 	if (!same)
 	{
 		s_vertex.Publish(held); // as a pixel shader's: put back
+		s_countsVertex.unusable.fetch_add(1, std::memory_order_relaxed);
 		return false;
 	}
+	s_countsVertex.taken.fetch_add(1, std::memory_order_relaxed);
 	output = p.output;
 	output.shader->compatibleFetchShader = fetchShader;
 	p.output = {};

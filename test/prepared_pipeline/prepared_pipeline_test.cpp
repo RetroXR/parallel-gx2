@@ -15,6 +15,10 @@
 //  - tickets dropped with the queue, unrun: nothing leaks (LeakSanitizer);
 //  - tickets come from a pool (ClaimTicket.h, PoolNew.h): once as many have
 //    been out as a game keeps, queuing another allocates nothing;
+//  - an urgent lane (MpmcQueue_PushUrgent, _PopPreferring: the reads ahead of
+//    the GPU thread): queued after a backlog, taken before all of it; one
+//    pushed to an idle pool wakes a thread for it; the wake left behind
+//    when another thread took it is passed over;
 //  - built together (BuildTogether, a waiting draw's missing pipeline parts):
 //    each built once, the queued ones on the compile threads while the
 //    others are built here when threads are free - the builds overlapping -
@@ -306,6 +310,53 @@ static void Together()
 	}
 }
 
+static void Urgent()
+{
+	struct Item
+	{
+		int id;
+	};
+	MpmcQueue<Item*> urgent, rest;
+	Item items[12];
+	for (int i = 0; i < 12; i++)
+		items[i].id = i;
+	// a backlog, then an urgent one: the urgent one first, the backlog in order
+	for (int i = 0; i < 10; i++)
+		rest.push(&items[i]);
+	MpmcQueue_PushUrgent(urgent, rest, &items[10]);
+	std::vector<int> order;
+	while (order.size() < 11)
+		if (Item* it = MpmcQueue_PopPreferring(urgent, rest))
+			order.push_back(it->id);
+	CHECK(order.size() == 11 && order[0] == 10);
+	bool inOrder = true;
+	for (int i = 1; i < 11; i++)
+		inOrder &= order[i] == i - 1;
+	CHECK(inOrder);
+	// its wake, left in rest, passed over: nothing else there
+	// (read without waiting, so that a wrong order fails rather than hangs)
+	CHECK(rest.size() == 1);
+	Item* wake = &items[0];
+	CHECK(rest.peek2(wake) && wake == nullptr && rest.empty() && urgent.empty());
+	// an idle pool: the thread waiting on rest wakes for an urgent one
+	std::atomic<int> got{-1};
+	std::thread worker([&] {
+		while (true)
+		{
+			Item* it = MpmcQueue_PopPreferring(urgent, rest);
+			if (it)
+			{
+				got = it->id;
+				return;
+			}
+		}
+	});
+	std::this_thread::sleep_for(std::chrono::milliseconds(20)); // asleep on rest by now
+	MpmcQueue_PushUrgent(urgent, rest, &items[11]);
+	worker.join();
+	CHECK(got == 11);
+}
+
 int main()
 {
 	MadeAhead();
@@ -314,6 +365,7 @@ int main()
 	Dropped();
 	Pooled();
 	Together();
+	Urgent();
 	if (s_failures)
 	{
 		std::printf("%d failed\n", s_failures);
