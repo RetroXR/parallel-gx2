@@ -543,8 +543,10 @@ namespace
 	// made - a new render pass, or state no pipeline had - has it made here
 	// first: with graphics pipeline libraries its parts, which the draw's
 	// own pipeline then links, otherwise the pipeline, for the driver's cache
-	// to give the draw's. Geometry shaders' draws are left to the draw.
-	void PipelineAhead(Job* job, uint32* regs, uint64 vsBase, uint64 psBase)
+	// to give the draw's. A geometry shader's draw (gs) has its geometry
+	// shader found by the key its draw takes: its program's and the ring of
+	// the vertex shader found.
+	void PipelineAhead(Job* job, uint32* regs, uint64 vsBase, uint64 psBase, bool gs, uint64 gsHash1, uint64 gsHash2)
 	{
 		if (!vsBase || !psBase)
 			return;
@@ -556,12 +558,20 @@ namespace
 		LatteDecompilerShader* ps = LatteSHRC_FindRegistered(LatteConst::ShaderType::Pixel, psBase, LatteSHRC_CalcPSAuxHash(psAny, regs));
 		if (!vs || !ps || vs->hasError || ps->hasError || !vs->shader || !ps->shader)
 			return;
+		LatteDecompilerShader* geometry = nullptr;
+		if (gs)
+		{
+			geometry = LatteSHRC_FindRegistered(LatteConst::ShaderType::Geometry,
+				LatteSHRC_GeometryBaseHash(gsHash1, gsHash2, vs->ringParameterCount, regs[mmVGT_STRMOUT_EN] != 0), 0);
+			if (!geometry || geometry->hasError || !geometry->shader)
+				return;
+		}
 		const LatteContextRegister& lcr = *reinterpret_cast<const LatteContextRegister*>(regs);
 		VKRObjectRenderPass::AttachmentInfo_t attachments;
 		VulkanPipelineStableCache_Attachments(ps, lcr, attachments);
 		// the key the draw looks its pipeline up by
 		// (VulkanRenderer::draw_calculateGraphicsPipelineHash)
-		const uint64 hash = VulkanPipelineKey_Graphics(&job->fetchShader, vs->baseHash, 0, ps->baseHash + ps->auxHash,
+		const uint64 hash = VulkanPipelineKey_Graphics(&job->fetchShader, vs->baseHash, geometry ? geometry->baseHash : 0, ps->baseHash + ps->auxHash,
 			VKRObjectRenderPass::HashForPipeline(attachments), lcr, VulkanRenderer::draw_pipelineKeyDynamicFlags());
 		if (s_pipelinesKnown.Contains(hash) || s_pipelinesAhead.Contains(hash))
 			return;
@@ -574,9 +584,9 @@ namespace
 		LatteFetchShader_Parse(&slot->fetchShader, LatteFetchShader::CalculateCacheHash(job->fsProgram, fsSize), regs,
 			reinterpret_cast<uint32*>(job->fsProgram), fsSize);
 		slot->renderPass = new VKRObjectRenderPass(attachments);
-		slot->info = new PipelineInfo(0, hash, &slot->fetchShader, vs, ps, nullptr);
+		slot->info = new PipelineInfo(0, hash, &slot->fetchShader, vs, ps, geometry);
 		slot->compiler = new PipelineCompiler();
-		if (!slot->compiler->InitFromCurrentGPUState(slot->info, lcr, slot->renderPass, PipelineCompiler::CalcRobustBufferAccessRequirement(vs, ps, nullptr)))
+		if (!slot->compiler->InitFromCurrentGPUState(slot->info, lcr, slot->renderPass, PipelineCompiler::CalcRobustBufferAccessRequirement(vs, ps, geometry)))
 		{
 			LetPipelineGo(*slot);
 			slot->busy.store(false, std::memory_order_release);
@@ -589,7 +599,9 @@ namespace
 			return (VkPipeline)VK_NULL_HANDLE;
 		}, slot);
 		slot->queued = true;
-		PipelineCompiler::CompileThreadPool_QueuePreparedUrgent(*prepared);
+		// behind the reads and their decompiles, and the compiles of the
+		// pipelines whose draws are skipped now: in the queue they are in
+		PipelineCompiler::CompileThreadPool_QueuePrepared(*prepared);
 		job->found++;
 	}
 #endif
@@ -615,8 +627,7 @@ namespace
 		const uint64 psBase = PixelAhead(job, regs, gs, gsHash1);
 		const uint64 vsBase = VertexAhead(job, regs, gs, gsSize, gsHash1, gsHash2, copySize);
 #ifdef ENABLE_VULKAN
-		if (!gs)
-			PipelineAhead(job, regs, vsBase, psBase);
+		PipelineAhead(job, regs, vsBase, psBase, gs, gsHash1, gsHash2);
 #endif
 		return job->found < kMaxPerScan;
 	}

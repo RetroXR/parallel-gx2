@@ -454,12 +454,14 @@ NotePipeline`, its own and the cache's) nor a read made it, makes it from
 the read's registers. With graphics pipeline libraries only its parts are
 made (`m_partsOnly`), into the cache of parts the draw's pipeline then
 links from; without, the pipeline, for the driver's cache. Four at a time,
-from pools; geometry shaders' draws are left to the draw. `test/shader_
+from pools, in the compile threads' common queue - behind the reads and
+the compiles of pipelines whose draws are being skipped now. A geometry
+shader's draw has its geometry shader found by the key the draw takes
+(its program's, and the ring of the vertex shader found). `test/shader_
 ahead` checks the table, one thread adding while three find. What is left: shaders
 whose first draw comes before any read reaches it (an idle GPU thread
 starts each buffer as it is submitted), and the render passes and states
-no pipeline had before where the read does not reach them (a geometry
-shader's draw, or one no read got to).
+no pipeline had before where no read got to them.
 
 The reads ahead go to the compile threads in a lane of their own, taken
 before any pipeline compile queued (`CompileThreadPool_QueuePreparedUrgent`,
