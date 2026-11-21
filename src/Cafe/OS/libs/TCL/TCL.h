@@ -24,6 +24,10 @@ namespace TCL
 	// the GPU thread's: up to max of the words written past those it read,
 	// as the guest wrote them, without taking them
 	uint32 TCLGPUPeekRB(uint32be* out, uint32 max);
+	// the ring's read index (the GPU thread's) and write index (the
+	// submitting thread's): equal where the GPU thread read all written
+	uint32 TCLGPURingReadIndex();
+	uint32 TCLRingWriteIndex();
 	void TCLGPUNotifyNewRetirementTimestamp();
 
 	COSModule* GetModule();

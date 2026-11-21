@@ -102,6 +102,16 @@ namespace TCL
 		return n;
 	}
 
+	uint32 TCLGPURingReadIndex()
+	{
+		return tclRingBufferA_readIndex.load(std::memory_order::relaxed);
+	}
+
+	uint32 TCLRingWriteIndex()
+	{
+		return tclRingBufferA_writeIndex.load(std::memory_order::relaxed);
+	}
+
 	void TCLWaitForRBSpace(uint32be numU32s)
 	{
 		uint32 writeIndex = tclRingBufferA_writeIndex.load(std::memory_order::relaxed);

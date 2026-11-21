@@ -104,6 +104,13 @@ namespace
 #endif
 	};
 	Job* s_jobs;
+
+	struct Idle
+	{
+		LattePM4IdleSnapshot snapshot;
+		uint32 regs[LATTE_MAX_REGISTER]; // the snapshot's
+		Job job; // the guest's thread's alone
+	};
 	// reads started (GPU thread), and how many command buffers to pass over
 	// before the next: doubled, up to 63, for every read that found nothing
 	std::atomic<uint32> s_scans{0};
@@ -112,6 +119,11 @@ namespace
 	// the ring's buffers a read starts at, and the job of the last started
 	LattePM4ReadTo s_readTo;
 	struct Job* s_plannedJob;
+	// the idle GPU thread's registers, offered to the guest's thread, and
+	// that thread's own read of the buffer it is writing (Job, below)
+	struct Idle;
+	std::atomic<Idle*> s_idle{nullptr};
+	std::atomic<uint64> s_guestReads{0};
 
 	const uint32be* MapGuest(void*, uint32 physAddr, uint32 count)
 	{
@@ -526,6 +538,11 @@ void LatteShaderAhead_Init()
 		s_tasks[i].queued = false;
 		s_tasks[i].ran = false;
 	}
+	Idle* idle = new Idle();
+	memset(idle->regs, 0, sizeof(idle->regs));
+	memset(idle->job.regs, 0, sizeof(idle->job.regs));
+	idle->job.queued = false;
+	s_idle.store(idle, std::memory_order_release);
 	s_skip = 0;
 	s_backoff.store(0, std::memory_order_relaxed);
 	s_readTo.Reset();
@@ -546,6 +563,14 @@ void LatteShaderAhead_Shutdown()
 		}
 		delete[] s_jobs;
 		s_jobs = nullptr;
+	}
+	// the guest's thread is stopped before the GPU thread: its read, if
+	// under way, finished, if not started, taken back
+	if (Idle* idle = s_idle.exchange(nullptr, std::memory_order_acq_rel))
+	{
+		if (idle->job.queued)
+			idle->job.Prepared()->~PreparedPipeline();
+		delete idle;
 	}
 	if (s_tasks)
 	{
@@ -576,6 +601,8 @@ void LatteShaderAhead_Shutdown()
 		c->none = 0;
 		c->letGo = 0;
 	}
+	if (const uint64 reads = s_guestReads.exchange(0, std::memory_order_relaxed))
+		cemuLog_log(LogType::Force, "[ShaderAhead] {} reads of command buffers before their submission", reads);
 	for (Slots* slots : {&s_pixel, &s_vertex, &s_geometry})
 	{
 		slots->DrainPublished([](AheadShader& p) {
@@ -633,6 +660,60 @@ void LatteShaderAhead_OnCommandBuffer(uint32 physAddr, uint32 words)
 	job->queued = true;
 	PipelineCompiler::CompileThreadPool_QueuePreparedUrgent(*prepared);
 	s_skip = (1u << s_backoff.load(std::memory_order_relaxed)) - 1;
+#endif
+}
+
+void LatteShaderAhead_OnIdle(bool idle, uint32 ringAt)
+{
+#ifdef ENABLE_VULKAN
+	Idle* state = s_idle.load(std::memory_order_relaxed);
+	if (!state)
+		return;
+	if (!idle)
+	{
+		state->snapshot.Withdraw();
+		return;
+	}
+	if (!state->snapshot.BeginFill())
+		return; // the guest's thread reading the last one
+	for (const auto& r : kCopied)
+		memcpy(state->regs + r.start, LatteGPUState.contextRegister + r.start, r.count * sizeof(uint32));
+	state->snapshot.Offer(ringAt);
+#endif
+}
+
+void LatteShaderAhead_OnGuestCommands(uint32 physAddr, uint32 words, uint32 ringAt)
+{
+#ifdef ENABLE_VULKAN
+	Idle* state = s_idle.load(std::memory_order_acquire);
+	if (!state || words == 0)
+		return;
+	Job& job = state->job;
+	if (job.queued)
+	{
+		if (!job.Prepared()->IsBuilt())
+			return; // its last read still under way: never waited for
+		job.Prepared()->~PreparedPipeline();
+		job.queued = false;
+	}
+	if (!state->snapshot.Take(ringAt))
+		return;
+	for (const auto& r : kCopied)
+		memcpy(job.regs + r.start, state->regs + r.start, r.count * sizeof(uint32));
+	state->snapshot.Release();
+	job.physAddr = physAddr;
+	job.words = words;
+	job.seq = 0; // not one of the ring's: it counts nothing read
+	job.ringCount = 0;
+	job.ringCalls = 0;
+	job.scan = s_scans.fetch_add(1, std::memory_order_relaxed) + 1;
+	PreparedPipeline* prepared = new (job.prepared) PreparedPipeline([](void* ctx, bool) {
+		RunJob(static_cast<Job*>(ctx));
+		return (VkPipeline)VK_NULL_HANDLE;
+	}, &job);
+	job.queued = true;
+	s_guestReads.fetch_add(1, std::memory_order_relaxed);
+	PipelineCompiler::CompileThreadPool_QueuePreparedUrgent(*prepared);
 #endif
 }
 

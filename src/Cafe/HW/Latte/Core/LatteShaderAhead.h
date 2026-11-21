@@ -39,6 +39,18 @@ void LatteShaderAhead_Poll();
 // GPU thread: a command buffer the ring calls, about to be processed
 void LatteShaderAhead_OnCommandBuffer(uint32 physAddr, uint32 words);
 
+// GPU thread: gone idle with nothing in the ring (ringAt: its read index),
+// its registers then offered for a read of the buffer the guest writes
+// next; or with work again, the offer withdrawn
+void LatteShaderAhead_OnIdle(bool idle, uint32 ringAt);
+
+// The guest's thread: words of the command buffer it is writing, not yet
+// submitted (ringAt: the ring's write index). Read ahead from the idle GPU
+// thread's registers where they are offered and it has submitted nothing
+// since - where a GPU thread that is never behind gives the reads at the
+// start of a buffer no lead - and no read of the guest's own is under way.
+void LatteShaderAhead_OnGuestCommands(uint32 physAddr, uint32 words, uint32 ringAt);
+
 // GPU thread: the pixel shader for baseHash decompiled ahead, if it was, for
 // the registers as they are now; false to decompile it here
 bool LatteShaderAhead_TakePixelShader(uint64 baseHash, LatteDecompilerOutput_t& output);

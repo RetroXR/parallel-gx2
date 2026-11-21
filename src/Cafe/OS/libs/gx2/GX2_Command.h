@@ -10,7 +10,14 @@ namespace GX2
 		uint32 bufferSizeInU32s;
 		uint32be* currentWritePtr;
 		bool isDisplayList;
+		// where the commands written so far are next read ahead
+		// (GX2Command_ReadAhead); never for a display list or another core's
+		uint32be* readAheadAt;
 	};
+	void GX2Command_ReadAhead(uint32 coreIndex);
+	// none, and the words written before the first
+	inline uint32be* const kReadAheadNever = reinterpret_cast<uint32be*>(~(uintptr_t)0);
+	constexpr uint32 kReadAheadFirst = 512;
 
 	extern GX2PerCoreCBState s_perCoreCBState[Espresso::CORE_COUNT];
 };
@@ -27,6 +34,8 @@ inline void gx2WriteGather_submit_(uint32 coreIndex, uint32be* writePtr)
 {
 	GX2::s_perCoreCBState[coreIndex].currentWritePtr = writePtr;
 	cemu_assert_debug(GX2::s_perCoreCBState[coreIndex].currentWritePtr <= (GX2::s_perCoreCBState[coreIndex].bufferPtr + GX2::s_perCoreCBState[coreIndex].bufferSizeInU32s));
+	if (writePtr >= GX2::s_perCoreCBState[coreIndex].readAheadAt)
+		GX2::GX2Command_ReadAhead(coreIndex);
 }
 
 template <typename T, typename ...Targs>

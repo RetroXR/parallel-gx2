@@ -15,6 +15,11 @@
 //    stops part-way; and where a read starts (LattePM4ReadTo): not at a
 //    buffer a read got through, nor one a read under way may get to, at one
 //    a read stopped short of; the furthest of four threads' reads kept;
+//  - the idle GPU thread's registers handed to the guest's thread
+//    (LattePM4IdleSnapshot): taken only as offered and with nothing
+//    submitted since, never while filled, withdrawn once there is work, not
+//    filled again while being read; raced by two threads, every snapshot
+//    taken read whole (TSan in CI);
 //  - the registers a pixel, vertex or geometry shader's decompile reads,
 //    as one value (LattePM4_PixelShaderInputs, LattePM4_VertexShaderInputs,
 //    LattePM4_GeometryShaderInputs): moved by each of them, not by the
@@ -340,6 +345,73 @@ static void ReadTo()
 		shared.Next(false, start);
 	CHECK(shared.Next(false, start) == 20003 && !start); // 5000 * 4 + 3
 	CHECK(shared.Next(false, start) == 20004 && start);
+}
+
+static void IdleSnapshot()
+{
+	LattePM4IdleSnapshot s;
+	CHECK(!s.Take(5)); // nothing offered
+	CHECK(s.BeginFill());
+	CHECK(!s.Take(5)); // being filled
+	CHECK(!s.BeginFill());
+	s.Offer(5);
+	CHECK(!s.Take(6)); // submitted since: stale, and let go
+	CHECK(!s.Take(5));
+	CHECK(s.BeginFill());
+	s.Offer(7);
+	s.Withdraw(); // work again
+	CHECK(!s.Take(7));
+	CHECK(s.BeginFill());
+	s.Offer(8);
+	CHECK(s.Take(8));
+	CHECK(!s.BeginFill()); // not filled while read
+	s.Withdraw(); // nothing to withdraw while read
+	CHECK(!s.BeginFill());
+	s.Release();
+	CHECK(s.BeginFill());
+	s.Offer(9);
+
+	// the GPU thread filling and withdrawing, the guest's thread taking:
+	// every snapshot read whole
+	LattePM4IdleSnapshot shared;
+	std::vector<uint32> words(4096, 0);
+	std::atomic<bool> done{false};
+	std::atomic<uint32> torn{0}, taken{0};
+	std::thread gpu([&] {
+		// until the guest's thread took some, however the threads are run
+		for (uint32 n = 1; (n <= 40000 || taken.load() < 64) && n < (1u << 26); n++)
+		{
+			if (!shared.BeginFill())
+				continue;
+			for (uint32& w : words)
+				w = n;
+			shared.Offer(n & 1);
+			if (n % 3 == 0)
+				shared.Withdraw();
+		}
+		done.store(true);
+	});
+	std::thread guest([&] {
+		uint32 ring = 0;
+		while (!done.load())
+		{
+			if (!shared.Take(ring))
+			{
+				ring ^= 1;
+				continue;
+			}
+			const uint32 first = words[0];
+			for (uint32 w : words)
+				if (w != first)
+					torn++;
+			taken++;
+			shared.Release();
+		}
+	});
+	gpu.join();
+	guest.join();
+	std::printf("idle snapshot: %u taken by the guest's thread, %u torn\n", taken.load(), torn.load());
+	CHECK(torn.load() == 0 && taken.load() > 0);
 }
 
 static void PixelShaderInputs()
@@ -694,6 +766,7 @@ int main()
 	Ends();
 	Ring();
 	ReadTo();
+	IdleSnapshot();
 	PixelShaderInputs();
 	VertexShaderInputs();
 	GeometryShaderInputs();

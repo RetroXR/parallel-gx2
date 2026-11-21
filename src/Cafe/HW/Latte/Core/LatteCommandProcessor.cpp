@@ -213,10 +213,18 @@ uint32 LatteCP_readU32Deprc()
 		if ( TCL::TCLGPUReadRBWord(cmdWord) )
 		{
 			if (s_cpIdle.load(std::memory_order_relaxed))
+			{
 				s_cpIdle.store(false, std::memory_order_release);
+				LatteShaderAhead_OnIdle(false, 0);
+			}
 			return cmdWord;
 		}
-		s_cpIdle.store(true, std::memory_order_release);
+		if (!s_cpIdle.load(std::memory_order_relaxed))
+		{
+			s_cpIdle.store(true, std::memory_order_release);
+			// the registers the buffer the guest writes next starts from
+			LatteShaderAhead_OnIdle(true, TCL::TCLGPURingReadIndex());
+		}
 
 		g_renderer->NotifyLatteCommandProcessorIdle(); // let the renderer know in case it wants to flush any commands
 		performanceMonitor.gpuTime_idleTime.beginMeasuring();
@@ -230,6 +238,7 @@ uint32 LatteCP_readU32Deprc()
 		if ( TCL::TCLGPUReadRBWord(cmdWord) )
 		{
 			s_cpIdle.store(false, std::memory_order_release);
+			LatteShaderAhead_OnIdle(false, 0);
 			return cmdWord;
 		}
 		if (Latte_GetStopSignal())

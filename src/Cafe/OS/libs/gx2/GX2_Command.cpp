@@ -11,6 +11,7 @@
 #include "GX2_Shader.h"
 #include "GX2_Misc.h"
 #include "OS/libs/coreinit/coreinit_MEM.h"
+#include "Cafe/HW/Latte/Core/LatteShaderAhead.h"
 
 namespace GX2
 {
@@ -94,6 +95,7 @@ namespace GX2
 			s_perCoreCBState[i].bufferPtr = nullptr;
 			s_perCoreCBState[i].bufferSizeInU32s = 0;
 			s_perCoreCBState[i].currentWritePtr = nullptr;
+			s_perCoreCBState[i].readAheadAt = kReadAheadNever;
 		}
 		// start first command buffer for main core
 		GX2Command_StartNewCommandBuffer(0x100);
@@ -140,6 +142,28 @@ namespace GX2
 		coreCBState.bufferSizeInU32s = sizeInU32s;
 		coreCBState.currentWritePtr = buffer;
 		coreCBState.isDisplayList = isDisplayList;
+		coreCBState.readAheadAt = isDisplayList ? kReadAheadNever : buffer + std::min<uint32>(kReadAheadFirst, sizeInU32s);
+	}
+
+	// The commands the main core has written to its buffer so far, read ahead
+	// of their submission where the GPU thread is idle and its registers are
+	// what the buffer starts from (LatteShaderAhead_OnGuestCommands); read
+	// again once as many more are written, so a buffer is read a few times
+	// at most
+	void GX2Command_ReadAhead(uint32 coreIndex)
+	{
+		auto& coreCBState = s_perCoreCBState[coreIndex];
+		if (coreIndex != sGX2MainCoreIndex || coreCBState.isDisplayList || !coreCBState.bufferPtr || !coreCBState.currentWritePtr)
+		{
+			coreCBState.readAheadAt = kReadAheadNever;
+			return;
+		}
+		const uint32 words = (uint32)(coreCBState.currentWritePtr - coreCBState.bufferPtr);
+		LatteShaderAhead_OnGuestCommands(memory_virtualToPhysical(MEMPTR<void>(coreCBState.bufferPtr).GetMPTR()), words, TCL::TCLRingWriteIndex());
+		const uint32 left = coreCBState.bufferSizeInU32s - words;
+		coreCBState.readAheadAt = coreCBState.currentWritePtr + std::min<uint32>(std::max<uint32>(kReadAheadFirst, words), left);
+		if (coreCBState.readAheadAt == coreCBState.currentWritePtr)
+			coreCBState.readAheadAt = kReadAheadNever;
 	}
 
 	void GX2Command_StartNewCommandBuffer(uint32 numU32s)

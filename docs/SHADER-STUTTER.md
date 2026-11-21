@@ -426,7 +426,20 @@ programs, from eight tasks made at the start; the read decompiles one
 itself where none is free. A scene's worth of new shaders is then ready
 in the time of the longest, not their sum. `test/decompiler` decompiles
 every random shader again from a register file holding those registers
-alone, which must come out the same. What is left: shaders
+alone, which must come out the same.
+
+A GPU thread that is never behind starts each buffer as it is submitted,
+and a game that flushes once a frame writes the whole frame before the
+GPU thread sees any of it. So the guest's own writes are read too: the
+GPU thread, going idle with nothing in the ring, offers a copy of its
+registers - what the buffer the guest is writing starts from - and
+withdraws it once it has work (`LattePM4IdleSnapshot`); as the main
+core's command buffer grows past 512 words, and again each time it has
+doubled, the guest's thread takes the copy if it has submitted nothing
+since and queues a read of what it has written (`GX2Command_ReadAhead`,
+`LatteShaderAhead_OnGuestCommands`). Neither thread waits for the other;
+a read of the guest's still under way is never waited for either.
+`test/shader_ahead` races the hand-over, every copy taken read whole. What is left: shaders
 whose first draw comes before any read reaches it (an idle GPU thread
 starts each buffer as it is submitted), and the render passes and states
 no pipeline had before.
