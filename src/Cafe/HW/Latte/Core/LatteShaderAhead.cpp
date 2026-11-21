@@ -8,6 +8,7 @@
 #include "Cafe/HW/Latte/Core/LatteConst.h"
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
 #include "Cafe/HW/MMU/MMU.h"
+#include "Cafe/OS/libs/TCL/TCL.h"
 #include "util/helpers/AheadSlots.h"
 #ifdef ENABLE_VULKAN
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
@@ -58,6 +59,9 @@ namespace
 	constexpr uint32 kMaxProgram = 128 * 1024;
 	constexpr uint32 kMaxFetchProgram = 16 * 1024;
 	constexpr uint32 kMaxPerScan = 8;
+	// the ring's words past the buffer read first, copied with it: the whole
+	// ring (TCL.cpp)
+	constexpr uint32 kRingWords = 4096;
 	// a shader made ahead and not taken by this many reads later goes
 	constexpr uint32 kStaleScans = 64;
 
@@ -85,6 +89,12 @@ namespace
 		LatteShaderPSInputTable inputs;
 		uint32 physAddr;
 		uint32 words;
+		// the ring's words after it, whole packets (calls: the buffers they
+		// call), and the buffer's number among those the ring calls
+		uint32be ringWords[kRingWords];
+		uint32 ringCount;
+		uint32 ringCalls;
+		uint32 seq;
 		uint32 scan;
 		uint32 found;
 		uint32 ring; // that of the vertex shader just made ahead
@@ -100,6 +110,9 @@ namespace
 	std::atomic<uint32> s_scans{0};
 	std::atomic<uint32> s_backoff{0};
 	uint32 s_skip;
+	// the ring's buffers a read starts at, and the job of the last started
+	LattePM4ReadTo s_readTo;
+	struct Job* s_plannedJob;
 
 	const uint32be* MapGuest(void*, uint32 physAddr, uint32 count)
 	{
@@ -277,6 +290,19 @@ namespace
 			scan.onDraw = OnDraw;
 			scan.ctx = job;
 			LattePM4_Scan(scan, buf, job->words);
+			// on through the buffers submitted since, the registers as this
+			// one left them
+			uint32 readTo = 0;
+			if (scan.end == LattePM4Scan::End::Done)
+			{
+				readTo = job->seq;
+				if (job->ringCount)
+				{
+					LattePM4_Scan(scan, job->ringWords, job->ringCount);
+					readTo += scan.end == LattePM4Scan::End::Done ? job->ringCalls : scan.called;
+				}
+			}
+			s_readTo.ReadTo(readTo);
 		}
 		const uint32 backoff = s_backoff.load(std::memory_order_relaxed);
 		s_backoff.store(job->found ? 0 : (backoff < 6 ? backoff + 1 : 6), std::memory_order_relaxed);
@@ -296,6 +322,8 @@ void LatteShaderAhead_Init()
 	}
 	s_skip = 0;
 	s_backoff.store(0, std::memory_order_relaxed);
+	s_readTo.Reset();
+	s_plannedJob = nullptr;
 #endif
 }
 
@@ -343,6 +371,10 @@ void LatteShaderAhead_OnCommandBuffer(uint32 physAddr, uint32 words)
 #ifdef ENABLE_VULKAN
 	if (!s_jobs || words == 0)
 		return;
+	bool start;
+	const uint32 seq = s_readTo.Next(s_plannedJob && s_plannedJob->queued && !s_plannedJob->Prepared()->IsBuilt(), start);
+	if (!start)
+		return;
 	if (s_skip)
 	{
 		s_skip--;
@@ -367,6 +399,10 @@ void LatteShaderAhead_OnCommandBuffer(uint32 physAddr, uint32 words)
 		memcpy(job->regs + r.start, LatteGPUState.contextRegister + r.start, r.count * sizeof(uint32));
 	job->physAddr = physAddr;
 	job->words = words;
+	job->seq = seq;
+	job->ringCount = LattePM4_WholePackets(job->ringWords, TCL::TCLGPUPeekRB(job->ringWords, kRingWords), &job->ringCalls);
+	s_readTo.Planned(seq, job->ringCalls);
+	s_plannedJob = job;
 	job->scan = s_scans.fetch_add(1, std::memory_order_relaxed) + 1;
 	PreparedPipeline* prepared = new (job->prepared) PreparedPipeline([](void* ctx, bool) {
 		RunJob(static_cast<Job*>(ctx));

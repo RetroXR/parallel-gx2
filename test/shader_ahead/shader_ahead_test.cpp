@@ -8,6 +8,13 @@
 //    there, and stops at a wait on memory, at a packet it cannot read, at a
 //    buffer it cannot map, at the packet limit and where the reader asks;
 //    random buffers of noise end the read without reading out of bounds;
+//  - the ring read on past the buffer the GPU thread starts
+//    (LattePM4_WholePackets, LattePM4Scan::called): whole packets only, the
+//    buffers it calls counted, the registers carried from one buffer into
+//    the next, and the buffers read to their end counted where the read
+//    stops part-way; and where a read starts (LattePM4ReadTo): not at a
+//    buffer a read got through, nor one a read under way may get to, at one
+//    a read stopped short of; the furthest of four threads' reads kept;
 //  - the registers a pixel, vertex or geometry shader's decompile reads,
 //    as one value (LattePM4_PixelShaderInputs, LattePM4_VertexShaderInputs,
 //    LattePM4_GeometryShaderInputs): moved by each of them, not by the
@@ -225,6 +232,112 @@ static void Ends()
 		}
 		CHECK(ended == 2000);
 	}
+}
+
+static void Ring()
+{
+	std::fill(s_regs.begin(), s_regs.end(), 0u);
+	// the buffer the GPU thread starts, and two the guest submitted since
+	Buf a;
+	a.SetRegs(IT_SET_CONTEXT_REG, LATTE_REG_BASE_CONTEXT, mmCB_SHADER_MASK, {0xF});
+	a.Draw();
+	Buf b;
+	b.SetRegs(IT_SET_CONTEXT_REG, LATTE_REG_BASE_CONTEXT, mmSQ_PGM_START_PS, {0x111, 0x20});
+	b.Draw();
+	Buf c;
+	c.Draw();
+	const uint32 bAt = Place(b, 0x600), cAt = Place(c, 0x700);
+	// the ring as TCLSubmitToRing writes it: each call, the read pointer's
+	// write and the retire marker; the last packet only part written
+	Buf ring;
+	for (uint32 at : {bAt, cAt})
+	{
+		ring.Packet(IT_INDIRECT_BUFFER_PRIV, {at, 0, at == bAt ? (uint32)b.w.size() : (uint32)c.w.size()});
+		ring.Packet(IT_MEM_WRITE, {0x1000 | 2, 0x40000, 0x2000, 0});
+		ring.Packet(IT_EVENT_WRITE_EOP, {4 | (5 << 8), 0x3000, 0x40000000, 1, 0});
+	}
+	const uint32 whole = (uint32)ring.w.size();
+	ring.w.push_back(pm4HeaderType3(IT_INDIRECT_BUFFER_PRIV, 3));
+	ring.w.push_back(cAt);
+	uint32 calls = 99;
+	CHECK(LattePM4_WholePackets(ring.w.data(), (uint32)ring.w.size(), &calls) == whole);
+	CHECK(calls == 2);
+	CHECK(LattePM4_WholePackets(ring.w.data(), 3, &calls) == 0 && calls == 0);
+
+	Seen seen;
+	seen.watch = {mmCB_SHADER_MASK, mmSQ_PGM_START_PS};
+	LattePM4Scan scan{};
+	scan.regs = s_regs.data();
+	scan.map = MapGuest;
+	scan.onDraw = OnDraw;
+	scan.ctx = &seen;
+	LattePM4_Scan(scan, a.w.data(), (uint32)a.w.size());
+	CHECK(scan.end == LattePM4Scan::End::Done && scan.called == 0);
+	LattePM4_Scan(scan, ring.w.data(), whole);
+	CHECK(scan.end == LattePM4Scan::End::Done && scan.called == 2);
+	// a's mask carried into b and c, b's program into c
+	CHECK(seen.at.size() == 3);
+	CHECK(seen.at.size() == 3 && seen.at[1] == (std::vector<uint32>{0xF, 0x111}) && seen.at[2] == (std::vector<uint32>{0xF, 0x111}));
+
+	// c waits on memory: only b read to its end
+	Buf cw;
+	cw.Packet(IT_WAIT_REG_MEM, {0, 0, 0, 0, 0, 0});
+	cw.Draw();
+	Place(cw, 0x700);
+	Buf ring2;
+	ring2.Packet(IT_INDIRECT_BUFFER_PRIV, {bAt, 0, (uint32)b.w.size()});
+	ring2.Packet(IT_INDIRECT_BUFFER_PRIV, {cAt, 0, (uint32)cw.w.size()});
+	Seen seen2;
+	scan.ctx = &seen2;
+	LattePM4_Scan(scan, ring2.w.data(), (uint32)ring2.w.size());
+	CHECK(scan.end == LattePM4Scan::End::Waited && scan.called == 1 && seen2.at.size() == 1);
+	// a buffer b calls in turn is not one the ring calls
+	Buf inner;
+	inner.Draw();
+	const uint32 innerAt = Place(inner, 0x800);
+	Buf outer;
+	outer.Packet(IT_INDIRECT_BUFFER_PRIV, {innerAt, 0, (uint32)inner.w.size()});
+	const uint32 outerAt = Place(outer, 0x900);
+	Buf ring3;
+	ring3.Packet(IT_INDIRECT_BUFFER_PRIV, {outerAt, 0, (uint32)outer.w.size()});
+	Seen seen3;
+	scan.ctx = &seen3;
+	LattePM4_Scan(scan, ring3.w.data(), (uint32)ring3.w.size());
+	CHECK(scan.end == LattePM4Scan::End::Done && scan.called == 1 && seen3.at.size() == 1);
+}
+
+static void ReadTo()
+{
+	LattePM4ReadTo r;
+	bool start = false;
+	CHECK(r.Next(false, start) == 1 && start);
+	r.Planned(1, 3); // the ring held three buffers more
+	CHECK(r.Next(true, start) == 2 && !start); // the read may get here
+	r.ReadTo(3);
+	CHECK(r.Next(false, start) == 3 && !start); // read, registers carried
+	CHECK(r.Next(false, start) == 4 && start);
+	r.Planned(4, 5);
+	r.ReadTo(4); // stopped at a wait in buffer 5
+	CHECK(r.Next(false, start) == 5 && start); // done: started again
+	r.Planned(5, 0);
+	CHECK(r.Next(true, start) == 6 && start); // past the plan under way
+	r.ReadTo(2); // a slower read's: the furthest kept
+	r.Reset();
+	CHECK(r.Next(false, start) == 1 && start);
+	// four threads' reads ending at once: the furthest kept
+	LattePM4ReadTo shared;
+	std::vector<std::thread> threads;
+	for (uint32 t = 0; t < 4; t++)
+		threads.emplace_back([&shared, t] {
+			for (uint32 i = 1; i <= 5000; i++)
+				shared.ReadTo(i * 4 + t);
+		});
+	for (auto& th : threads)
+		th.join();
+	for (uint32 i = 0; i < 20002; i++)
+		shared.Next(false, start);
+	CHECK(shared.Next(false, start) == 20003 && !start); // 5000 * 4 + 3
+	CHECK(shared.Next(false, start) == 20004 && start);
 }
 
 static void PixelShaderInputs()
@@ -554,6 +667,8 @@ int main()
 {
 	Registers();
 	Ends();
+	Ring();
+	ReadTo();
 	PixelShaderInputs();
 	VertexShaderInputs();
 	GeometryShaderInputs();

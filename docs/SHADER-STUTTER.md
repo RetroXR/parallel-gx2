@@ -390,19 +390,42 @@ queues them (`LatteShaderAhead_Poll`, `PipelineCompiler::
 PrepareAheadPartsFor` - templates are the GPU thread's to take). A draw
 that takes the shader keeps its module and the parts made or being made,
 so a first pipeline whose render pass and state a template has links what
-is there; a graphic pack's replacement or a filtered shader has it
-destroyed and made as before. One the draw cannot use is put back rather
-than destroyed on the GPU thread, for a read to free on a compile thread.
-A part's robust buffer access is guessed from the shader alone; where the
-other stage asks for it, the part made ahead goes unused. What is left:
-shaders whose first draw comes before the read gets to it, geometry
-shaders, and the render passes and states no pipeline had before.
+is there. A shader a graphic pack replaces, or a filtered one, gets no
+module ahead: its draw makes it as before. One the draw cannot use is put
+back rather than destroyed on the GPU thread, for a read to free on a
+compile thread. A part's robust buffer access is its own shaders' alone
+(`VK_EXT_pipeline_robustness` chained to that part, out of the keys
+without it), so a part made ahead from one stage keys as its pipelines'
+whatever the other stage asks for.
+
+A geometry shader's draw has its three shaders decompiled ahead too: the
+export (vertex) shader, the pixel shader, and the geometry shader with
+its copy shader, whose key and decompile take the ring the export shader
+just decompiled writes (`LattePM4_GeometryShaderInputs`, the copy
+shader's hash checked at the draw). Their keys are the draw's own stages'
+(`LatteShaderKeys.h`); a shader cache's keyed the old way are still found.
+The export and geometry shaders get modules, not parts: their first part
+takes both. `test/decompiler` decompiles every random shader again with
+noise in every register its digest leaves out, which must change nothing.
+
+The read goes on past the buffer the GPU thread starts, into the buffers
+the guest has submitted to the ring since, the registers carried from one
+to the next (`TCL::TCLGPUPeekRB`, `LattePM4_WholePackets`): where the GPU
+thread is behind - as it is when new shaders come - the read is a whole
+queue of buffers ahead rather than a few draws. A buffer a read got
+through is not read again as the GPU thread starts it, nor one a read
+under way may still get to; one a read stopped short of is
+(`LattePM4ReadTo`). `test/shader_ahead` checks the walk of the ring, the
+registers carried through buffers and the starts. What is left: shaders
+whose first draw comes before any read reaches it (an idle GPU thread
+starts each buffer as it is submitted), and the render passes and states
+no pipeline had before.
 
 The reads ahead go to the compile threads in a lane of their own, taken
 before any pipeline compile queued (`CompileThreadPool_QueuePreparedUrgent`,
 `MpmcQueue_PopPreferring`): when new shaders come, the compile threads are
 busiest, and a read queued behind them is late for the draws it reads.
-As a title stops, the log has, for vertex and pixel shaders, how many were
+As a title stops, the log has, for vertex, pixel and geometry shaders, how many were
 made ahead, taken by their draw, not usable there, drawn while still being
 made, drawn with none made, and let go unused (`[ShaderAhead]`): the
 numbers to judge this by on real games.

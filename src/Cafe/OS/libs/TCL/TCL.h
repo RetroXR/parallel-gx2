@@ -21,6 +21,9 @@ namespace TCL
 	// called from Latte code
 	bool TCLGPUReadRBWord(uint32& cmdWord);
 	bool TCLGPUHasRBWord();
+	// the GPU thread's: up to max of the words written past those it read,
+	// as the guest wrote them, without taking them
+	uint32 TCLGPUPeekRB(uint32be* out, uint32 max);
 	void TCLGPUNotifyNewRetirementTimestamp();
 
 	COSModule* GetModule();

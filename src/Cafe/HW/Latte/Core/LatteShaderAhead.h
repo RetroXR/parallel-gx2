@@ -4,8 +4,11 @@
 
 // Shaders decompiled ahead of the draw that first uses them. As the GPU
 // thread starts a command buffer from the ring, a compile thread reads it
-// ahead (LattePM4Scan.h) from a copy of the registers as
-// they are then, and at each draw whose shaders the GPU thread has never
+// ahead (LattePM4Scan.h) from a copy of the registers as they are then -
+// and on into the buffers the guest has submitted to the ring since, the
+// registers carried from one to the next, where the GPU thread is behind;
+// a buffer read so is not read again when the GPU thread starts it, unless
+// the read stopped before it. At each draw whose shaders the GPU thread has never
 // seen, it decompiles them from the copy as they are at that draw - a
 // vertex shader with its fetch shader parsed there. The draw, when the GPU
 // thread gets to it, takes a result only where the shader's base and aux

@@ -57,6 +57,7 @@ namespace
 void LattePM4_Scan(LattePM4Scan& scan, const uint32be* words, uint32 count)
 {
 	scan.draws = 0;
+	scan.called = 0;
 	scan.end = LattePM4Scan::End::Done;
 	Frame stack[8];
 	const uint32 maxDepth = scan.maxDepth < 7 ? scan.maxDepth : 7;
@@ -70,7 +71,8 @@ void LattePM4_Scan(LattePM4Scan& scan, const uint32be* words, uint32 count)
 		{
 			if (depth == 0)
 				return;
-			depth--;
+			if (--depth == 0)
+				scan.called++;
 			continue;
 		}
 		if (++packets > scan.maxPackets)
@@ -194,6 +196,26 @@ void LattePM4_Scan(LattePM4Scan& scan, const uint32be* words, uint32 count)
 			break;
 		}
 	}
+}
+
+uint32 LattePM4_WholePackets(const uint32be* words, uint32 count, uint32* calls)
+{
+	uint32 at = 0;
+	*calls = 0;
+	while (at < count)
+	{
+		const uint32 header = (uint32)words[at];
+		const uint32 type = (header >> 30) & 3;
+		uint32 size = 1;
+		if (type == 0 || type == 3)
+			size += ((header >> 16) & 0x3FFF) + 1;
+		if (size > count - at)
+			break;
+		if (type == 3 && ((header >> 8) & 0xFF) == IT_INDIRECT_BUFFER_PRIV)
+			(*calls)++;
+		at += size;
+	}
+	return at;
 }
 
 namespace

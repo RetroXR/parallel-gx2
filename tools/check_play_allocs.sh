@@ -121,6 +121,8 @@ src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp RunJob
 src/Cafe/HW/Latte/Core/LattePM4Scan.cpp LattePM4_Scan
 src/Cafe/HW/Latte/Core/LattePM4Scan.cpp LattePM4_PixelShaderInputs
 src/Cafe/HW/Latte/Core/LattePM4Scan.cpp LattePM4_GeometryShaderInputs
+src/Cafe/HW/Latte/Core/LattePM4Scan.cpp LattePM4_WholePackets
+src/Cafe/OS/libs/TCL/TCL.cpp TCLGPUPeekRB
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_GetOrCreateGeometryShader
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_UpdateActiveShaders
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_CleanupShaderStateCache
