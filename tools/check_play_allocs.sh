@@ -90,6 +90,10 @@ src/Cafe/HW/Latte/Core/LatteShader.cpp LatteSHRC_GetOrCreateVertexAndPixelShader
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_DecompileTogether
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_DecompilePixelShaderAhead
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_DecompileGeometryShaderAhead
+src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_MakeRendererShaderAhead
+src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_NotFromSpirv
+src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_IsFiltered
+src/Cafe/GraphicPack/GraphicPack2.cpp GraphicPack2::FindCustomShaderSource
 src/Cafe/HW/Latte/Core/LatteShader.cpp LatteShader_FreeDecompilerOutput
 src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp LatteShaderAhead_OnCommandBuffer
 src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp LatteShaderAhead_TakePixelShader
@@ -2705,6 +2709,7 @@ src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::C
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::CompileThreadPool_QueueCompilation
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::Compile
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp rectsEmulationGS_write
+src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PartRobustness
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp RectGSHash
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp rectsEmulationGS_generate
 src/Cafe/HW/Latte/Renderer/RendererCore.cpp rectsEmulationGS_outputSingleVertex

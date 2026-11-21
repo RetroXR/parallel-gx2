@@ -80,6 +80,10 @@ public:
 	VkPipelineLayout m_pipelineLayout;
 	VKRObjectRenderPass* m_renderPassObj{};
 	bool m_requestRobustBufferAccess{false};
+	// the pre-rasterization and fragment shader parts' own, chained to each
+	// alone; false without VK_EXT_pipeline_robustness (the device's then)
+	bool m_robustVertex{false};
+	bool m_robustPixel{false};
 
 	/* shader stages */
 	VkPipelineShaderStageCreateInfo shaderStages[3]{};
@@ -160,8 +164,8 @@ public:
 	// The GPU thread's, for a shader decompiled and made ahead of its first
 	// draw (LatteShaderAhead.cpp): its part for every template seen so far,
 	// queued for the compile threads as a first pipeline queues its
-	// shaders' (robust: what the shader itself asks for, the other stages
-	// not known yet); false with no template or graphics pipeline libraries
+	// shaders' (robust: what the shader itself asks for, all a part takes);
+	// false with no template or graphics pipeline libraries
 	static bool PrepareAheadPartsFor(RendererShaderVk* shader, LatteDecompilerShader* decompiled, bool robust);
 	// a compile thread's: the parts made
 	static void BuildAheadParts(struct AheadParts* ahead, bool onCompileThread);

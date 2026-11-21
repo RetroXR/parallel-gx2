@@ -345,11 +345,35 @@ void LatteShader_UpdatePSInputs(uint32* contextRegisters)
 	LatteShader_CreatePSInputTable(&_activePSImportTable, contextRegisters);
 }
 
+// the filtered vertex shaders (AMD), never made
+static bool LatteShader_IsFiltered(LatteConst::ShaderType type, uint64 baseHash)
+{
+	return type == LatteConst::ShaderType::Vertex &&
+		(baseHash == 0x15bc7edf9de2ed30 || baseHash == 0x83a697d61a3b9202 ||
+		 baseHash == 0x97bc44a5028381c6 || baseHash == 0x24838b84d15a1da1);
+}
+
+// Made from a graphic pack's source instead, or never: not from its SPIR-V.
+// Any thread while a title runs: the packs are activated before the GPU
+// thread starts and reset after it stops.
+static bool LatteShader_NotFromSpirv(LatteConst::ShaderType type, uint64 baseHash, uint64 auxHash)
+{
+	const GraphicPack2::GP_SHADER_TYPE gpType = type == LatteConst::ShaderType::Vertex ? GraphicPack2::GP_SHADER_TYPE::VERTEX :
+		type == LatteConst::ShaderType::Geometry ? GraphicPack2::GP_SHADER_TYPE::GEOMETRY : GraphicPack2::GP_SHADER_TYPE::PIXEL;
+	return LatteShader_IsFiltered(type, baseHash) ||
+		GraphicPack2::FindCustomShaderSource(baseHash, auxHash, gpType, g_renderer->GetType() == RendererAPI::Vulkan, g_renderer->GetType() == RendererAPI::Metal);
+}
+
 bool LatteShader_MakeRendererShaderAhead(LatteDecompilerOutput_t& output, uint64 baseHash, uint64 auxHash)
 {
 #ifdef ENABLE_VULKAN
 	LatteDecompilerShader* shader = output.shader;
 	if (shader->hasError || shader->shader || shader->spirv.empty() || g_renderer->GetType() != RendererAPI::Vulkan)
+		return false;
+	// one a pack replaces: left for its draw to make, which otherwise would
+	// throw this away on the GPU thread, waiting there for parts being made
+	// from it
+	if (LatteShader_NotFromSpirv(shader->shaderType, baseHash, auxHash))
 		return false;
 	// what its parts are made with, as LatteShader_CreateShaderFromDecompilerOutput
 	// sets it again once a draw takes the shader
@@ -365,14 +389,6 @@ bool LatteShader_MakeRendererShaderAhead(LatteDecompilerOutput_t& output, uint64
 #endif
 }
 
-// the filtered vertex shaders (AMD), never made
-static bool LatteShader_IsFiltered(LatteDecompilerShader* shader)
-{
-	return shader->shaderType == LatteConst::ShaderType::Vertex &&
-		(shader->baseHash == 0x15bc7edf9de2ed30 || shader->baseHash == 0x83a697d61a3b9202 ||
-		 shader->baseHash == 0x97bc44a5028381c6 || shader->baseHash == 0x24838b84d15a1da1);
-}
-
 void LatteShader_CreateRendererShader(LatteDecompilerShader* shader, bool compileAsync)
 {
 	if (shader->hasError )
@@ -380,14 +396,11 @@ void LatteShader_CreateRendererShader(LatteDecompilerShader* shader, bool compil
 		cemuLog_log(LogType::Force, "Unable to compile shader {:016x}", shader->baseHash);
 		return;
 	}
-	// made ahead of its first draw (LatteShaderAhead.cpp), from the SPIR-V: kept,
-	// unless a graphic pack replaces it or it is one filtered out below
+	// made ahead of its first draw (LatteShaderAhead.cpp), from the SPIR-V:
+	// kept (one a pack replaces, or filtered out below, is not made ahead)
 	if (shader->shader)
 	{
-		const GraphicPack2::GP_SHADER_TYPE gpType = shader->shaderType == LatteConst::ShaderType::Vertex ? GraphicPack2::GP_SHADER_TYPE::VERTEX :
-			shader->shaderType == LatteConst::ShaderType::Geometry ? GraphicPack2::GP_SHADER_TYPE::GEOMETRY : GraphicPack2::GP_SHADER_TYPE::PIXEL;
-		if (!LatteShader_IsFiltered(shader) &&
-			!GraphicPack2::FindCustomShaderSource(shader->baseHash, shader->auxHash, gpType, g_renderer->GetType() == RendererAPI::Vulkan, g_renderer->GetType() == RendererAPI::Metal))
+		if (!LatteShader_NotFromSpirv(shader->shaderType, shader->baseHash, shader->auxHash))
 			return;
 		delete shader->shader;
 		shader->shader = nullptr;
@@ -416,7 +429,7 @@ void LatteShader_CreateRendererShader(LatteDecompilerShader* shader, bool compil
 	if (customShaderSrc)
 		shader->isCustomShader = true;
 
-	if (LatteShader_IsFiltered(shader))
+	if (LatteShader_IsFiltered(shader->shaderType, shader->baseHash))
 	{
 		cemuLog_logDebug(LogType::Force, "Filtered shader to avoid AMD crash");
 		shader->shader = nullptr;

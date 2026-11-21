@@ -1,12 +1,15 @@
 #!/bin/sh
 # Fails if what builds or keys a pipeline reads the GPU thread's live
-# registers (LatteGPUState) instead of the register state it is handed. A
-# pipeline loaded from the cache is built on a compile thread from the
-# state the cache stored; reading the live registers there baked in the
-# depth, stencil and clip state of whatever the GPU thread was drawing -
-# and raced it.
+# registers (LatteGPUState), or the pixel shader input table it made from
+# them (LatteSHRC_GetPSInputTable), instead of the register state it is
+# handed. A pipeline loaded from the cache is built on a compile thread from
+# the state the cache stored; reading the live registers there baked in the
+# depth, stencil and clip state of whatever the GPU thread was drawing - and
+# raced it - and the live table gave a rect emulation geometry shader the
+# varyings of another draw, so the pipeline the draw made later was not the
+# one the cache had warmed.
 cd "$(dirname "$0")/.." || exit 2
-found=$(grep -n 'LatteGPUState' \
+found=$(grep -nE 'LatteGPUState|LatteSHRC_GetPSInputTable|_activePSImportTable' \
 	src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp \
 	src/Cafe/HW/Latte/Renderer/Metal/MetalPipelineCompiler.cpp \
 	| grep -v ':[0-9]*:[[:space:]]*//')

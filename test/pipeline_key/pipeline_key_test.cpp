@@ -19,7 +19,8 @@
 //    pipeline baked in;
 //  - graphics pipeline libraries (VulkanPipelineLibrary.h): each dynamic
 //    state the renderer sets goes to the part that takes it, a part's key
-//    leaves out exactly what its dynamic states make the draw's, and the
+//    leaves out exactly what its dynamic states make the draw's, a shader
+//    part's robust buffer access is its own shaders' alone, and the
 //    lock-free cache of parts gives each key to one maker however many
 //    threads race for it;
 //  - a part another thread claimed is waited for (WaitFor), never made a
@@ -323,8 +324,8 @@ static void TestPartTemplates()
 			VulkanPipelinePartTemplate t;
 			CHECK(VulkanPipelineLibrary_Template(part, seen.full, renderPassHash, t));
 			const bool pre = part == VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION;
-			VulkanPipelineLibraryIdentity identity{pre ? 0x777ull + it : 0, 0, pre ? 0 : 0x999ull + it, renderPassHash, robust};
-			VulkanPipelineLibraryIdentity none{0, 0, 0, renderPassHash, false};
+			VulkanPipelineLibraryIdentity identity{pre ? 0x777ull + it : 0, 0, pre ? 0 : 0x999ull + it, renderPassHash, pre && robust, !pre && robust};
+			VulkanPipelineLibraryIdentity none{0, 0, 0, renderPassHash, false, false};
 			if (t.key != VulkanPipelineLibrary_Key(part, seen.full, none))
 				emptyMismatched++;
 			VulkanPipelinePartAhead ahead;
@@ -1050,7 +1051,7 @@ int main()
 		gp.pDepthStencilState = &ds;
 		gp.pColorBlendState = &cb;
 		gp.pDynamicState = &dsi;
-		const VulkanPipelineLibraryIdentity id{1, 0, 2, 3, false};
+		const VulkanPipelineLibraryIdentity id{1, 0, 2, 3, false, false};
 		auto keys = [&](const VulkanPipelineLibraryIdentity& identity) {
 			dsi.dynamicStateCount = (uint32)dyn.size();
 			dsi.pDynamicStates = dyn.data();
@@ -1070,12 +1071,16 @@ int main()
 		const std::vector<uint64> k0 = keys(id);
 		std::set<uint64> distinct(k0.begin(), k0.end());
 		CHECK(distinct.size() == 4);
-		// the shaders, the render pass and robustness
-		CHECK(moved(k0, keys({9, 0, 2, 3, false})) == PRS);
-		CHECK(moved(k0, keys({1, 7, 2, 3, false})) == PRS);
-		CHECK(moved(k0, keys({1, 0, 9, 3, false})) == FS);
-		CHECK(moved(k0, keys({1, 0, 2, 9, false})) == (PRS | FS | FO));
-		CHECK(moved(k0, keys({1, 0, 2, 3, true})) == (PRS | FS));
+		// the shaders, the render pass and robustness: each shader part's own,
+		// so a part made ahead from one stage keys as its pipeline's whatever
+		// the other stage asks for
+		CHECK(moved(k0, keys({9, 0, 2, 3, false, false})) == PRS);
+		CHECK(moved(k0, keys({1, 7, 2, 3, false, false})) == PRS);
+		CHECK(moved(k0, keys({1, 0, 9, 3, false, false})) == FS);
+		CHECK(moved(k0, keys({1, 0, 2, 9, false, false})) == (PRS | FS | FO));
+		CHECK(moved(k0, keys({1, 0, 2, 3, true, false})) == PRS);
+		CHECK(moved(k0, keys({1, 0, 2, 3, false, true})) == FS);
+		CHECK(moved(k0, keys({1, 0, 2, 3, true, true})) == (PRS | FS));
 		// baked state moves its own part only
 		binding.stride = 20;
 		CHECK(moved(k0, keys(id)) == VI);

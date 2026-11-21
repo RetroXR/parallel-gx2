@@ -29,15 +29,18 @@ int VulkanPipelineLibrary_DynamicStatePart(VkDynamicState state);
 // What tells a part apart from another: the shaders it runs (their hashes;
 // shader module handles are reused by the driver), the render pass it is
 // compatible with (VKRObjectRenderPass::m_hashForPipeline) and whether its
-// buffer access is robust - and its state from the create info, without
-// the fields its dynamic states make the draw's
+// own shaders' buffer access is robust (VK_EXT_pipeline_robustness chained
+// to that part alone: a part's shaders take it whatever the other part's
+// need) - and its state from the create info, without the fields its
+// dynamic states make the draw's
 struct VulkanPipelineLibraryIdentity
 {
 	uint64 vertexShader;
 	uint64 geometryShader;
 	uint64 pixelShader;
 	uint64 renderPass;
-	bool robustBufferAccess;
+	bool robustVertex; // the pre-rasterization part's
+	bool robustPixel; // the fragment shader part's
 };
 uint64 VulkanPipelineLibrary_Key(VulkanPipelineLibraryPart part, const VkGraphicsPipelineCreateInfo& full,
 	const VulkanPipelineLibraryIdentity& identity);

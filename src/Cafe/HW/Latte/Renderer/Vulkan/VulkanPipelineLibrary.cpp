@@ -166,7 +166,7 @@ uint64 VulkanPipelineLibrary_Key(VulkanPipelineLibraryPart part, const VkGraphic
 		k.Add(identity.vertexShader);
 		k.Add(identity.geometryShader);
 		k.Add(identity.renderPass);
-		k.Add(identity.robustBufferAccess);
+		k.Add(identity.robustVertex);
 		if (const VkPipelineViewportStateCreateInfo* vp = full.pViewportState)
 		{
 			k.Add(isDynamic(VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT) ? 0 : vp->viewportCount);
@@ -233,7 +233,7 @@ uint64 VulkanPipelineLibrary_Key(VulkanPipelineLibraryPart part, const VkGraphic
 		if (part == VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER)
 		{
 			k.Add(identity.pixelShader);
-			k.Add(identity.robustBufferAccess);
+			k.Add(identity.robustPixel);
 			if (const VkPipelineDepthStencilStateCreateInfo* ds = full.pDepthStencilState)
 			{
 				k.Add(isDynamic(VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE) ? 2 : ds->depthTestEnable);

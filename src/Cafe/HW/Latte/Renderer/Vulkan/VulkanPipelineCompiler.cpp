@@ -17,14 +17,19 @@
 #include "util/helpers/ThreadOwned.h"
 
 // The source of the rect emulation geometry shader for a vertex shader and
-// the pixel shader's inputs, written into gsSrc (emptied first)
+// the pixel shader's inputs, written into gsSrc (emptied first). The inputs
+// are the registers' own: a pipeline the cache loads is made on a compile
+// thread from the state the cache stored, while the GPU thread's table is
+// whatever it draws now (check_pipeline_registers.sh).
 static void rectsEmulationGS_write(std::string& gsSrc, LatteDecompilerShader* vertexShader, const LatteContextRegister& latteRegister)
 {
 	gsSrc.clear();
 
 	gsSrc.append("#version 450\r\n");
 
-	LatteShaderPSInputTable* psInputTable = LatteSHRC_GetPSInputTable();
+	LatteShaderPSInputTable inputs;
+	LatteShader_CreatePSInputTable(&inputs, latteRegister.GetRawView());
+	LatteShaderPSInputTable* psInputTable = &inputs;
 
 	// layout
 	gsSrc.append("layout(triangles) in;\r\n");
@@ -510,6 +515,9 @@ bool PipelineCompiler::InitFromCurrentGPUState(PipelineInfo* pipelineInfo, const
 	m_vkrObjPipeline = pipelineInfo->m_vkrObjPipeline;
 	m_renderPassObj = renderPassObj;
 	m_requestRobustBufferAccess = requireRobustBufferAccess;
+	const bool perPipeline = vkRenderer->m_featureControl.deviceExtensions.pipeline_robustness;
+	m_robustVertex = perPipeline && CalcRobustBufferAccessRequirement(pipelineInfo->vertexShader, nullptr, pipelineInfo->geometryShader);
+	m_robustPixel = perPipeline && CalcRobustBufferAccessRequirement(nullptr, pipelineInfo->pixelShader, nullptr);
 
 	// if required generate RECT emulation geometry shader
 	if (!vkRenderer->m_featureControl.deviceExtensions.nv_fill_rectangle && isPrimitiveRect)
@@ -792,6 +800,16 @@ bool PipelineCompiler::TakeOptimizedPipeline(OptimizedPipeline& result)
 // the parts are linked as they are, a link and no compile, and a compile
 // thread links them optimized, which then takes its place; otherwise they
 // are linked optimized at once.
+// What a library part chains for robust buffer access: robust, the
+// extension's struct; else nothing
+static const void* PartRobustness(bool robust)
+{
+	static const VkPipelineRobustnessCreateInfoEXT s_robust{VK_STRUCTURE_TYPE_PIPELINE_ROBUSTNESS_CREATE_INFO_EXT, nullptr,
+		VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_EXT, VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_EXT,
+		VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DEVICE_DEFAULT_EXT, VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_DEVICE_DEFAULT_EXT};
+	return robust ? &s_robust : nullptr;
+}
+
 VkPipeline PipelineCompiler::MakeLibraryPart(int p, uint64 key, bool claimed, const VkGraphicsPipelineCreateInfo& full, bool forceCompile, bool isRenderThread, VkResult& result)
 {
 	VulkanRenderer* vkRenderer = VulkanRenderer::GetInstance();
@@ -801,6 +819,10 @@ VkPipeline PipelineCompiler::MakeLibraryPart(int p, uint64 key, bool claimed, co
 	// another thread's (a pipeline needs its parts for as long as it lives);
 	// without forceCompile only out of the driver's cache
 	VkGraphicsPipelineCreateInfo ci = full;
+	// robust buffer access for the part's own shaders alone (all the
+	// pipeline's create info chains)
+	ci.pNext = PartRobustness(p == VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION ? m_robustVertex :
+		p == VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER ? m_robustPixel : false);
 	if (!forceCompile)
 		ci.flags |= VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT;
 	else
@@ -941,7 +963,8 @@ bool PipelineCompiler::CompileFromLibraries(const VkGraphicsPipelineCreateInfo& 
 	identity.geometryShader = m_vkGeometryShader ? shaderHash(m_vkGeometryShader) : m_rectEmulationSerial;
 	identity.pixelShader = shaderHash(m_vkPixelShader);
 	identity.renderPass = m_renderPassObj->m_hashForPipeline;
-	identity.robustBufferAccess = m_requestRobustBufferAccess;
+	identity.robustVertex = m_robustVertex;
+	identity.robustPixel = m_robustPixel;
 
 	VkPipeline libraries[VULKAN_PIPELINE_LIBRARY_PARTS]{};
 	bool ok = true;
@@ -1085,12 +1108,7 @@ void PipelineCompiler::BuildAheadParts(AheadParts* a, bool onCompileThread)
 	}
 	if (layout != VK_NULL_HANDLE)
 	{
-		VkPipelineRobustnessCreateInfoEXT robustness{VK_STRUCTURE_TYPE_PIPELINE_ROBUSTNESS_CREATE_INFO_EXT};
-		robustness.storageBuffers = VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_EXT;
-		robustness.uniformBuffers = VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_EXT;
-		robustness.vertexInputs = VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DEVICE_DEFAULT_EXT;
-		robustness.images = VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_DEVICE_DEFAULT_EXT;
-		const void* next = (vkRenderer->m_featureControl.deviceExtensions.pipeline_robustness && a->robust) ? &robustness : nullptr;
+		const void* next = PartRobustness(a->robust);
 		const VkPipelineShaderStageCreateInfo stage = vkRenderer->CreatePipelineShaderStageCreateInfo(
 			a->part == VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT, module, "main");
 		VulkanPipelineLibraryCache& cache = *vkRenderer->m_pipelineLibraries;
@@ -1101,11 +1119,16 @@ void PipelineCompiler::BuildAheadParts(AheadParts* a, bool onCompileThread)
 			VulkanPipelineLibrary_FromTemplate(t, &stage, next, ahead);
 			VulkanPipelineLibraryIdentity identity{};
 			if (a->part == VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION)
+			{
 				identity.vertexShader = a->shaderHash;
+				identity.robustVertex = a->robust;
+			}
 			else
+			{
 				identity.pixelShader = a->shaderHash;
+				identity.robustPixel = a->robust;
+			}
 			identity.renderPass = t.renderPassHash;
-			identity.robustBufferAccess = a->robust;
 			const uint64 key = VulkanPipelineLibrary_Key(a->part, ahead.full, identity);
 			VkPipeline library = VK_NULL_HANDLE;
 			if (cache.Find(a->part, key, library) != VulkanPipelineLibraryCache::State::Missing || !cache.Claim(a->part, key))
@@ -1167,7 +1190,7 @@ void PipelineCompiler::PrepareAheadParts(PipelineInfo* pipelineInfo)
 		ahead->shader = shader;
 		ahead->part = part;
 		ahead->shaderHash = shader->GetBaseHash() * 0x9E3779B97F4A7C15ull + shader->GetAuxHash() + 1;
-		ahead->robust = m_requestRobustBufferAccess;
+		ahead->robust = part == VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION ? m_robustVertex : m_robustPixel;
 		ahead->slots = slots;
 		VulkanPipelineKey_DescriptorBindings(decompiled->resourceMapping, stage, ahead->bindings);
 		shader->m_aheadParts = ahead;
@@ -1192,7 +1215,8 @@ bool PipelineCompiler::PrepareAheadPartsFor(RendererShaderVk* shader, LatteDecom
 	ahead->shader = shader;
 	ahead->part = part;
 	ahead->shaderHash = shader->GetBaseHash() * 0x9E3779B97F4A7C15ull + shader->GetAuxHash() + 1;
-	ahead->robust = robust;
+	// its own stage's, as its pipelines' parts take it
+	ahead->robust = robust && vkRenderer->m_featureControl.deviceExtensions.pipeline_robustness;
 	ahead->slots = slots;
 	VulkanPipelineKey_DescriptorBindings(decompiled->resourceMapping, vertex ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT, ahead->bindings);
 	shader->m_aheadParts = ahead;
