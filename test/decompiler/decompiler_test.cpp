@@ -11,9 +11,14 @@
 // the renderer writes with must be the same too. A shader the emitter
 // declines must still compile through GLSL. The direct modules are written
 // to the directory given, for spirv-val (run_tests.sh). Skipped without a
-// device - a failure with VN_REQUIRE_DEVICE set, as the CIs set it.
+// device - a failure with VN_REQUIRE_DEVICE set, as the CIs set it. Every
+// pixel, vertex and geometry shader is decompiled again with noise in every
+// register the digest of its decompile's registers leaves out
+// (LattePM4_*ShaderInputs, by which a shader decompiled ahead of its draw is
+// taken), and must come out the same.
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
+#include "Cafe/HW/Latte/Core/LattePM4Scan.h"
 #include "Cafe/HW/Latte/Core/LatteShaderAssembly.h"
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
 #include "Cafe/HW/Latte/ISA/LatteReg.h"
@@ -1200,11 +1205,11 @@ struct Decompiled
 	// (LatteDecompiler_SPIRVBeyondGLSL): drawn alone, checked by its
 	// directed programs' expected pixels
 	const char* beyond = nullptr;
-	sint32 texBinding[LATTE_NUM_MAX_TEX_UNITS]; // -1: the unit is not used
-	bool shadow[LATTE_NUM_MAX_TEX_UNITS]; // a shadow sampler: the depth texture
-	sint8 attrLoc[LATTE_NUM_MAX_ATTRIBUTE_LOCATIONS]; // a vertex shader's
+	sint32 texBinding[LATTE_NUM_MAX_TEX_UNITS]{}; // -1: the unit is not used
+	bool shadow[LATTE_NUM_MAX_TEX_UNITS]{}; // a shadow sampler: the depth texture
+	sint8 attrLoc[LATTE_NUM_MAX_ATTRIBUTE_LOCATIONS]{}; // a vertex shader's
 	sint32 tfBinding = -1; // the streamout storage buffer's, where written
-	sint32 ubBinding[LATTE_NUM_MAX_UNIFORM_BUFFERS]; // uniform buffer mode's, -1 for none
+	sint32 ubBinding[LATTE_NUM_MAX_UNIFORM_BUFFERS]{}; // uniform buffer mode's, -1 for none
 	std::string glsl;
 };
 
@@ -1336,6 +1341,49 @@ static Decompiled Decompile(const std::vector<uint32>& program, bool direct, boo
 	}
 	delete shader;
 	return d;
+}
+
+// --- the registers a decompile reads ----------------------------------------
+
+// those a digest takes (LattePM4_*ShaderInputs): each one moves it
+static std::vector<bool> DigestRegisters(uint64 (*digest)(const uint32*))
+{
+	std::vector<uint32> regs(LATTE_MAX_REGISTER, 0);
+	const uint64 base = digest(regs.data());
+	std::vector<bool> in(LATTE_MAX_REGISTER, false);
+	for (uint32 r = 0; r < LATTE_MAX_REGISTER; r++)
+	{
+		regs[r] = 0x5A5A5A5Au;
+		in[r] = digest(regs.data()) != base;
+		regs[r] = 0;
+	}
+	return in;
+}
+
+static bool SameOutput(const Decompiled& a, const Decompiled& b)
+{
+	const bool sameDeclined = (a.declined == nullptr) == (b.declined == nullptr) &&
+		(a.declined == nullptr || std::strcmp(a.declined, b.declined) == 0);
+	return a.ok == b.ok && sameDeclined && a.spirv == b.spirv && a.glsl == b.glsl &&
+		std::memcmp(&a.offsets, &b.offsets, sizeof(a.offsets)) == 0 && a.remapped.size() == b.remapped.size() &&
+		a.uniformMode == b.uniformMode && a.setIndex == b.setIndex && a.binding == b.binding && a.tfBinding == b.tfBinding &&
+		std::memcmp(a.texBinding, b.texBinding, sizeof(a.texBinding)) == 0 && std::memcmp(a.shadow, b.shadow, sizeof(a.shadow)) == 0 &&
+		std::memcmp(a.attrLoc, b.attrLoc, sizeof(a.attrLoc)) == 0 && std::memcmp(a.ubBinding, b.ubBinding, sizeof(a.ubBinding)) == 0;
+}
+
+// redo() decompiled again with noise in every register in leaves out: the
+// same as before, or the digest misses a register the decompile reads
+template<typename Redo>
+static bool SameWithNoise(const std::vector<bool>& in, std::mt19937& rng, const Decompiled& before, Redo redo)
+{
+	static uint32 saved[LATTE_MAX_REGISTER];
+	std::memcpy(saved, s_regs, sizeof(saved));
+	for (uint32 r = 0; r < LATTE_MAX_REGISTER; r++)
+		if (!in[r])
+			s_regs[r] ^= rng() | 1u;
+	const Decompiled after = redo();
+	std::memcpy(s_regs, saved, sizeof(saved));
+	return SameOutput(before, after);
 }
 
 // --- drawing -----------------------------------------------------------------
@@ -3862,7 +3910,8 @@ static void SetVertexState(const VSCase& k)
 	}
 }
 
-static Decompiled DecompileVertex(const std::vector<uint32>& program, bool direct, const VSCase& k)
+// (setState: the case's registers set first; false to take them as they are)
+static Decompiled DecompileVertex(const std::vector<uint32>& program, bool direct, const VSCase& k, bool setState = true)
 {
 	Decompiled d;
 	LatteDecompilerOptions options;
@@ -3872,7 +3921,8 @@ static Decompiled DecompileVertex(const std::vector<uint32>& program, bool direc
 	options.useTFViaSSBO = true; // as the Vulkan renderer's
 	options.spirvInstrinsics.hasRoundingModeRTEFloat32 = k.rte;
 	LatteDecompilerOutput_t out{};
-	SetVertexState(k);
+	if (setState)
+		SetVertexState(k);
 	const unsigned long long allocsBefore = s_allocs;
 	if (k.gsCase)
 		LatteDecompiler_DecompileGeometryShader(0x9abc, s_regs, (uint8*)program.data(), (uint32)program.size() * 4,
@@ -5092,6 +5142,15 @@ int main(int argc, char** argv)
 		const auto t1 = std::chrono::steady_clock::now();
 		Decompiled viaSpirv = Decompile(words, true, strictMul, rte);
 		const auto t2 = std::chrono::steady_clock::now();
+		{
+			static const std::vector<bool> read = DigestRegisters(LattePM4_PixelShaderInputs);
+			static std::mt19937 noise(7);
+			if (!SameWithNoise(read, noise, viaSpirv, [&] { return Decompile(words, true, strictMul, rte); }))
+			{
+				std::printf("FAIL: program %d decompiled otherwise with registers its digest leaves out changed\n", i);
+				s_failures++;
+			}
+		}
 		if (!viaSpirv.declined && viaGlsl.ok)
 		{
 			secondsGlsl += std::chrono::duration<double>(t1 - t0).count();
@@ -5346,6 +5405,17 @@ int main(int argc, char** argv)
 			std::vector<uint32> words = Assemble(k.p);
 			Decompiled viaGlsl = DecompileVertex(words, false, k);
 			Decompiled viaSpirv = DecompileVertex(words, true, k);
+			{
+				static const std::vector<bool> readVertex = DigestRegisters(LattePM4_VertexShaderInputs);
+				static const std::vector<bool> readGeometry = DigestRegisters(LattePM4_GeometryShaderInputs);
+				static std::mt19937 noise(11);
+				if (!SameWithNoise(k.gsCase ? readGeometry : readVertex, noise, viaSpirv, [&] { return DecompileVertex(words, true, k, false); }))
+				{
+					std::printf("FAIL: %s program %d decompiled otherwise with registers its digest leaves out changed\n",
+						k.gsCase ? "geometry" : "vertex", i);
+					s_failures++;
+				}
+			}
 			if (viaSpirv.declined)
 			{
 				vDeclined++;

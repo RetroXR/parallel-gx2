@@ -19,7 +19,8 @@ ifneq (,$(or $(findstring mingw,$(CXX)),$(filter Windows_NT,$(OS))))
    EXE := .exe
 endif
 
-shader_ahead_test$(EXE): shader_ahead_test.cpp $(SRC)/Cafe/HW/Latte/Core/LattePM4Scan.cpp $(SRC)/Cafe/HW/Latte/Core/LattePM4Scan.h $(SRC)/util/helpers/AheadSlots.h
+shader_ahead_test$(EXE): shader_ahead_test.cpp $(SRC)/Cafe/HW/Latte/Core/LattePM4Scan.cpp $(SRC)/Cafe/HW/Latte/Core/LattePM4Scan.h $(SRC)/util/helpers/AheadSlots.h \
+	$(SRC)/Cafe/HW/Latte/Core/LatteShaderKeys.h
 	$(CXX) $(FLAGS) -std=gnu++20 shader_ahead_test.cpp $(SRC)/Cafe/HW/Latte/Core/LattePM4Scan.cpp $(LIBS) -o $@
 
 clean:

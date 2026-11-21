@@ -8,10 +8,16 @@
 //    there, and stops at a wait on memory, at a packet it cannot read, at a
 //    buffer it cannot map, at the packet limit and where the reader asks;
 //    random buffers of noise end the read without reading out of bounds;
-//  - the registers a pixel or vertex shader's decompile reads, as one
-//    value (LattePM4_PixelShaderInputs, LattePM4_VertexShaderInputs): moved
-//    by each of them, not by the vertex buffers, constants or the other
-//    stage's textures;
+//  - the registers a pixel, vertex or geometry shader's decompile reads,
+//    as one value (LattePM4_PixelShaderInputs, LattePM4_VertexShaderInputs,
+//    LattePM4_GeometryShaderInputs): moved by each of them, not by the
+//    vertex buffers, constants or the other stages' textures (that none
+//    else moves a decompile: test/decompiler);
+//  - the keys of a geometry shader's draw (LatteShaderKeys.h): its pixel
+//    shader's taking the draw's geometry shader, its geometry shader's the
+//    ring of the draw's vertex shader, whatever was active before; one a
+//    shader cache holds under the key of before found by it, a geometry
+//    shader only where made for the draw's ring;
 //  - the hand-over (AheadSlots.h): a key's slot claimed once, published,
 //    taken once by that key only, a stale one claimed back for another key,
 //    one never published left to the draw, one taken by its slot (to queue
@@ -29,6 +35,7 @@
 #include "Cafe/HW/Latte/Core/LattePM4Scan.h"
 #include "Cafe/HW/Latte/Core/LattePM4.h"
 #include "Cafe/HW/Latte/Core/LatteConst.h"
+#include "Cafe/HW/Latte/Core/LatteShaderKeys.h"
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
 #include "util/helpers/AheadSlots.h"
 
@@ -284,6 +291,113 @@ static void VertexShaderInputs()
 	CHECK(still == (int)(sizeof(notRead) / sizeof(notRead[0])));
 }
 
+static void GeometryShaderInputs()
+{
+	std::vector<uint32> regs(LATTE_MAX_REGISTER, 0);
+	const uint64 base = LattePM4_GeometryShaderInputs(regs.data());
+	const uint32 read[] = {mmCB_SHADER_MASK, mmSPI_VS_OUT_ID_0 + 9, mmSPI_PS_INPUT_CNTL_0 + 31, mmSPI_VS_OUT_CONFIG,
+		mmSPI_PS_IN_CONTROL_0, mmSPI_INTERP_CONTROL_0, Latte::REGADDR::PA_CL_CLIP_CNTL, Latte::REGADDR::PA_CL_VTE_CNTL,
+		mmPA_CL_VS_OUT_CNTL, mmSQ_PGM_START_VS, mmSQ_PGM_START_VS + 1, mmSQ_PGM_START_GS, mmSQ_PGM_START_GS + 1,
+		mmSQ_GSVS_RING_ITEMSIZE, mmSQ_GS_VERT_ITEMSIZE, Latte::REGADDR::VGT_GS_MODE, mmVGT_GS_OUT_PRIM_TYPE, mmVGT_PRIMITIVEID_EN,
+		mmVGT_STRMOUT_EN, mmVGT_STRMOUT_VTX_STRIDE_0 + 12, Latte::REGADDR::VGT_PRIMITIVE_TYPE, Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_GS,
+		Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_GS + Latte::GPU_LIMITS::NUM_TEXTURES_PER_STAGE * 7 - 1};
+	int moved = 0;
+	for (uint32 r : read)
+	{
+		regs[r] = 1;
+		moved += LattePM4_GeometryShaderInputs(regs.data()) != base;
+		regs[r] = 0;
+	}
+	CHECK(moved == (int)(sizeof(read) / sizeof(read[0])));
+	// what feeds it (the export shader, the fetch shader, the vertex
+	// semantics), the other stages' textures, the constants: not read
+	const uint32 notRead[] = {LATTE_REG_BASE_ALU_CONST, mmSQ_PGM_START_ES, mmSQ_PGM_START_FS, mmSQ_VTX_SEMANTIC_0,
+		Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS, Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS, 0xA10F /* PA_CL_VPORT_XSCALE */};
+	int still = 0;
+	for (uint32 r : notRead)
+	{
+		regs[r] = 1;
+		still += LattePM4_GeometryShaderInputs(regs.data()) == base;
+		regs[r] = 0;
+	}
+	CHECK(still == (int)(sizeof(notRead) / sizeof(notRead[0])));
+}
+
+// --- the keys of a geometry shader's draw ------------------------------------
+
+struct KeyedShader
+{
+	uint32 ringParameterCountFromPrevStage;
+};
+
+static void Keys()
+{
+	// a pixel shader after a geometry shader: keyed by the draw's geometry
+	// shader, as decompiled ahead; with none, the geometry shader left out
+	const uint64 ps1 = 0x1111, ps2 = 0x2222, imports = 0x30, gsA = 0xA000, gsB = 0xB000;
+	CHECK(LatteSHRC_PixelBaseHash(ps1, ps2, imports, true, gsA) != LatteSHRC_PixelBaseHash(ps1, ps2, imports, true, gsB));
+	CHECK(LatteSHRC_PixelBaseHash(ps1, ps2, imports, false, gsA) == LatteSHRC_PixelBaseHash(ps1, ps2, imports, false, gsB));
+	std::vector<std::pair<uint64, KeyedShader*>> cache;
+	std::vector<uint64> asked;
+	auto find = [&](uint64 key) -> KeyedShader* {
+		asked.push_back(key);
+		for (auto& e : cache)
+			if (e.first == key)
+				return e.second;
+		return nullptr;
+	};
+	KeyedShader pixel{0};
+	// held under the key of the geometry shader hashed before (gsA) the
+	// draw's (gsB): found by it, after its own key
+	cache.push_back({LatteSHRC_PixelBaseHash(ps1, ps2, imports, true, gsA), &pixel});
+	CHECK((LatteSHRC_FindPixelShaderFor<KeyedShader>(find, ps1, ps2, imports, true, gsB, gsA)) == &pixel);
+	CHECK(asked.size() == 2 && asked[0] == LatteSHRC_PixelBaseHash(ps1, ps2, imports, true, gsB));
+	// held under the draw's own: found at once
+	asked.clear();
+	CHECK((LatteSHRC_FindPixelShaderFor<KeyedShader>(find, ps1, ps2, imports, true, gsA, gsB)) == &pixel);
+	CHECK(asked.size() == 1);
+	// no geometry shader: its own key only, the geometry shaders' hashes
+	// out of it
+	asked.clear();
+	CHECK((LatteSHRC_FindPixelShaderFor<KeyedShader>(find, ps1, ps2, imports, false, gsB, gsA)) == nullptr);
+	CHECK(asked.size() == 1 && asked[0] == LatteSHRC_PixelBaseHash(ps1, ps2, imports, false, 0));
+	// the same geometry shader hashed before: one look
+	asked.clear();
+	CHECK((LatteSHRC_FindPixelShaderFor<KeyedShader>(find, ps1, ps2, imports, true, gsB, gsB)) == nullptr);
+	CHECK(asked.size() == 1);
+
+	// a geometry shader: keyed by the ring of the draw's vertex shader
+	const uint64 g1 = 0x5000, g2 = 0x6000;
+	CHECK(LatteSHRC_GeometryBaseHash(g1, g2, 4, false) != LatteSHRC_GeometryBaseHash(g1, g2, 6, false));
+	CHECK(LatteSHRC_GeometryBaseHash(g1, g2, 4, false) != LatteSHRC_GeometryBaseHash(g1, g2, 4, true));
+	cache.clear();
+	KeyedShader madeFor4{4}, madeFor6{6};
+	// the draw's ring 4, the vertex shader active before writing 6: one
+	// held under 6's key made for 4 taken, as a shader cache keyed it before
+	cache.push_back({LatteSHRC_GeometryBaseHash(g1, g2, 6, false), &madeFor4});
+	CHECK((LatteSHRC_FindGeometryShaderFor<KeyedShader>(find, g1, g2, 4, 6, false)) == &madeFor4);
+	// one made for 6 is not, for a draw whose ring is 4
+	cache[0].second = &madeFor6;
+	CHECK((LatteSHRC_FindGeometryShaderFor<KeyedShader>(find, g1, g2, 4, 6, false)) == nullptr);
+	// none active before (the first draw): its own key, looked up
+	asked.clear();
+	CHECK((LatteSHRC_FindGeometryShaderFor<KeyedShader>(find, g1, g2, 4, -1, false)) == nullptr);
+	CHECK(asked.size() == 1 && asked[0] == LatteSHRC_GeometryBaseHash(g1, g2, 4, false));
+	// its own key first: made for the draw's ring, whatever came before
+	cache.push_back({LatteSHRC_GeometryBaseHash(g1, g2, 4, false), &madeFor4});
+	asked.clear();
+	CHECK((LatteSHRC_FindGeometryShaderFor<KeyedShader>(find, g1, g2, 4, 6, false)) == &madeFor4);
+	CHECK(asked.size() == 1);
+	// the vertex shader before writing the same ring: one look, found or not
+	cache.erase(cache.begin() + 1);
+	asked.clear();
+	CHECK((LatteSHRC_FindGeometryShaderFor<KeyedShader>(find, g1, g2, 6, 6, false)) == &madeFor6);
+	CHECK(asked.size() == 1);
+	asked.clear();
+	CHECK((LatteSHRC_FindGeometryShaderFor<KeyedShader>(find, g1, g2, 5, 5, false)) == nullptr);
+	CHECK(asked.size() == 1);
+}
+
 // --- the hand-over -----------------------------------------------------------
 
 struct Payload
@@ -442,6 +556,8 @@ int main()
 	Ends();
 	PixelShaderInputs();
 	VertexShaderInputs();
+	GeometryShaderInputs();
+	Keys();
 	SlotsOneThread();
 	SlotsRacing();
 	SeenKeysFill();

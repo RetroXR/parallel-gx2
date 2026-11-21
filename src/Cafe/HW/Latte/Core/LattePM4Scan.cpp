@@ -265,3 +265,29 @@ uint64 LattePM4_VertexShaderInputs(const uint32* regs)
 	};
 	return DigestOf(regs, kRead);
 }
+
+uint64 LattePM4_GeometryShaderInputs(const uint32* regs)
+{
+	static constexpr RegRange kRead[] = {
+		{mmCB_SHADER_MASK, 1},
+		{Latte::REGADDR::SX_ALPHA_TEST_CONTROL, 1},
+		{mmSPI_VS_OUT_ID_0, 10},
+		{mmSPI_PS_INPUT_CNTL_0, 32},
+		{mmSPI_VS_OUT_CONFIG, 1},
+		{mmSPI_PS_IN_CONTROL_0, 3}, // and _1, SPI_INTERP_CONTROL_0
+		{mmCB_SHADER_CONTROL, 1},
+		{mmDB_SHADER_CONTROL, 5}, // PA_CL_CLIP_CNTL, PA_CL_VTE_CNTL, PA_CL_VS_OUT_CNTL
+		{mmSQ_PGM_START_VS, 5}, // the copy shader's
+		{mmSQ_PGM_START_GS, 5}, // its size, resources
+		{mmSQ_GSVS_RING_ITEMSIZE, 1},
+		{mmSQ_GS_VERT_ITEMSIZE, 1},
+		{Latte::REGADDR::VGT_GS_MODE, 1},
+		{mmVGT_GS_OUT_PRIM_TYPE, 1},
+		{mmVGT_PRIMITIVEID_EN, 1},
+		{mmVGT_STRMOUT_EN, 1},
+		{mmVGT_STRMOUT_VTX_STRIDE_0, 13},
+		{Latte::REGADDR::VGT_PRIMITIVE_TYPE, 1},
+		{Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_GS, Latte::GPU_LIMITS::NUM_TEXTURES_PER_STAGE * 7},
+	};
+	return DigestOf(regs, kRead);
+}

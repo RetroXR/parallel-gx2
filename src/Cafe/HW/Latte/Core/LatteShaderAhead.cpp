@@ -1,6 +1,7 @@
 #include "Cafe/HW/Latte/Core/LatteShaderAhead.h"
 #include "Cafe/HW/Latte/Core/LattePM4Scan.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
+#include "Cafe/HW/Latte/Core/LatteShaderKeys.h"
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "Cafe/HW/Latte/Core/LattePM4.h"
 #include "Cafe/HW/Latte/Core/Latte.h"
@@ -23,7 +24,9 @@ namespace
 	{
 		uint64 digest; // the registers its decompile read (LattePM4Scan.h)
 		uint64 auxHash;
-		uint64 fetchShader; // a vertex shader's: its fetch shader's Fingerprint
+		// a vertex shader's: its fetch shader's Fingerprint; a geometry
+		// shader's: its copy shader's hash, which its key leaves out
+		uint64 fetchShader;
 		uint32 scan; // the read it was made in, to let one never taken go
 		// its module made (Vulkan), its parts not yet queued by the GPU thread
 		bool partsPending;
@@ -35,16 +38,17 @@ namespace
 	using Slots = AheadSlots<AheadShader, 64>;
 	// the shaders the GPU thread has: none decompiled ahead again
 	using Seen = SeenKeys<1u << 15>;
-	Slots s_pixel, s_vertex;
-	Seen s_seenPixel, s_seenVertex;
+	Slots s_pixel, s_vertex, s_geometry;
+	Seen s_seenPixel, s_seenVertex, s_seenGeometry;
 	// what happened to them, logged as the title stops: made ahead, taken by
 	// their draw, not usable there, the draw first while one was being made,
-	// none there for the draw, let go unused (vertex, pixel)
+	// none there for the draw, let go unused
 	struct Counts
 	{
+		const char* kind;
 		std::atomic<uint64> made{0}, taken{0}, unusable{0}, late{0}, none{0}, letGo{0};
 	};
-	Counts s_countsVertex, s_countsPixel;
+	Counts s_countsVertex{"vertex"}, s_countsPixel{"pixel"}, s_countsGeometry{"geometry"};
 
 	// the slots whose shader waits for the GPU thread to queue its parts
 	// (LatteShaderAhead_Poll), a bit each
@@ -74,6 +78,8 @@ namespace
 		uint8 psProgram[kMaxProgram];
 		uint8 vsProgram[kMaxProgram];
 		uint8 fsProgram[kMaxFetchProgram];
+		uint8 gsProgram[kMaxProgram];
+		uint8 copyProgram[kMaxProgram]; // the geometry shader's copy shader
 		// the vertex shader's fetch shader, parsed here, never registered
 		LatteFetchShader fetchShader;
 		LatteShaderPSInputTable inputs;
@@ -81,6 +87,7 @@ namespace
 		uint32 words;
 		uint32 scan;
 		uint32 found;
+		uint32 ring; // that of the vertex shader just made ahead
 #ifdef ENABLE_VULKAN
 		alignas(PreparedPipeline) unsigned char prepared[sizeof(PreparedPipeline)];
 		bool queued;
@@ -112,11 +119,19 @@ namespace
 		return true;
 	}
 
+	uint64 CopyShaderHash(const uint8* program, uint32 size)
+	{
+		uint64 h1, h2;
+		_calcShaderHashGeneric(reinterpret_cast<uint32*>(const_cast<uint8*>(program)), size, h1, h2);
+		return h1 ^ (h2 * 0x9E3779B97F4A7C15ull);
+	}
+
 	// decompile(output) for baseHash, published for its draw with finish(it)
 	// filling in what the draw checks it by, and its module made, for the
-	// GPU thread to queue its parts (parts: the slots' pending bits)
+	// GPU thread to queue its parts (parts: the slots' pending bits; none
+	// for a shader whose parts take a geometry shader's with it)
 	template<typename Decompile, typename Finish>
-	bool MakeAhead(Slots& slots, Seen& seen, std::atomic<uint64>& parts, Counts& counts, uint64 baseHash, uint32 scan, Decompile decompile, Finish finish)
+	bool MakeAhead(Slots& slots, Seen& seen, std::atomic<uint64>* parts, Counts& counts, uint64 baseHash, uint32 scan, Decompile decompile, Finish finish)
 	{
 		if (seen.Contains(baseHash))
 			return false;
@@ -141,32 +156,34 @@ namespace
 		finish(*held.payload);
 		held.payload->scan = scan;
 		held.payload->robust = false;
-		held.payload->partsPending = LatteShader_MakeRendererShaderAhead(held.payload->output, baseHash, held.payload->auxHash);
+		held.payload->partsPending = LatteShader_MakeRendererShaderAhead(held.payload->output, baseHash, held.payload->auxHash) && parts;
 #ifdef ENABLE_VULKAN
-		held.payload->robust = held.payload->output.shader->shaderType == LatteConst::ShaderType::Vertex
-			? PipelineCompiler::CalcRobustBufferAccessRequirement(held.payload->output.shader, nullptr, nullptr)
-			: PipelineCompiler::CalcRobustBufferAccessRequirement(nullptr, held.payload->output.shader, nullptr);
+		if (held.payload->partsPending)
+			held.payload->robust = held.payload->output.shader->shaderType == LatteConst::ShaderType::Vertex
+				? PipelineCompiler::CalcRobustBufferAccessRequirement(held.payload->output.shader, nullptr, nullptr)
+				: PipelineCompiler::CalcRobustBufferAccessRequirement(nullptr, held.payload->output.shader, nullptr);
 #endif
 		const size_t index = held.index;
 		const bool pending = held.payload->partsPending;
 		slots.Publish(held);
 		counts.made.fetch_add(1, std::memory_order_relaxed);
 		if (pending)
-			parts.fetch_or(1ull << index, std::memory_order_release);
+			parts->fetch_or(1ull << index, std::memory_order_release);
 		return true;
 	}
 
-	void PixelAhead(Job* job, uint32* regs)
+	// (gs: a geometry shader's draw, gsHash1 its program's first hash)
+	void PixelAhead(Job* job, uint32* regs, bool gs, uint64 gsHash1)
 	{
 		const uint32 size = regs[mmSQ_PGM_START_PS + 1] << 3;
 		if (size == 0 || !CopyGuest(job->psProgram, regs[mmSQ_PGM_START_PS] << 8, size, kMaxProgram))
 			return;
 		uint64 h1, h2;
 		_calcShaderHashGeneric(reinterpret_cast<uint32*>(job->psProgram), size, h1, h2);
-		const uint64 baseHash = h1 + h2 + job->inputs.key; // LatteSHRC_UpdatePSBaseHash, no geometry shader
-		job->found += MakeAhead(s_pixel, s_seenPixel, s_partsPixel, s_countsPixel, baseHash, job->scan,
+		const uint64 baseHash = LatteSHRC_PixelBaseHash(h1, h2, job->inputs.key, gs, gsHash1);
+		job->found += MakeAhead(s_pixel, s_seenPixel, &s_partsPixel, s_countsPixel, baseHash, job->scan,
 			[&](LatteDecompilerOutput_t& out) {
-				LatteShader_DecompilePixelShaderAhead(regs, job->psProgram, size, &job->inputs, baseHash, &out);
+				LatteShader_DecompilePixelShaderAhead(regs, job->psProgram, size, gs, &job->inputs, baseHash, &out);
 			},
 			[&](AheadShader& p) {
 				p.auxHash = LatteSHRC_CalcPSAuxHash(p.output.shader, regs);
@@ -175,13 +192,15 @@ namespace
 			});
 	}
 
-	void VertexAhead(Job* job, uint32* regs)
+	// the export shader where a geometry shader runs (gs); true where made
+	bool VertexAhead(Job* job, uint32* regs, bool gs)
 	{
-		const uint32 size = regs[mmSQ_PGM_START_VS + 1] << 3;
+		const uint32 program = gs ? mmSQ_PGM_START_ES : mmSQ_PGM_START_VS;
+		const uint32 size = regs[program + 1] << 3;
 		const uint32 fsSize = regs[mmSQ_PGM_START_FS + 1] << 3;
-		if (size == 0 || !CopyGuest(job->vsProgram, regs[mmSQ_PGM_START_VS] << 8, size, kMaxProgram) ||
+		if (size == 0 || !CopyGuest(job->vsProgram, regs[program] << 8, size, kMaxProgram) ||
 			!CopyGuest(job->fsProgram, regs[mmSQ_PGM_START_FS] << 8, fsSize, kMaxFetchProgram))
-			return;
+			return false;
 		// the fetch shader parsed as LatteFetchShader::FindByGPUState would parse it
 		// for these registers; the draw's own, which may have been parsed for
 		// others, has to match it (its Fingerprint)
@@ -190,27 +209,60 @@ namespace
 			reinterpret_cast<uint32*>(job->fsProgram), fsSize);
 		uint64 h1, h2;
 		_calcShaderHashGeneric(reinterpret_cast<uint32*>(job->vsProgram), size, h1, h2);
-		const uint64 baseHash = LatteSHRC_VertexBaseHash(h1, h2, &job->fetchShader, job->inputs.key, false, regs);
-		job->found += MakeAhead(s_vertex, s_seenVertex, s_partsVertex, s_countsVertex, baseHash, job->scan,
+		const uint64 baseHash = LatteSHRC_VertexBaseHash(h1, h2, &job->fetchShader, job->inputs.key, gs, regs);
+		const bool made = MakeAhead(s_vertex, s_seenVertex, gs ? nullptr : &s_partsVertex, s_countsVertex, baseHash, job->scan,
 			[&](LatteDecompilerOutput_t& out) {
-				LatteShader_DecompileVertexShaderAhead(regs, job->vsProgram, size, &job->fetchShader, &job->inputs, baseHash, &out);
+				LatteShader_DecompileVertexShaderAhead(regs, job->vsProgram, size, gs, &job->fetchShader, &job->inputs, baseHash, &out);
 			},
 			[&](AheadShader& p) {
 				p.auxHash = LatteSHRC_CalcVSAuxHash(p.output.shader, regs);
 				p.digest = LattePM4_VertexShaderInputs(regs);
 				p.fetchShader = job->fetchShader.Fingerprint();
+				job->ring = p.output.shader->ringParameterCount;
 				p.output.shader->compatibleFetchShader = nullptr; // the draw's, once taken
+			});
+		job->found += made;
+		return made;
+	}
+
+	// after the vertex shader made ahead for this draw, whose ring it reads
+	void GeometryAhead(Job* job, uint32* regs, uint32 gsSize, uint64 gsHash1, uint64 gsHash2)
+	{
+		const uint32 copySize = regs[mmSQ_PGM_START_VS + 1] << 3;
+		if (copySize == 0 || !CopyGuest(job->copyProgram, regs[mmSQ_PGM_START_VS] << 8, copySize, kMaxProgram))
+			return;
+		const uint32 ring = job->ring;
+		const uint64 baseHash = LatteSHRC_GeometryBaseHash(gsHash1, gsHash2, ring, regs[mmVGT_STRMOUT_EN] != 0);
+		job->found += MakeAhead(s_geometry, s_seenGeometry, nullptr, s_countsGeometry, baseHash, job->scan,
+			[&](LatteDecompilerOutput_t& out) {
+				LatteShader_DecompileGeometryShaderAhead(regs, job->gsProgram, gsSize, job->copyProgram, copySize, ring,
+					&job->inputs, baseHash, &out);
+			},
+			[&](AheadShader& p) {
+				p.auxHash = 0; // LatteSHRC_CalcGSAuxHash
+				p.digest = LattePM4_GeometryShaderInputs(regs);
+				p.fetchShader = CopyShaderHash(job->copyProgram, copySize);
 			});
 	}
 
 	bool OnDraw(void* ctx, uint32* regs)
 	{
 		Job* job = static_cast<Job*>(ctx);
-		if ((regs[Latte::REGADDR::VGT_GS_MODE] & 3) != 0)
-			return true; // the shaders' hashes take the geometry shader's: left to the draw
 		LatteShader_CreatePSInputTable(&job->inputs, regs);
-		PixelAhead(job, regs);
-		VertexAhead(job, regs);
+		// a geometry shader's draw (LatteSHRC_UpdateActiveShaders): its
+		// program hashed first, as its pixel shader's key takes it
+		const bool gs = (regs[Latte::REGADDR::VGT_GS_MODE] & 3) != 0;
+		const uint32 gsSize = gs ? regs[mmSQ_PGM_START_GS + 1] << 3 : 0;
+		uint64 gsHash1 = 0, gsHash2 = 0;
+		if (gs)
+		{
+			if (gsSize == 0 || !CopyGuest(job->gsProgram, regs[mmSQ_PGM_START_GS] << 8, gsSize, kMaxProgram))
+				return true; // left to the draw
+			_calcShaderHashGeneric(reinterpret_cast<uint32*>(job->gsProgram), gsSize, gsHash1, gsHash2);
+		}
+		PixelAhead(job, regs, gs, gsHash1);
+		if (VertexAhead(job, regs, gs) && gs)
+			GeometryAhead(job, regs, gsSize, gsHash1, gsHash2);
 		return job->found < kMaxPerScan;
 	}
 
@@ -262,11 +314,11 @@ void LatteShaderAhead_Shutdown()
 		s_jobs = nullptr;
 	}
 #endif
-	for (Counts* c : {&s_countsVertex, &s_countsPixel})
+	for (Counts* c : {&s_countsVertex, &s_countsPixel, &s_countsGeometry})
 	{
 		if (c->made.load(std::memory_order_relaxed) || c->none.load(std::memory_order_relaxed))
 			cemuLog_log(LogType::Force, "[ShaderAhead] {} shaders: {} decompiled ahead, {} taken by their draw, {} not usable there, {} drawn while being made, {} drawn with none made, {} let go unused",
-				c == &s_countsVertex ? "vertex" : "pixel", c->made.load(), c->taken.load(), c->unusable.load(), c->late.load(), c->none.load(), c->letGo.load());
+				c->kind, c->made.load(), c->taken.load(), c->unusable.load(), c->late.load(), c->none.load(), c->letGo.load());
 		c->made = 0;
 		c->taken = 0;
 		c->unusable = 0;
@@ -274,7 +326,7 @@ void LatteShaderAhead_Shutdown()
 		c->none = 0;
 		c->letGo = 0;
 	}
-	for (Slots* slots : {&s_pixel, &s_vertex})
+	for (Slots* slots : {&s_pixel, &s_vertex, &s_geometry})
 	{
 		slots->DrainPublished([](AheadShader& p) {
 			LatteShader_FreeDecompilerOutput(p.output);
@@ -283,6 +335,7 @@ void LatteShaderAhead_Shutdown()
 	}
 	s_seenPixel.Clear();
 	s_seenVertex.Clear();
+	s_seenGeometry.Clear();
 }
 
 void LatteShaderAhead_OnCommandBuffer(uint32 physAddr, uint32 words)
@@ -378,6 +431,31 @@ bool LatteShaderAhead_TakeVertexShader(uint64 baseHash, LatteFetchShader* fetchS
 	return true;
 }
 
+bool LatteShaderAhead_TakeGeometryShader(uint64 baseHash, uint32 vsRingParameterCount, const uint8* copyProgram, uint32 copyProgramSize, LatteDecompilerOutput_t& output)
+{
+	auto held = s_geometry.Take(baseHash);
+	if (!held)
+	{
+		(s_geometry.InHand(baseHash) ? s_countsGeometry.late : s_countsGeometry.none).fetch_add(1, std::memory_order_relaxed);
+		return false;
+	}
+	AheadShader& p = *held.payload;
+	const bool same = p.digest == LattePM4_GeometryShaderInputs(LatteGPUState.contextRegister) &&
+		p.output.shader->ringParameterCountFromPrevStage == vsRingParameterCount &&
+		copyProgram && p.fetchShader == CopyShaderHash(copyProgram, copyProgramSize);
+	if (!same)
+	{
+		s_geometry.Publish(held); // as a pixel shader's: put back
+		s_countsGeometry.unusable.fetch_add(1, std::memory_order_relaxed);
+		return false;
+	}
+	s_countsGeometry.taken.fetch_add(1, std::memory_order_relaxed);
+	output = p.output;
+	p.output = {};
+	s_geometry.Release(held);
+	return true;
+}
+
 void LatteShaderAhead_NotePixelShader(uint64 baseHash)
 {
 	s_seenPixel.Insert(baseHash);
@@ -386,6 +464,11 @@ void LatteShaderAhead_NotePixelShader(uint64 baseHash)
 void LatteShaderAhead_NoteVertexShader(uint64 baseHash)
 {
 	s_seenVertex.Insert(baseHash);
+}
+
+void LatteShaderAhead_NoteGeometryShader(uint64 baseHash)
+{
+	s_seenGeometry.Insert(baseHash);
 }
 
 void LatteShaderAhead_Poll()

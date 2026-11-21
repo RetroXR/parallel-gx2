@@ -32,7 +32,7 @@ LRC_SRCS := $(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c $(LRC)
 SRCS := decompiler_test.cpp stubs.cpp $(DEC)/LatteDecompiler.cpp $(DEC)/LatteDecompilerAnalyzer.cpp \
 	$(DEC)/LatteDecompilerEmitGLSL.cpp $(DEC)/LatteDecompilerEmitGLSLAttrDecoder.cpp $(DEC)/LatteDecompilerEmitSPIRV.cpp \
 	$(DEC)/LatteDecompilerRegisterDataTypeTracker.cpp $(SRC)/Cafe/HW/Latte/Core/LatteGSCopyShaderParser.cpp \
-	$(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.cpp
+	$(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.cpp $(SRC)/Cafe/HW/Latte/Core/LattePM4Scan.cpp
 
 decompiler_test$(EXE): $(SRCS) $(LRC_SRCS) $(wildcard $(DEC)/*.h $(DEC)/*.hpp) $(SRC)/util/helpers/StringBuf.h \
 	$(SRC)/Cafe/HW/Latte/Renderer/Vulkan/RslcGlsl.h

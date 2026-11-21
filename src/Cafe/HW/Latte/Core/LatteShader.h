@@ -120,13 +120,16 @@ void LatteShader_CleanupAfterCompile(LatteDecompilerShader* shader);
 // a decompile's shader, never registered, freed with its buffers
 void LatteShader_FreeDecompilerOutput(LatteDecompilerOutput_t& output);
 // A pixel shader decompiled on any thread from registers and a PS input
-// table of the caller's, no geometry shader (LatteShaderAhead.cpp)
-void LatteShader_DecompilePixelShaderAhead(uint32* regs, uint8* program, uint32 programSize, LatteShaderPSInputTable* inputs, uint64 baseHash, LatteDecompilerOutput_t* output);
+// table of the caller's (LatteShaderAhead.cpp)
+void LatteShader_DecompilePixelShaderAhead(uint32* regs, uint8* program, uint32 programSize, bool usesGeometryShader, LatteShaderPSInputTable* inputs, uint64 baseHash, LatteDecompilerOutput_t* output);
 uint64 LatteSHRC_CalcPSAuxHash(LatteDecompilerShader* pixelShader, uint32* contextRegisters);
 // the same for a vertex shader, with its fetch shader
-void LatteShader_DecompileVertexShaderAhead(uint32* regs, uint8* program, uint32 programSize, struct LatteFetchShader* fetchShader, LatteShaderPSInputTable* inputs, uint64 baseHash, LatteDecompilerOutput_t* output);
+void LatteShader_DecompileVertexShaderAhead(uint32* regs, uint8* program, uint32 programSize, bool usesGeometryShader, struct LatteFetchShader* fetchShader, LatteShaderPSInputTable* inputs, uint64 baseHash, LatteDecompilerOutput_t* output);
 uint64 LatteSHRC_CalcVSAuxHash(LatteDecompilerShader* vertexShader, uint32* contextRegisters);
-// a vertex or pixel shader decompiled ahead given its module, from the
+// and for a geometry shader, with its copy shader and the ring its vertex
+// shader writes
+void LatteShader_DecompileGeometryShaderAhead(uint32* regs, uint8* program, uint32 programSize, uint8* copyProgram, uint32 copyProgramSize, uint32 vsRingParameterCount, LatteShaderPSInputTable* inputs, uint64 baseHash, LatteDecompilerOutput_t* output);
+// a shader decompiled ahead given its module, from the
 // SPIR-V written directly (Vulkan), on any thread; false where it is not
 // made (an error, GLSL, another renderer). LatteShader_CreateRendererShader
 // keeps it, unless a graphic pack replaces the shader.
