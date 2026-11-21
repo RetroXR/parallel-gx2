@@ -14,7 +14,8 @@
 //    stage's textures;
 //  - the hand-over (AheadSlots.h): a key's slot claimed once, published,
 //    taken once by that key only, a stale one claimed back for another key,
-//    one never published left to the draw; four producers and a consumer
+//    one never published left to the draw, one taken by its slot (to queue
+//    its parts) or by a draw that cannot use it published again; four producers and a consumer
 //    racing over 20000 keys, every payload published either taken or
 //    drained, none twice (TSan in CI); and the filter of keys seen, which
 //    never says unseen for a key added.
@@ -318,7 +319,26 @@ static void SlotsOneThread()
 	CHECK(c && had && c.payload->key == 5);
 	CHECK(!slots.Take(5));
 	slots.Abandon(c);
-	CHECK(slots.Claim(13, never, &had)); // abandoned: free again
+	auto d = slots.Claim(13, never, &had); // abandoned: free again
+	CHECK(d);
+	// taken by its slot, as the GPU thread does to queue a shader's parts:
+	// only once published, its key with it, and published again after
+	CHECK(!slots.TakeAt(AheadSlots<Payload, 8>::SlotOf(13))); // still being made
+	d.payload->key = 13;
+	slots.Publish(d);
+	auto e = slots.TakeAt(AheadSlots<Payload, 8>::SlotOf(13));
+	CHECK(e && slots.KeyOf(e) == 13);
+	CHECK(!slots.TakeAt(AheadSlots<Payload, 8>::SlotOf(13))); // held
+	CHECK(!slots.Take(13));
+	slots.Publish(e);
+	// taken by key, not what the draw needs: put back, there to take again
+	auto f = slots.Take(13);
+	CHECK(f);
+	slots.Publish(f);
+	auto g = slots.Take(13);
+	CHECK(g && g.payload->key == 13);
+	slots.Release(g);
+	CHECK(!slots.TakeAt(AheadSlots<Payload, 8>::SlotOf(13))); // released: empty
 }
 
 static void SlotsRacing()

@@ -12,6 +12,7 @@
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/PreparedPipeline.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.h"
+#include "Cafe/HW/Latte/Renderer/Vulkan/RendererShaderVk.h"
 #endif
 
 void _calcShaderHashGeneric(uint32* programCode, uint32 programSize, uint64& outputHash1, uint64& outputHash2);
@@ -24,6 +25,9 @@ namespace
 		uint64 auxHash;
 		uint64 fetchShader; // a vertex shader's: its fetch shader's Fingerprint
 		uint32 scan; // the read it was made in, to let one never taken go
+		// its module made (Vulkan), its parts not yet queued by the GPU thread
+		bool partsPending;
+		bool robust; // what the shader itself asks of its parts
 		LatteDecompilerOutput_t output;
 	};
 	// one key a slot (AheadSlots.h); a shader whose slot is taken is left to
@@ -33,6 +37,9 @@ namespace
 	using Seen = SeenKeys<1u << 15>;
 	Slots s_pixel, s_vertex;
 	Seen s_seenPixel, s_seenVertex;
+	// the slots whose shader waits for the GPU thread to queue its parts
+	// (LatteShaderAhead_Poll), a bit each
+	std::atomic<uint64> s_partsPixel{0}, s_partsVertex{0};
 
 	constexpr uint32 kJobs = 4;
 	constexpr uint32 kMaxProgram = 128 * 1024;
@@ -97,9 +104,10 @@ namespace
 	}
 
 	// decompile(output) for baseHash, published for its draw with finish(it)
-	// filling in what the draw checks it by
+	// filling in what the draw checks it by, and its module made, for the
+	// GPU thread to queue its parts (parts: the slots' pending bits)
 	template<typename Decompile, typename Finish>
-	bool MakeAhead(Slots& slots, Seen& seen, uint64 baseHash, uint32 scan, Decompile decompile, Finish finish)
+	bool MakeAhead(Slots& slots, Seen& seen, std::atomic<uint64>& parts, uint64 baseHash, uint32 scan, Decompile decompile, Finish finish)
 	{
 		if (seen.Contains(baseHash))
 			return false;
@@ -120,7 +128,18 @@ namespace
 		}
 		finish(*held.payload);
 		held.payload->scan = scan;
+		held.payload->robust = false;
+		held.payload->partsPending = LatteShader_MakeRendererShaderAhead(held.payload->output, baseHash, held.payload->auxHash);
+#ifdef ENABLE_VULKAN
+		held.payload->robust = held.payload->output.shader->shaderType == LatteConst::ShaderType::Vertex
+			? PipelineCompiler::CalcRobustBufferAccessRequirement(held.payload->output.shader, nullptr, nullptr)
+			: PipelineCompiler::CalcRobustBufferAccessRequirement(nullptr, held.payload->output.shader, nullptr);
+#endif
+		const size_t index = held.index;
+		const bool pending = held.payload->partsPending;
 		slots.Publish(held);
+		if (pending)
+			parts.fetch_or(1ull << index, std::memory_order_release);
 		return true;
 	}
 
@@ -132,7 +151,7 @@ namespace
 		uint64 h1, h2;
 		_calcShaderHashGeneric(reinterpret_cast<uint32*>(job->psProgram), size, h1, h2);
 		const uint64 baseHash = h1 + h2 + job->inputs.key; // LatteSHRC_UpdatePSBaseHash, no geometry shader
-		job->found += MakeAhead(s_pixel, s_seenPixel, baseHash, job->scan,
+		job->found += MakeAhead(s_pixel, s_seenPixel, s_partsPixel, baseHash, job->scan,
 			[&](LatteDecompilerOutput_t& out) {
 				LatteShader_DecompilePixelShaderAhead(regs, job->psProgram, size, &job->inputs, baseHash, &out);
 			},
@@ -159,7 +178,7 @@ namespace
 		uint64 h1, h2;
 		_calcShaderHashGeneric(reinterpret_cast<uint32*>(job->vsProgram), size, h1, h2);
 		const uint64 baseHash = LatteSHRC_VertexBaseHash(h1, h2, &job->fetchShader, job->inputs.key, false, regs);
-		job->found += MakeAhead(s_vertex, s_seenVertex, baseHash, job->scan,
+		job->found += MakeAhead(s_vertex, s_seenVertex, s_partsVertex, baseHash, job->scan,
 			[&](LatteDecompilerOutput_t& out) {
 				LatteShader_DecompileVertexShaderAhead(regs, job->vsProgram, size, &job->fetchShader, &job->inputs, baseHash, &out);
 			},
@@ -289,13 +308,18 @@ bool LatteShaderAhead_TakePixelShader(uint64 baseHash, LatteDecompilerOutput_t& 
 	AheadShader& p = *held.payload;
 	const bool same = p.digest == LattePM4_PixelShaderInputs(LatteGPUState.contextRegister) &&
 		p.auxHash == LatteSHRC_CalcPSAuxHash(p.output.shader, LatteGPUState.contextRegister);
-	if (same)
-		output = p.output;
-	else
-		LatteShader_FreeDecompilerOutput(p.output);
+	if (!same)
+	{
+		// put back, not freed here: its module and parts may be being made
+		// (destroying them would wait); a read frees it once its base hash is
+		// known, which the draw's own decompile makes it
+		s_pixel.Publish(held);
+		return false;
+	}
+	output = p.output;
 	p.output = {};
 	s_pixel.Release(held);
-	return same;
+	return true;
 }
 
 bool LatteShaderAhead_TakeVertexShader(uint64 baseHash, LatteFetchShader* fetchShader, LatteDecompilerOutput_t& output)
@@ -307,16 +331,16 @@ bool LatteShaderAhead_TakeVertexShader(uint64 baseHash, LatteFetchShader* fetchS
 	const bool same = p.digest == LattePM4_VertexShaderInputs(LatteGPUState.contextRegister) &&
 		p.fetchShader == fetchShader->Fingerprint() &&
 		p.auxHash == LatteSHRC_CalcVSAuxHash(p.output.shader, LatteGPUState.contextRegister);
-	if (same)
+	if (!same)
 	{
-		output = p.output;
-		output.shader->compatibleFetchShader = fetchShader;
+		s_vertex.Publish(held); // as a pixel shader's: put back
+		return false;
 	}
-	else
-		LatteShader_FreeDecompilerOutput(p.output);
+	output = p.output;
+	output.shader->compatibleFetchShader = fetchShader;
 	p.output = {};
 	s_vertex.Release(held);
-	return same;
+	return true;
 }
 
 void LatteShaderAhead_NotePixelShader(uint64 baseHash)
@@ -327,4 +351,32 @@ void LatteShaderAhead_NotePixelShader(uint64 baseHash)
 void LatteShaderAhead_NoteVertexShader(uint64 baseHash)
 {
 	s_seenVertex.Insert(baseHash);
+}
+
+void LatteShaderAhead_Poll()
+{
+#ifdef ENABLE_VULKAN
+	struct Kind
+	{
+		Slots& slots;
+		std::atomic<uint64>& parts;
+	};
+	for (Kind k : {Kind{s_pixel, s_partsPixel}, Kind{s_vertex, s_partsVertex}})
+	{
+		if (k.parts.load(std::memory_order_relaxed) == 0)
+			continue;
+		for (uint64 bits = k.parts.exchange(0, std::memory_order_acquire); bits; bits &= bits - 1)
+		{
+			// held while its parts are queued: no draw or read takes it meanwhile
+			auto held = k.slots.TakeAt((size_t)std::countr_zero(bits));
+			if (!held)
+				continue;
+			AheadShader& p = *held.payload;
+			if (p.partsPending && p.output.shader && p.output.shader->shader)
+				PipelineCompiler::PrepareAheadPartsFor(static_cast<RendererShaderVk*>(p.output.shader->shader), p.output.shader, p.robust);
+			p.partsPending = false;
+			k.slots.Publish(held);
+		}
+	}
+#endif
 }

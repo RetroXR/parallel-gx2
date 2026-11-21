@@ -79,6 +79,20 @@ public:
 	}
 	void Release(Held h) { m_slots[h.index].state.store(kEmpty, std::memory_order_release); }
 
+	// The consumer's: what is published in slot index, whatever its key, now
+	// the caller's to Publish again or Release; empty where nothing is
+	Held TakeAt(size_t index)
+	{
+		Slot& s = m_slots[index % N];
+		uint32_t state = kReady;
+		if (!s.state.compare_exchange_strong(state, kBusy, std::memory_order_acquire))
+			return {nullptr, index % N};
+		return {&s.payload, index % N};
+	}
+	// the key of a slot held
+	uint64_t KeyOf(Held h) const { return m_slots[h.index].key; }
+	static constexpr size_t SlotOf(uint64_t key) { return key % N; }
+
 	// Every published payload handed to discard and its slot emptied: with
 	// no producer running (at the end)
 	template<typename DiscardFn>

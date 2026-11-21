@@ -224,6 +224,9 @@ void LatteShader_FreeDecompilerOutput(LatteDecompilerOutput_t& output)
 {
 	if (!output.shader)
 		return;
+	// its module, made ahead, and the parts made from it
+	delete output.shader->shader;
+	output.shader->shader = nullptr;
 	LatteShader_CleanupAfterCompile(output.shader);
 	delete output.shader;
 	output.shader = nullptr;
@@ -341,12 +344,50 @@ void LatteShader_UpdatePSInputs(uint32* contextRegisters)
 	LatteShader_CreatePSInputTable(&_activePSImportTable, contextRegisters);
 }
 
+bool LatteShader_MakeRendererShaderAhead(LatteDecompilerOutput_t& output, uint64 baseHash, uint64 auxHash)
+{
+#ifdef ENABLE_VULKAN
+	LatteDecompilerShader* shader = output.shader;
+	if (shader->hasError || shader->shader || shader->spirv.empty() || g_renderer->GetType() != RendererAPI::Vulkan)
+		return false;
+	// what its parts are made with, as LatteShader_CreateShaderFromDecompilerOutput
+	// sets it again once a draw takes the shader
+	shader->resourceMapping = output.resourceMappingVK;
+	shader->streamoutBufferWriteMask = output.streamoutBufferWriteMask;
+	shader->hasStreamoutBufferWrite = output.streamoutBufferWriteMask.any();
+	const RendererShader::ShaderType type = shader->shaderType == LatteConst::ShaderType::Vertex ? RendererShader::ShaderType::kVertex : RendererShader::ShaderType::kFragment;
+	shader->shader = VulkanRenderer::GetInstance()->shader_createSPIRV(type, baseHash, auxHash, std::move(shader->spirv));
+	return shader->shader != nullptr;
+#else
+	return false;
+#endif
+}
+
+// the filtered vertex shaders (AMD), never made
+static bool LatteShader_IsFiltered(LatteDecompilerShader* shader)
+{
+	return shader->shaderType == LatteConst::ShaderType::Vertex &&
+		(shader->baseHash == 0x15bc7edf9de2ed30 || shader->baseHash == 0x83a697d61a3b9202 ||
+		 shader->baseHash == 0x97bc44a5028381c6 || shader->baseHash == 0x24838b84d15a1da1);
+}
+
 void LatteShader_CreateRendererShader(LatteDecompilerShader* shader, bool compileAsync)
 {
 	if (shader->hasError )
 	{
 		cemuLog_log(LogType::Force, "Unable to compile shader {:016x}", shader->baseHash);
 		return;
+	}
+	// made ahead of its first draw (LatteShaderAhead.cpp), from the SPIR-V: kept,
+	// unless a graphic pack replaces it or it is one filtered out below
+	if (shader->shader)
+	{
+		const GraphicPack2::GP_SHADER_TYPE gpType = shader->shaderType == LatteConst::ShaderType::Vertex ? GraphicPack2::GP_SHADER_TYPE::VERTEX : GraphicPack2::GP_SHADER_TYPE::PIXEL;
+		if (!LatteShader_IsFiltered(shader) &&
+			!GraphicPack2::FindCustomShaderSource(shader->baseHash, shader->auxHash, gpType, g_renderer->GetType() == RendererAPI::Vulkan, g_renderer->GetType() == RendererAPI::Metal))
+			return;
+		delete shader->shader;
+		shader->shader = nullptr;
 	}
 
 	GraphicPack2::GP_SHADER_TYPE gpShaderType;
@@ -372,9 +413,7 @@ void LatteShader_CreateRendererShader(LatteDecompilerShader* shader, bool compil
 	if (customShaderSrc)
 		shader->isCustomShader = true;
 
-	if (shaderType == RendererShader::ShaderType::kVertex &&
-		(shader->baseHash == 0x15bc7edf9de2ed30 || shader->baseHash == 0x83a697d61a3b9202 ||
-		 shader->baseHash == 0x97bc44a5028381c6 || shader->baseHash == 0x24838b84d15a1da1))
+	if (LatteShader_IsFiltered(shader))
 	{
 		cemuLog_logDebug(LogType::Force, "Filtered shader to avoid AMD crash");
 		shader->shader = nullptr;
@@ -1285,6 +1324,8 @@ void LatteSHRC_CleanupShaderStateCache()
 
 void LatteSHRC_UpdateActiveShaders()
 {
+	// parts for shaders made ahead, before the draws that will use them
+	LatteShaderAhead_Poll();
 	// check if geometry shader is used
 	auto gsMode = LatteGPUState.contextNew.VGT_GS_MODE.get_MODE();
 

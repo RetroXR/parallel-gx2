@@ -126,6 +126,11 @@ uint64 LatteSHRC_CalcPSAuxHash(LatteDecompilerShader* pixelShader, uint32* conte
 // the same for a vertex shader, with its fetch shader
 void LatteShader_DecompileVertexShaderAhead(uint32* regs, uint8* program, uint32 programSize, struct LatteFetchShader* fetchShader, LatteShaderPSInputTable* inputs, uint64 baseHash, LatteDecompilerOutput_t* output);
 uint64 LatteSHRC_CalcVSAuxHash(LatteDecompilerShader* vertexShader, uint32* contextRegisters);
+// a vertex or pixel shader decompiled ahead given its module, from the
+// SPIR-V written directly (Vulkan), on any thread; false where it is not
+// made (an error, GLSL, another renderer). LatteShader_CreateRendererShader
+// keeps it, unless a graphic pack replaces the shader.
+bool LatteShader_MakeRendererShaderAhead(LatteDecompilerOutput_t& output, uint64 baseHash, uint64 auxHash);
 // a vertex shader's base hash from its program's, for registers of the
 // caller's (LatteSHRC_UpdateVSBaseHash takes the GPU's)
 uint64 LatteSHRC_VertexBaseHash(uint64 vsHash1, uint64 vsHash2, struct LatteFetchShader* fetchShader, uint64 psImportKey, bool usesGeometryShader, uint32* regs);

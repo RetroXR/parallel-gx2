@@ -1178,6 +1178,28 @@ void PipelineCompiler::PrepareAheadParts(PipelineInfo* pipelineInfo)
 	queue(m_vkPixelShader, pipelineInfo->pixelShader, VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER, keys[1], VK_SHADER_STAGE_FRAGMENT_BIT);
 }
 
+bool PipelineCompiler::PrepareAheadPartsFor(RendererShaderVk* shader, LatteDecompilerShader* decompiled, bool robust)
+{
+	VulkanRenderer* vkRenderer = VulkanRenderer::GetInstance();
+	if (!vkRenderer->m_partTemplates || !shader || !decompiled || shader->m_aheadParts)
+		return false;
+	const bool vertex = decompiled->shaderType == LatteConst::ShaderType::Vertex;
+	const VulkanPipelineLibraryPart part = vertex ? VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION : VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER;
+	const uint64 slots = vkRenderer->m_partTemplates->Take(part, 0);
+	if (!slots)
+		return false;
+	AheadParts* ahead = new AheadParts();
+	ahead->shader = shader;
+	ahead->part = part;
+	ahead->shaderHash = shader->GetBaseHash() * 0x9E3779B97F4A7C15ull + shader->GetAuxHash() + 1;
+	ahead->robust = robust;
+	ahead->slots = slots;
+	VulkanPipelineKey_DescriptorBindings(decompiled->resourceMapping, vertex ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT, ahead->bindings);
+	shader->m_aheadParts = ahead;
+	CompileThreadPool_QueuePrepared(ahead->prepared);
+	return true;
+}
+
 // a compile thread's: the parts linked optimized, handed to the GPU thread
 bool PipelineCompiler::LinkOptimized()
 {

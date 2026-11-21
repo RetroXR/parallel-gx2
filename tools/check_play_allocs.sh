@@ -95,6 +95,8 @@ src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp LatteShaderAhead_TakePixelShader
 src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp LatteShaderAhead_NotePixelShader
 src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp LatteShaderAhead_TakeVertexShader
 src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp LatteShaderAhead_NoteVertexShader
+src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp LatteShaderAhead_Poll
+src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PrepareAheadPartsFor
 src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp MakeAhead
 src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp PixelAhead
 src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp VertexAhead

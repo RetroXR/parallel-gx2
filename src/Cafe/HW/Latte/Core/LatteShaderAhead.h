@@ -23,6 +23,12 @@
 void LatteShaderAhead_Init();
 void LatteShaderAhead_Shutdown();
 
+// GPU thread, before each draw's shaders are looked up: the parts of the
+// shaders made ahead since queued for the compile threads, for every
+// template seen so far (PipelineCompiler::PrepareAheadPartsFor), so that
+// their first pipeline links. One atomic load where there are none.
+void LatteShaderAhead_Poll();
+
 // GPU thread: a command buffer the ring calls, about to be processed
 void LatteShaderAhead_OnCommandBuffer(uint32 physAddr, uint32 words);
 

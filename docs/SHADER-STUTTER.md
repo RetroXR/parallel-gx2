@@ -380,8 +380,23 @@ shader - which the GPU thread may have parsed for other registers before
 leaves out offsets past their low bits); the draw's fetch shader then
 becomes the shader's compatible one. `test/fetch_shader` parses into one
 object again and again on four threads, each the same as made fresh.
-Next: each shader's module and parts made ahead from what is decompiled,
-so that its first draw links.
+
+A shader decompiled ahead has its module made there too, from the SPIR-V
+the decompiler wrote (`LatteShader_MakeRendererShaderAhead`; the shader
+compile threads build it), and its parts for every template seen so far:
+the compile thread marks its slot, and the GPU thread, before each draw's
+shaders are looked up, queues its parts as a shader's first pipeline
+queues them (`LatteShaderAhead_Poll`, `PipelineCompiler::
+PrepareAheadPartsFor` - templates are the GPU thread's to take). A draw
+that takes the shader keeps its module and the parts made or being made,
+so a first pipeline whose render pass and state a template has links what
+is there; a graphic pack's replacement or a filtered shader has it
+destroyed and made as before. One the draw cannot use is put back rather
+than destroyed on the GPU thread, for a read to free on a compile thread.
+A part's robust buffer access is guessed from the shader alone; where the
+other stage asks for it, the part made ahead goes unused. What is left:
+shaders whose first draw comes before the read gets to it, geometry
+shaders, and the render passes and states no pipeline had before.
 
 Next: the draws async skips while the parts are made.
 

@@ -153,6 +153,12 @@ public:
 	void PrepareAheadParts(PipelineInfo* pipelineInfo);
 	// a shader's, as it goes: not made if not started, waited for if under way
 	static void RetireAheadParts(struct AheadParts* ahead);
+	// The GPU thread's, for a shader decompiled and made ahead of its first
+	// draw (LatteShaderAhead.cpp): its part for every template seen so far,
+	// queued for the compile threads as a first pipeline queues its
+	// shaders' (robust: what the shader itself asks for, the other stages
+	// not known yet); false with no template or graphics pipeline libraries
+	static bool PrepareAheadPartsFor(RendererShaderVk* shader, LatteDecompilerShader* decompiled, bool robust);
 	// a compile thread's: the parts made
 	static void BuildAheadParts(struct AheadParts* ahead, bool onCompileThread);
 
