@@ -15,7 +15,9 @@
 // pixel, vertex and geometry shader is decompiled again with noise in every
 // register the digest of its decompile's registers leaves out
 // (LattePM4_*ShaderInputs, by which a shader decompiled ahead of its draw is
-// taken), and must come out the same.
+// taken), and must come out the same; and again from a register file
+// holding those registers alone (LattePM4_CopyShaderInputs, what a task
+// decompiling ahead is handed), which must come out the same too.
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
 #include "Cafe/HW/Latte/Core/LattePM4Scan.h"
@@ -1381,6 +1383,20 @@ static bool SameWithNoise(const std::vector<bool>& in, std::mt19937& rng, const 
 	for (uint32 r = 0; r < LATTE_MAX_REGISTER; r++)
 		if (!in[r])
 			s_regs[r] ^= rng() | 1u;
+	const Decompiled after = redo();
+	std::memcpy(s_regs, saved, sizeof(saved));
+	return SameOutput(before, after);
+}
+
+// redo() decompiled again from a register file of only what kind's digest
+// takes, copied (LattePM4_CopyShaderInputs), every other register zero
+template<typename Redo>
+static bool SameFromCopy(LattePM4Inputs kind, const Decompiled& before, Redo redo)
+{
+	static uint32 saved[LATTE_MAX_REGISTER];
+	std::memcpy(saved, s_regs, sizeof(saved));
+	std::memset(s_regs, 0, sizeof(saved));
+	LattePM4_CopyShaderInputs(kind, s_regs, saved);
 	const Decompiled after = redo();
 	std::memcpy(s_regs, saved, sizeof(saved));
 	return SameOutput(before, after);
@@ -5150,6 +5166,11 @@ int main(int argc, char** argv)
 				std::printf("FAIL: program %d decompiled otherwise with registers its digest leaves out changed\n", i);
 				s_failures++;
 			}
+			if (!SameFromCopy(LattePM4Inputs::Pixel, viaSpirv, [&] { return Decompile(words, true, strictMul, rte); }))
+			{
+				std::printf("FAIL: program %d decompiled otherwise from its digest's registers alone\n", i);
+				s_failures++;
+			}
 		}
 		if (!viaSpirv.declined && viaGlsl.ok)
 		{
@@ -5412,6 +5433,13 @@ int main(int argc, char** argv)
 				if (!SameWithNoise(k.gsCase ? readGeometry : readVertex, noise, viaSpirv, [&] { return DecompileVertex(words, true, k, false); }))
 				{
 					std::printf("FAIL: %s program %d decompiled otherwise with registers its digest leaves out changed\n",
+						k.gsCase ? "geometry" : "vertex", i);
+					s_failures++;
+				}
+				if (!SameFromCopy(k.gsCase ? LattePM4Inputs::Geometry : LattePM4Inputs::Vertex, viaSpirv,
+					[&] { return DecompileVertex(words, true, k, false); }))
+				{
+					std::printf("FAIL: %s program %d decompiled otherwise from its digest's registers alone\n",
 						k.gsCase ? "geometry" : "vertex", i);
 					s_failures++;
 				}

@@ -416,7 +416,17 @@ queue of buffers ahead rather than a few draws. A buffer a read got
 through is not read again as the GPU thread starts it, nor one a read
 under way may still get to; one a read stopped short of is
 (`LattePM4ReadTo`). `test/shader_ahead` checks the walk of the ring, the
-registers carried through buffers and the starts. What is left: shaders
+registers carried through buffers and the starts.
+
+The shaders a read finds are decompiled side by side, not one after the
+other on the thread reading: each is handed to a compile thread of its
+own, with a copy of only the registers its decompile and hashes read
+(`LattePM4_CopyShaderInputs`, the same ranges as its digest) and of its
+programs, from eight tasks made at the start; the read decompiles one
+itself where none is free. A scene's worth of new shaders is then ready
+in the time of the longest, not their sum. `test/decompiler` decompiles
+every random shader again from a register file holding those registers
+alone, which must come out the same. What is left: shaders
 whose first draw comes before any read reaches it (an idle GPU thread
 starts each buffer as it is submitted), and the render passes and states
 no pipeline had before.

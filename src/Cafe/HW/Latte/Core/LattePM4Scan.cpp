@@ -240,9 +240,10 @@ namespace
 	}
 }
 
-uint64 LattePM4_PixelShaderInputs(const uint32* regs)
+namespace
 {
-	static constexpr RegRange kRead[] = {
+	// the registers each kind of shader's decompile and its hashes read
+	constexpr RegRange kPixelInputs[] = {
 		{mmCB_SHADER_MASK, 1},
 		{Latte::REGADDR::SX_ALPHA_TEST_CONTROL, 1},
 		{mmSPI_VS_OUT_ID_0, 10},
@@ -257,12 +258,7 @@ uint64 LattePM4_PixelShaderInputs(const uint32* regs)
 		{Latte::REGADDR::VGT_PRIMITIVE_TYPE, 1},
 		{Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS, Latte::GPU_LIMITS::NUM_TEXTURES_PER_STAGE * 7},
 	};
-	return DigestOf(regs, kRead);
-}
-
-uint64 LattePM4_VertexShaderInputs(const uint32* regs)
-{
-	static constexpr RegRange kRead[] = {
+	constexpr RegRange kVertexInputs[] = {
 		{mmSQ_VTX_SEMANTIC_0, 32},
 		{mmCB_SHADER_MASK, 1},
 		{Latte::REGADDR::SX_ALPHA_TEST_CONTROL, 1},
@@ -285,12 +281,7 @@ uint64 LattePM4_VertexShaderInputs(const uint32* regs)
 		{Latte::REGADDR::VGT_PRIMITIVE_TYPE, 1},
 		{Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS, Latte::GPU_LIMITS::NUM_TEXTURES_PER_STAGE * 7},
 	};
-	return DigestOf(regs, kRead);
-}
-
-uint64 LattePM4_GeometryShaderInputs(const uint32* regs)
-{
-	static constexpr RegRange kRead[] = {
+	constexpr RegRange kGeometryInputs[] = {
 		{mmCB_SHADER_MASK, 1},
 		{Latte::REGADDR::SX_ALPHA_TEST_CONTROL, 1},
 		{mmSPI_VS_OUT_ID_0, 10},
@@ -311,5 +302,36 @@ uint64 LattePM4_GeometryShaderInputs(const uint32* regs)
 		{Latte::REGADDR::VGT_PRIMITIVE_TYPE, 1},
 		{Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_GS, Latte::GPU_LIMITS::NUM_TEXTURES_PER_STAGE * 7},
 	};
-	return DigestOf(regs, kRead);
+
+	template<size_t N>
+	void CopyOf(uint32* to, const uint32* from, const RegRange (&ranges)[N])
+	{
+		for (const RegRange& r : ranges)
+			memcpy(to + r.start, from + r.start, r.count * sizeof(uint32));
+	}
+}
+
+uint64 LattePM4_PixelShaderInputs(const uint32* regs)
+{
+	return DigestOf(regs, kPixelInputs);
+}
+
+uint64 LattePM4_VertexShaderInputs(const uint32* regs)
+{
+	return DigestOf(regs, kVertexInputs);
+}
+
+uint64 LattePM4_GeometryShaderInputs(const uint32* regs)
+{
+	return DigestOf(regs, kGeometryInputs);
+}
+
+void LattePM4_CopyShaderInputs(LattePM4Inputs kind, uint32* to, const uint32* from)
+{
+	if (kind == LattePM4Inputs::Pixel)
+		CopyOf(to, from, kPixelInputs);
+	else if (kind == LattePM4Inputs::Vertex)
+		CopyOf(to, from, kVertexInputs);
+	else
+		CopyOf(to, from, kGeometryInputs);
 }

@@ -8,8 +8,10 @@
 // and on into the buffers the guest has submitted to the ring since, the
 // registers carried from one to the next, where the GPU thread is behind;
 // a buffer read so is not read again when the GPU thread starts it, unless
-// the read stopped before it. At each draw whose shaders the GPU thread has never
-// seen, it decompiles them from the copy as they are at that draw - a
+// the read stopped before it. At each draw whose shaders the GPU thread
+// has never seen, it hands each to a compile thread of its own with a copy
+// of the registers its decompile reads (or decompiles it there, with none
+// free), so that a read's new shaders are decompiled side by side - a
 // vertex shader with its fetch shader parsed there. The draw, when the GPU
 // thread gets to it, takes a result only where the shader's base and aux
 // hashes and every register its decompile reads are what its own

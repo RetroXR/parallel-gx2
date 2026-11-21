@@ -19,7 +19,9 @@
 //    as one value (LattePM4_PixelShaderInputs, LattePM4_VertexShaderInputs,
 //    LattePM4_GeometryShaderInputs): moved by each of them, not by the
 //    vertex buffers, constants or the other stages' textures (that none
-//    else moves a decompile: test/decompiler);
+//    else moves a decompile: test/decompiler); and those registers copied
+//    into a file of nothing else (LattePM4_CopyShaderInputs, a decompile
+//    task's) keep the value;
 //  - the keys of a geometry shader's draw (LatteShaderKeys.h): its pixel
 //    shader's taking the draw's geometry shader, its geometry shader's the
 //    ring of the draw's vertex shader, whatever was active before; one a
@@ -436,6 +438,29 @@ static void GeometryShaderInputs()
 	CHECK(still == (int)(sizeof(notRead) / sizeof(notRead[0])));
 }
 
+static void CopiedInputs()
+{
+	std::mt19937 rng(139);
+	std::vector<uint32> from(LATTE_MAX_REGISTER), to(LATTE_MAX_REGISTER);
+	for (uint32& r : from)
+		r = (uint32)rng();
+	const struct { LattePM4Inputs kind; uint64 (*digest)(const uint32*); } kinds[] = {
+		{LattePM4Inputs::Pixel, LattePM4_PixelShaderInputs},
+		{LattePM4Inputs::Vertex, LattePM4_VertexShaderInputs},
+		{LattePM4Inputs::Geometry, LattePM4_GeometryShaderInputs},
+	};
+	for (const auto& k : kinds)
+	{
+		std::fill(to.begin(), to.end(), 0u);
+		LattePM4_CopyShaderInputs(k.kind, to.data(), from.data());
+		CHECK(k.digest(to.data()) == k.digest(from.data()));
+		// nothing else copied: the constants and the other stages' textures
+		CHECK(to[LATTE_REG_BASE_ALU_CONST] == 0 && to[mmSQ_VTX_BASE_VTX_LOC] == 0);
+		CHECK(k.kind == LattePM4Inputs::Pixel || to[Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS] == 0);
+		CHECK(k.kind != LattePM4Inputs::Pixel || to[Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS] == 0);
+	}
+}
+
 // --- the keys of a geometry shader's draw ------------------------------------
 
 struct KeyedShader
@@ -672,6 +697,7 @@ int main()
 	PixelShaderInputs();
 	VertexShaderInputs();
 	GeometryShaderInputs();
+	CopiedInputs();
 	Keys();
 	SlotsOneThread();
 	SlotsRacing();

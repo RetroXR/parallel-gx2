@@ -85,3 +85,8 @@ uint64 LattePM4_PixelShaderInputs(const uint32* regs);
 uint64 LattePM4_VertexShaderInputs(const uint32* regs);
 // and for a geometry shader's, its copy shader's registers included
 uint64 LattePM4_GeometryShaderInputs(const uint32* regs);
+
+// Those registers copied, from one register file into another: a decompile
+// from the copy is the one from the whole file (test/decompiler)
+enum class LattePM4Inputs { Pixel, Vertex, Geometry };
+void LattePM4_CopyShaderInputs(LattePM4Inputs kind, uint32* to, const uint32* from);
