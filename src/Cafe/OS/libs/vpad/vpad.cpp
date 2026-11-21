@@ -53,8 +53,8 @@ extern bool isLaunchTypeELF;
 
 VPADDir g_vpadGyroDirOverwrite[VPAD_MAX_CONTROLLERS] =
 {
-		{{1.0f,0.0f,0.0f}, {0.0f,1.0f,0.0f}, {0.0f, 0.0f, 0.1f}},
-		{{1.0f,0.0f,0.0f}, {0.0f,1.0f,0.0f}, {0.0f, 0.0f, 0.1f}}
+		{{1.0f,0.0f,0.0f}, {0.0f,1.0f,0.0f}, {0.0f, 0.0f, 1.0f}},
+		{{1.0f,0.0f,0.0f}, {0.0f,1.0f,0.0f}, {0.0f, 0.0f, 1.0f}}
 };
 uint32 g_vpadGyroZeroDriftMode[VPAD_MAX_CONTROLLERS] = { VPAD_GYRO_ZERODRIFT_STANDARD, VPAD_GYRO_ZERODRIFT_STANDARD };
 
@@ -64,6 +64,18 @@ struct VPACGyroDirRevise_t
 	VPADDir vpadGyroDirReviseBase;
 	float weight;
 } g_vpadGyroDirRevise[VPAD_MAX_CONTROLLERS] = {};
+
+// VPADSetGyroDirection: the title sets the GamePad's attitude to D. A
+// re-reference of the WORLD frame: rows of dir are the pad's axes in the
+// reference frame, so after a set at attitude A0, dir(t) = A(t) * A0^T * D --
+// D at the moment of the set, then following the pad's turns.
+struct VPADDirRef_t
+{
+	bool set;
+	bool haveLast;
+	float m[9];     // A0^T * D, applied on the right
+	float last[9];  // the attitude last reported, before the correction
+} g_vpadDirRef[VPAD_MAX_CONTROLLERS];
 
 struct VPADAccParam_t
 { // TODO P: use
@@ -338,6 +350,22 @@ namespace vpad
 				status->gyroOrientation.z = gyroOrientation[2];
 				float attitude[9];
 				motion.getVPADAttitudeMatrix(attitude);
+				if (channel < VPAD_MAX_CONTROLLERS)
+				{
+					VPADDirRef_t& ref = g_vpadDirRef[channel];
+					std::copy(attitude, attitude + 9, ref.last);
+					ref.haveLast = true;
+					if (ref.set)
+					{
+						float out[9];
+						for (int i = 0; i < 3; i++)
+							for (int j = 0; j < 3; j++)
+								out[i * 3 + j] = attitude[i * 3 + 0] * ref.m[0 * 3 + j]
+									+ attitude[i * 3 + 1] * ref.m[1 * 3 + j]
+									+ attitude[i * 3 + 2] * ref.m[2 * 3 + j];
+						std::copy(out, out + 9, attitude);
+					}
+				}
 				status->dir.x.x = attitude[0];
 				status->dir.x.y = attitude[1];
 				status->dir.x.z = attitude[2];
@@ -1101,6 +1129,23 @@ void vpadExport_VPADSetGyroDirection(PPCInterpreter_t* hCPU)
 	if (channel < VPAD_MAX_CONTROLLERS)
 	{
 		g_vpadGyroDirOverwrite[channel] = *dir;
+		// Re-reference what VPADRead reports (g_vpadDirRef above): M = A0^T * D.
+		VPADDirRef_t& ref = g_vpadDirRef[channel];
+		const float d[9] = {
+			(float)dir->x.x, (float)dir->x.y, (float)dir->x.z,
+			(float)dir->y.x, (float)dir->y.y, (float)dir->y.z,
+			(float)dir->z.x, (float)dir->z.y, (float)dir->z.z};
+		float a0[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+		if (ref.haveLast)
+			std::copy(ref.last, ref.last + 9, a0);
+		for (int i = 0; i < 3; i++)
+			for (int j = 0; j < 3; j++)
+				ref.m[i * 3 + j] = a0[0 * 3 + i] * d[0 * 3 + j] + a0[1 * 3 + i] * d[1 * 3 + j] + a0[2 * 3 + i] * d[2 * 3 + j];
+		ref.set = true;
+		static uint32 s_sets = 0;
+		if (s_sets++ < 8 || s_sets % 300 == 0)
+			cemuLog_log(LogType::Force, "libretro: GamePad: the game set its attitude to x<{:.2f},{:.2f},{:.2f}> y<{:.2f},{:.2f},{:.2f}> z<{:.2f},{:.2f},{:.2f}> ({} sets{})",
+				d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[8], s_sets, ref.haveLast ? "" : ", before any motion");
 	}
 	else
 	{
@@ -1250,6 +1295,10 @@ namespace vpad
 
 		void RPLMapped() override
 		{
+			// A title's VPADSetGyroDirection is its own: the core stays loaded
+			// between titles, so the last one's must not turn this one's GamePad.
+			for (VPADDirRef_t& ref : g_vpadDirRef)
+				ref = {};
 			cafeExportRegister("vpad", VPADSetBtnRepeat, LogType::InputAPI);
 			cafeExportRegister("vpad", VPADSetSamplingCallback, LogType::InputAPI);
 			cafeExportRegister("vpad", VPADRead, LogType::InputAPI);
