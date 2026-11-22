@@ -20,6 +20,7 @@ namespace
 	constexpr std::string_view kButtonNames[] = {
 		"B", "Y", "Select", "Start", "Up", "Down", "Left", "Right",
 		"A", "X", "L", "R", "L2", "R2", "L3", "R3",
+		"Home", // RetroXR's id 16 (RETROXR_JOYPAD_ID_HOME, CemuLibretro.cpp)
 	};
 	constexpr uint32 kButtonCount = (uint32)std::size(kButtonNames);
 }

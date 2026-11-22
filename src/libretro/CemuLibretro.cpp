@@ -91,6 +91,7 @@
 #include "util/helpers/SeqlockValue.h"
 #include "util/helpers/mailbox.h"
 #include "ControllerAudioInterface.h"
+#include "JoypadIdCount.h"
 
 #include "Cafe/Filesystem/FST/FST.h"
 #include "Cafe/Filesystem/FST/KeyCache.h"
@@ -1432,9 +1433,20 @@ const int g_libretro_cursor_rows = (int)(sizeof(g_libretro_cursor_shape) / sizeo
 // Raw per-port RetroPad state. The GamePad above is built from port 0 only;
 // this is what LibretroController hands to Cemu's InputManager, which is what
 // drives the Wii Remotes.
+// HOME, past the sixteen RetroPad ids: joypad id 16, RetroXR's numbering
+// (JoypadIdCount.h). Asked for ONLY when the frontend said it answers that many
+// ids: RetroArch reads joypad id 16 as its own left-stick-right bind, which
+// would press HOME with the stick. Without the call a GamePad or Pro Controller
+// has no HOME; a remote's HOME is on L either way.
+constexpr uint32_t RETROXR_JOYPAD_ID_HOME = RETRO_DEVICE_ID_JOYPAD_RETROXR_HOME;
+constexpr uint32_t kLibretroJoypadButtons = 17;
+// How many joypad ids this frontend answers: 16 unless it says more
+// (RETRO_ENVIRONMENT_GET_JOYPAD_ID_COUNT, asked at load).
+static uint32_t s_joypad_ids = 16;
+
 struct LibretroPortState
 {
-	int16_t buttons[16]{};
+	int16_t buttons[kLibretroJoypadButtons]{};
 	int16_t left_x = 0, left_y = 0;
 	int16_t right_x = 0, right_y = 0;
 };
@@ -4854,10 +4866,10 @@ static void libretro_map_nunchuk(const EmulatedControllerPtr& remote,
 // SNES pad, and the Pro Controller has that same face layout - A east, B south,
 // X north, Y west - so matching by name and matching by position agree.
 //
-// Home is left unmapped. The remote can afford to spend L on it; a Pro
-// Controller uses all four shoulders and both stick clicks, and there is no
-// button left that is bound by default in the frontend. Home only asks a title
-// to open its controller screen, so it is the one to go without.
+// Home has no RetroPad id left: a Pro Controller uses all four shoulders and
+// both stick clicks. It is read from RetroXR's id 16 (RETROXR_JOYPAD_ID_HOME),
+// and only from a frontend that says it answers that id (JoypadIdCount.h); in
+// RetroArch it still goes without.
 //
 // The sticks come through as axis mappings. libretro_get_joypad_analog has
 // already flipped Y, so on the way in positive is up, which is why Up takes the
@@ -4875,6 +4887,8 @@ static void libretro_map_pro(const EmulatedControllerPtr& pro,
 
 		{P::kButtonId_L, kButton0 + RETRO_DEVICE_ID_JOYPAD_L},
 		{P::kButtonId_R, kButton0 + RETRO_DEVICE_ID_JOYPAD_R},
+		// HOME on RetroXR's id 16, never read unless the frontend answers it (above).
+		{P::kButtonId_Home, kButton0 + RETROXR_JOYPAD_ID_HOME},
 		{P::kButtonId_ZL, kButton0 + RETRO_DEVICE_ID_JOYPAD_L2},
 		{P::kButtonId_ZR, kButton0 + RETRO_DEVICE_ID_JOYPAD_R2},
 
@@ -6284,6 +6298,14 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game)
 
 	libretro_reset_install_switches();
 
+	// Joypad ids past the RetroPad's sixteen, only where the frontend means them
+	{
+		unsigned count = 0;
+		s_joypad_ids = environ_cb(RETRO_ENVIRONMENT_GET_JOYPAD_ID_COUNT, &count) && count > 16 ? count : 16;
+		libretro_log(RETRO_LOG_INFO, "input: %u joypad ids%s\n", s_joypad_ids,
+			s_joypad_ids > RETROXR_JOYPAD_ID_HOME ? " (HOME on the GamePad and Pro Controller)" : ", no HOME on the GamePad or Pro Controller");
+	}
+
 	// Keys for the software keyboard, and for the name entry of Rename Active Account
 	{
 		struct retro_keyboard_callback keyboard{libretro_keyboard_event};
@@ -7217,8 +7239,8 @@ static void libretro_poll_input()
 	for (uint32_t port = 0; port < s_polled_ports; ++port)
 	{
 		auto& pad = s_port_state[port];
-		for (uint32_t id = 0; id < 16; ++id)
-			pad.buttons[id] = input_state_cb(port, RETRO_DEVICE_JOYPAD, 0, id);
+		for (uint32_t id = 0; id < kLibretroJoypadButtons; ++id)
+			pad.buttons[id] = id < s_joypad_ids ? input_state_cb(port, RETRO_DEVICE_JOYPAD, 0, id) : 0;
 
 		pad.left_x = input_state_cb(port, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_X);
 		pad.left_y = input_state_cb(port, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_Y);
@@ -7264,6 +7286,17 @@ static void libretro_poll_input()
 
 	state.buttons[VPADController::kButtonId_StickL] = pad0.buttons[RETRO_DEVICE_ID_JOYPAD_L3];
 	state.buttons[VPADController::kButtonId_StickR] = pad0.buttons[RETRO_DEVICE_ID_JOYPAD_R3];
+	// HOME (VPAD_HOME), from RetroXR's id 16.
+	state.buttons[VPADController::kButtonId_Home] = pad0.buttons[RETROXR_JOYPAD_ID_HOME];
+	{
+		static bool s_home_was = false;
+		const bool home = pad0.buttons[RETROXR_JOYPAD_ID_HOME] != 0;
+		if (home != s_home_was)
+		{
+			s_home_was = home;
+			libretro_log(RETRO_LOG_WARN, "[libretro] GamePad HOME %s\n", home ? "pressed" : "released");
+		}
+	}
 
 	// Analog sticks
 	state.left_x = pad0.left_x;
@@ -7356,7 +7389,7 @@ bool libretro_get_joypad_button(uint32_t port, uint32_t retro_id)
 {
 	if (s_layout_combo_held_this_frame)
 		return false;
-	if (port >= kLibretroMaxPorts || retro_id >= 16)
+	if (port >= kLibretroMaxPorts || retro_id >= kLibretroJoypadButtons)
 		return false;
 	return s_port_state[port].buttons[retro_id] != 0;
 }

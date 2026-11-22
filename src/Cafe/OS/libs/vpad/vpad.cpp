@@ -298,6 +298,8 @@ namespace vpad
 			if (libretro_get_button_state(14)) status->hold |= LR_VPAD_RIGHT;
 			if (libretro_get_button_state(15)) status->hold |= LR_VPAD_STICK_L;
 			if (libretro_get_button_state(16)) status->hold |= LR_VPAD_STICK_R;
+			// HOME (0x0002), by name: it sits past the stick directions, Mic and Screen.
+			if (libretro_get_button_state(VPADController::kButtonId_Home)) status->hold |= 0x0002;
 
 			// Touchscreen. As VPADController::update_touch: x/y keep the last
 			// touched position after release, which NGDK games rely on.
