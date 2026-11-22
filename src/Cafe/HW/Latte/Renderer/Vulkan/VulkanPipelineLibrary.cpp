@@ -371,6 +371,13 @@ bool VulkanPipelineLibrary_LinkOptimized(bool drawWaits, bool* queueOptimized)
 	return !drawWaits;
 }
 
+VulkanPipelineTry VulkanPipeline_Try(bool forceCompile, bool cacheControl)
+{
+	if (forceCompile)
+		return VulkanPipelineTry::Compile;
+	return cacheControl ? VulkanPipelineTry::FromCache : VulkanPipelineTry::Made;
+}
+
 // --- the cache ---------------------------------------------------------------
 
 static constexpr uint64 kFailed = ~0ull;

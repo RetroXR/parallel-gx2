@@ -1476,6 +1476,18 @@ test-compile-lanes:
   script:
     - ./tools/check_compile_lanes.sh
 
+# A try at a pipeline never compiles: upstream forced every compile on
+# devices without VK_EXT_pipeline_creation_cache_control, and each new
+# pipeline compiled on the draw path there.
+test-compile-try:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+  script:
+    - ./tools/check_compile_try.sh
+
 # No path make made absolute written into a file the compiler reads: MinGW's
 # g++ cannot open MSYS2's /c/... paths (the precompiled header's stub).
 test-build-paths:

@@ -23,12 +23,18 @@
 //    each lane's items in order, every earlier lane's before a later one's,
 //    whatever order they were pushed in, the wakes passed over, and a
 //    thread waiting on the last lane woken by a push to the middle one;
+//  - buffers given back and taken again (RecycledBuffers.h: the decompiler's
+//    SPIR-V and source): a taker that knows the room it needs gets one with
+//    that room wherever it waits among those given back, nothing allocated
+//    - where it took the first, smaller one and grew it; with none large
+//    enough, one of them, the others kept;
 //  - built together (BuildTogether, a waiting draw's missing pipeline parts):
 //    each built once, the queued ones on the compile threads while the
 //    others are built here when threads are free - the builds overlapping -
 //    and here, one after the other, when none is.
 #include "Cafe/HW/Latte/Renderer/Vulkan/PreparedPipeline.h"
 #include "util/helpers/MpmcQueue.h"
+#include "util/helpers/RecycledBuffers.h"
 
 #include <atomic>
 #include <chrono>
@@ -417,6 +423,72 @@ static void Lanes()
 	CHECK(got == 30);
 }
 
+static void GivenBack()
+{
+	RecycledVectors<uint32_t> buffers;
+	for (size_t room : {16, 256, 4096})
+	{
+		std::vector<uint32_t> b;
+		b.reserve(room);
+		b.push_back(1);
+		buffers.Give(b);
+		CHECK(b.empty() && b.capacity() == 0);
+	}
+	CHECK(buffers.Count() == 3);
+	const uint64_t before = s_allocs.load();
+	// the one with room, behind two smaller ones; the module written into it
+	std::vector<uint32_t> big;
+	buffers.Take(big, 1000);
+	CHECK(big.capacity() >= 1000 && big.empty() && buffers.Count() == 2);
+	big.assign(1000, 7);
+	// the first with room, past the one too small
+	std::vector<uint32_t> mid;
+	buffers.Take(mid, 256); // its room exactly
+	CHECK(mid.capacity() >= 256 && mid.capacity() < 1000 && buffers.Count() == 1);
+	CHECK(s_allocs.load() == before); // nothing allocated taking them
+	// none large enough: one of them all the same, as before
+	std::vector<uint32_t> small;
+	buffers.Take(small, 100000);
+	CHECK(small.capacity() >= 16 && small.capacity() < 100 && buffers.Count() == 0);
+	// nothing given back: out as it was
+	std::vector<uint32_t> none;
+	buffers.Take(none, 10);
+	CHECK(none.capacity() == 0);
+	// one with room of its own kept
+	buffers.Give(mid);
+	buffers.Take(big, 1);
+	CHECK(big.size() == 1000 && buffers.Count() == 1);
+	// without a size: the first given back
+	buffers.Give(small);
+	std::vector<uint32_t> first;
+	buffers.Take(first);
+	CHECK(first.capacity() >= 100 && first.capacity() < 1000);
+	// room exactly what is needed is room enough, the smaller ones behind it
+	// left
+	RecycledVectors<uint32_t> exact;
+	for (size_t room : {512, 16, 8})
+	{
+		std::vector<uint32_t> b;
+		b.reserve(room);
+		exact.Give(b);
+	}
+	std::vector<uint32_t> fits;
+	exact.Take(fits, fits.capacity() + 512);
+	CHECK(fits.capacity() >= 512 && exact.Count() == 2);
+	// strings too (a shader's source), past their own small room
+	RecycledStrings sources;
+	for (size_t room : {64, 8192})
+	{
+		std::string str;
+		str.reserve(room);
+		str = "x";
+		sources.Give(str);
+	}
+	std::string src;
+	sources.Take(src, 5000);
+	CHECK(src.capacity() >= 5000 && sources.Count() == 1);
+}
+
 int main()
 {
 	MadeAhead();
@@ -427,6 +499,7 @@ int main()
 	Together();
 	Urgent();
 	Lanes();
+	GivenBack();
 	if (s_failures)
 	{
 		std::printf("%d failed\n", s_failures);

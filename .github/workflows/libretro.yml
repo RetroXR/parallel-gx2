@@ -101,6 +101,12 @@ jobs:
         # waited behind each new shader's ahead parts
         run: ./tools/check_compile_lanes.sh
 
+      - name: "A try at a pipeline never compiles"
+        # upstream forced every compile on devices without
+        # VK_EXT_pipeline_creation_cache_control: each new pipeline compiled
+        # on the draw path there
+        run: ./tools/check_compile_try.sh
+
       - name: "No absolute paths written for the compiler"
         # MSYS2's make makes /c/... paths, which MinGW's g++ cannot open
         # inside a file (the precompiled header's stub broke the Windows build)

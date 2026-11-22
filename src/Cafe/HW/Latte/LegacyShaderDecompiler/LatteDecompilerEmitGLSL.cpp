@@ -4188,6 +4188,6 @@ void LatteDecompiler_emitGLSLShader(LatteDecompilerShaderContext* shaderContext,
 	// end of shader main
 	src->add("}" _CRLF);
 	// into a source a compiled shader gave back, its room kept
-	LatteDecompiler_SourceBuffers().Take(shader->shaderSource);
+	LatteDecompiler_SourceBuffers().Take(shader->shaderSource, src->getLen());
 	shader->shaderSource.assign(src->c_str(), src->getLen());
 }

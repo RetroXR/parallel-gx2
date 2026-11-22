@@ -22,7 +22,7 @@ LRC_SRCS := $(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c
 C_SRCS := $(SRC)/util/helpers/obj_pool.c $(SRC)/util/helpers/lf_ring.c
 
 prepared_pipeline_test$(EXE): prepared_pipeline_test.cpp $(LRC_SRCS) $(C_SRCS) $(SRC)/Cafe/HW/Latte/Renderer/Vulkan/PreparedPipeline.h \
-	$(SRC)/util/helpers/ClaimTicket.h $(SRC)/util/helpers/MpmcQueue.h $(SRC)/util/helpers/EventWake.h \
+	$(SRC)/util/helpers/ClaimTicket.h $(SRC)/util/helpers/MpmcQueue.h $(SRC)/util/helpers/RecycledBuffers.h $(SRC)/util/helpers/EventWake.h \
 	$(SRC)/util/helpers/PoolNew.h $(SRC)/util/helpers/obj_pool.h
 	for f in $(LRC_SRCS); do $(CC) $(FLAGS) -std=gnu99 -c $$f -o $$(basename $$f .c).o || exit 1; done
 	for f in $(C_SRCS); do $(CC) $(FLAGS) $(C89_FLAGS) -c $$f -o $$(basename $$f .c).o || exit 1; done

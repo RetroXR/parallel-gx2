@@ -64,6 +64,22 @@ VkResult VulkanPipelineLibrary_Link(VkDevice device, VkPipelineCache cache, cons
 // in (queueOptimized); optimized at once when nothing waits (made ahead)
 bool VulkanPipelineLibrary_LinkOptimized(bool drawWaits, bool* queueOptimized);
 
+// What a pipeline's compile (PipelineCompiler::Compile) does: compile what
+// is missing (forced: a draw that may not be skipped, or a compile thread);
+// take only what is made or in the driver's cache (a try, asking the cache
+// with VK_EXT_pipeline_creation_cache_control); or take only what is made -
+// parts already made, linked, and no pipeline otherwise - where the device
+// cannot ask its cache without compiling, which would compile on the draw
+// path: the draw is then skipped until a compile thread lands the pipeline,
+// as for one the cache does not have
+enum class VulkanPipelineTry
+{
+	Compile,
+	FromCache,
+	Made,
+};
+VulkanPipelineTry VulkanPipeline_Try(bool forceCompile, bool cacheControl);
+
 // The parts made so far, found by key from any thread, without a lock: an
 // insert-only table per part. A thread claims a key before making its part
 // and publishes it when made; the others find it pending until then. A

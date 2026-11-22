@@ -26,7 +26,9 @@
 //  - a part another thread claimed is waited for (WaitFor), never made a
 //    second time, and a failed one is found missing; a pipeline a draw waits
 //    for is linked fast with the optimized link queued, one nothing waits
-//    for optimized at once;
+//    for optimized at once; a try on a device without
+//    VK_EXT_pipeline_creation_cache_control takes only what is made rather
+//    than compiling (VulkanPipeline_Try);
 //  - parts made ahead (docs/SHADER-STUTTER.md M2): a shader part's template
 //    taken from a pipeline makes, with another shader, the very key that
 //    shader's pipeline with the same state looks its part up by, for random
@@ -256,6 +258,13 @@ static void TestWaitFor()
 	bool queue = true;
 	CHECK(!VulkanPipelineLibrary_LinkOptimized(true, &queue) && queue);
 	CHECK(VulkanPipelineLibrary_LinkOptimized(false, &queue) && !queue);
+	// a compile forced compiles; a try asks the driver's cache only where it
+	// can without compiling, and otherwise takes only what is made - never a
+	// compile on the draw path for a device without cache control
+	CHECK(VulkanPipeline_Try(true, true) == VulkanPipelineTry::Compile);
+	CHECK(VulkanPipeline_Try(true, false) == VulkanPipelineTry::Compile);
+	CHECK(VulkanPipeline_Try(false, true) == VulkanPipelineTry::FromCache);
+	CHECK(VulkanPipeline_Try(false, false) == VulkanPipelineTry::Made);
 
 	// one thread claims keys and makes their parts while eight others,
 	// finding them pending, wait for them

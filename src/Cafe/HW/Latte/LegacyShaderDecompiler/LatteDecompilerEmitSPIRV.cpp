@@ -4957,7 +4957,7 @@ bool LatteDecompiler_emitSPIRVShader(LatteDecompilerShaderContext* shaderContext
 	const uint32_t* words = spv_writer_finish(w, &count);
 	if (!words)
 		return decline("out of memory");
-	LatteDecompiler_SPIRVBuffers().Take(shader->spirv);
+	LatteDecompiler_SPIRVBuffers().Take(shader->spirv, count);
 	shader->spirv.assign(words, words + count);
 	shaderContext->output->uniformOffsetsVK = offsetsVK;
 	shaderContext->output->uniformOffsetsGL = offsetsGL;

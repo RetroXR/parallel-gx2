@@ -112,8 +112,14 @@ Where the core still does, as of `204bbde5`:
   draw that may be skipped is, rather than wait for its compile, and one
   that may not compiles or waits, rather than be skipped. Neither is a
   fallback; there is none to draw with yet.
-- **No `VK_EXT_pipeline_creation_cache_control`**: every compile is forced
-  synchronous (`PipelineCompiler::Compile`).
+- **No `VK_EXT_pipeline_creation_cache_control`**: no longer. Every
+  compile was forced synchronous there (`PipelineCompiler::Compile`), so
+  the async try of a draw that may be skipped compiled each new pipeline
+  on the GPU thread. A try now takes only what is made - parts already
+  made, linked, and otherwise nothing - and the draw is skipped until a
+  compile thread lands the pipeline, as on a device that has the extension
+  for one its cache does not hold (`VulkanPipeline_Try`; `test/pipeline_key`,
+  and `tools/check_compile_try.sh` against upstream's forcing coming back).
 - **Rect emulation geometry shaders** (RECTS where the device has no
   `VK_NV_fill_rectangle`): no longer. Each pipeline compiled its own on the
   thread making it, the GPU thread included, before its draw. One is now

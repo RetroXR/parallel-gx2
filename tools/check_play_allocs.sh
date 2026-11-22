@@ -2771,6 +2771,7 @@ src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.cpp VulkanPipelineKey_SetInp
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineLibrary.cpp VulkanPipelineLibrary_DynamicStatePart
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineLibrary.cpp StageInPart
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineLibrary.cpp VulkanPipelineLibrary_LinkOptimized
+src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineLibrary.cpp VulkanPipeline_Try
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineLibrary.cpp VulkanPipelineLibraryCache::FindSlot
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineLibrary.cpp VulkanPipelineLibraryCache::Find
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineLibrary.cpp VulkanPipelineLibraryCache::WaitFor

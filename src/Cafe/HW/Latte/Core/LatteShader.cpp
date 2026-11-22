@@ -453,7 +453,7 @@ void LatteShader_CreateRendererShader(LatteDecompilerShader* shader, bool compil
 		if (customShaderSrc)
 		{
 			LatteDecompiler_SourceBuffers().Give(shader->shaderSource);
-			LatteDecompiler_SourceBuffers().Take(shader->shaderSource);
+			LatteDecompiler_SourceBuffers().Take(shader->shaderSource, customShaderSrc->size());
 			shader->shaderSource.assign(*customShaderSrc);
 		}
 		shader->shader = g_renderer->shader_create(shaderType, shader->baseHash, shader->auxHash,

@@ -655,8 +655,11 @@ bool PipelineCompiler::Compile(bool forceCompile, bool isRenderThread, bool show
 {
 	VulkanRenderer* vkRenderer = VulkanRenderer::GetInstance();
 
-	if (!vkRenderer->m_featureControl.deviceExtensions.pipeline_creation_cache_control)
-		forceCompile = true; // if VK_EXT_pipeline_creation_cache_control is not supported we always force synchronous compilation
+	// a try where the driver's cache cannot be asked without compiling takes
+	// only parts already made: never a compile on the draw path
+	const VulkanPipelineTry mode = VulkanPipeline_Try(forceCompile, vkRenderer->m_featureControl.deviceExtensions.pipeline_creation_cache_control);
+	if (mode == VulkanPipelineTry::Made && !vkRenderer->m_featureControl.deviceExtensions.graphics_pipeline_library)
+		return false;
 
 	if (!forceCompile)
 	{
@@ -746,7 +749,7 @@ bool PipelineCompiler::Compile(bool forceCompile, bool isRenderThread, bool show
 	pipelineInfo.pNext = prevStruct;
 
 	if (vkRenderer->m_featureControl.deviceExtensions.graphics_pipeline_library)
-		return CompileFromLibraries(pipelineInfo, forceCompile, isRenderThread);
+		return CompileFromLibraries(pipelineInfo, forceCompile, mode == VulkanPipelineTry::Made, isRenderThread);
 
 	VkPipeline pipeline = VK_NULL_HANDLE;
 	VkResult result;
@@ -951,7 +954,7 @@ bool PipelineCompiler::GatherLibraryPartsTogether(const VkGraphicsPipelineCreate
 	return ok;
 }
 
-bool PipelineCompiler::CompileFromLibraries(const VkGraphicsPipelineCreateInfo& full, bool forceCompile, bool isRenderThread)
+bool PipelineCompiler::CompileFromLibraries(const VkGraphicsPipelineCreateInfo& full, bool forceCompile, bool madeOnly, bool isRenderThread)
 {
 	VulkanRenderer* vkRenderer = VulkanRenderer::GetInstance();
 	VulkanPipelineLibraryCache& cache = *vkRenderer->m_pipelineLibraries;
@@ -1001,6 +1004,11 @@ bool PipelineCompiler::CompileFromLibraries(const VkGraphicsPipelineCreateInfo& 
 		{
 			libraries[p] = library;
 			continue;
+		}
+		if (madeOnly)
+		{
+			ok = false; // not made, and the driver's cache not to be asked
+			break;
 		}
 		const bool claimed = state == VulkanPipelineLibraryCache::State::Missing && cache.Claim(part, key);
 		if (!forceCompile && !claimed)
