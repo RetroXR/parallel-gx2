@@ -185,3 +185,16 @@ inline T* MpmcQueue_PopPreferring(MpmcQueue<T*>& urgent, MpmcQueue<T*>& rest)
 		return item;
 	return rest.pop();
 }
+
+// Three lanes: urgent's oldest, then soon's, neither waited for, else
+// later's, waited for. An item for urgent or soon is pushed with its wake to
+// later (MpmcQueue_PushUrgent(urgent or soon, later, item)), so a thread
+// waiting on later wakes for it; null as above
+template<typename T>
+inline T* MpmcQueue_PopPreferring(MpmcQueue<T*>& urgent, MpmcQueue<T*>& soon, MpmcQueue<T*>& later)
+{
+	T* item = nullptr;
+	if (urgent.peek2(item) || soon.peek2(item))
+		return item;
+	return later.pop();
+}

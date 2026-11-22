@@ -454,8 +454,8 @@ NotePipeline`, its own and the cache's) nor a read made it, makes it from
 the read's registers. With graphics pipeline libraries only its parts are
 made (`m_partsOnly`), into the cache of parts the draw's pipeline then
 links from; without, the pipeline, for the driver's cache. Four at a time,
-from pools, in the compile threads' common queue - behind the reads and
-the compiles of pipelines whose draws are being skipped now. A geometry
+from pools, in the compile threads' lane of work made ahead - behind the
+reads and everything a draw needs now (below). A geometry
 shader's draw has its geometry shader found by the key the draw takes
 (its program's, and the ring of the vertex shader found).
 
@@ -483,6 +483,16 @@ The reads ahead go to the compile threads in a lane of their own, taken
 before any pipeline compile queued (`CompileThreadPool_QueuePreparedUrgent`,
 `MpmcQueue_PopPreferring`): when new shaders come, the compile threads are
 busiest, and a read queued behind them is late for the draws it reads.
+What only a later draw may need - each new shader's parts for every
+template (up to 64 builds a shader), the pipelines made ahead, and the
+optimized links that replace a fast link already drawing - goes in a lane
+of its own after everything a draw needs now (`CompileThreadPool_
+QueuePreparedAhead`): before, a draw skipped until its pipeline landed was
+skipped for all the ahead work queued before it as well. A pipeline made
+ahead hands its parts to that lane too when it makes them together (one
+no compile thread has taken it makes itself). `test/prepared_pipeline`
+checks the three lanes taken in order, and `tools/check_compile_lanes.sh`
+fails where ahead work is queued with what a draw needs now.
 As a title stops, the log has, for vertex, pixel and geometry shaders, how many were
 made ahead, taken by their draw, not usable there, drawn while still being
 made, drawn with none made, and let go unused (`[ShaderAhead]`): the

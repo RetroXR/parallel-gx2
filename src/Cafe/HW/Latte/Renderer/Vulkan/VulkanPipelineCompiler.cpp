@@ -910,7 +910,14 @@ bool PipelineCompiler::GatherLibraryPartsTogether(const VkGraphicsPipelineCreate
 		else
 			here[hereCount++] = &builds[i].prepared;
 	}
-	PreparedPipeline::BuildTogether(here, hereCount, queued, queuedCount, [](PreparedPipeline& item) { CompileThreadPool_QueuePrepared(item); });
+	// helpers in the lane of the pipeline they are for: a pipeline made
+	// ahead's never before a draw's (one no thread took is made here)
+	PreparedPipeline::BuildTogether(here, hereCount, queued, queuedCount, [ahead = m_partsOnly](PreparedPipeline& item) {
+		if (ahead)
+			CompileThreadPool_QueuePreparedAhead(item);
+		else
+			CompileThreadPool_QueuePrepared(item);
+	});
 	bool ok = true;
 	for (int i = 0; i < makeCount; i++)
 	{
@@ -1196,7 +1203,7 @@ void PipelineCompiler::PrepareAheadParts(PipelineInfo* pipelineInfo)
 		ahead->slots = slots;
 		VulkanPipelineKey_DescriptorBindings(decompiled->resourceMapping, stage, ahead->bindings);
 		shader->m_aheadParts = ahead;
-		CompileThreadPool_QueuePrepared(ahead->prepared);
+		CompileThreadPool_QueuePreparedAhead(ahead->prepared);
 	};
 	if (!m_vkGeometryShader && !m_rectEmulationGS)
 		queue(m_vkVertexShader, pipelineInfo->vertexShader, VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION, keys[0], VK_SHADER_STAGE_VERTEX_BIT);
@@ -1222,7 +1229,7 @@ bool PipelineCompiler::PrepareAheadPartsFor(RendererShaderVk* shader, LatteDecom
 	ahead->slots = slots;
 	VulkanPipelineKey_DescriptorBindings(decompiled->resourceMapping, vertex ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT, ahead->bindings);
 	shader->m_aheadParts = ahead;
-	CompileThreadPool_QueuePrepared(ahead->prepared);
+	CompileThreadPool_QueuePreparedAhead(ahead->prepared);
 	return true;
 }
 
@@ -1281,12 +1288,16 @@ bool PipelineCompiler::CalcRobustBufferAccessRequirement(LatteDecompilerShader* 
 
 static std::vector<std::thread> s_compileThreads;
 static std::atomic_bool s_compileThreadsShutdownSignal{};
-// pushed by the GPU thread, taken by every compile thread: no lock
-static MpmcQueue<PipelineCompiler*> s_pipelineCompileRequests;
-// taken before any of those, by the next compile thread free: what is worth
-// nothing late (the reads ahead of the GPU thread, LatteShaderAhead.cpp);
-// each pushed with a null into the queue above, to wake a thread for it
+// Three lanes, pushed by any thread and taken by every compile thread, no
+// lock: what is worth nothing late (the reads ahead of the GPU thread,
+// LatteShaderAhead.cpp); then what a draw needs now (a skipped draw's
+// pipeline, a waiting draw's parts and shaders, a surface copy's pipeline);
+// then what only a later draw may need, or none (parts and pipelines made
+// ahead, optimized links), which the threads wait on: each item for the
+// lanes before it is pushed with a null into this one, to wake a thread
 static MpmcQueue<PipelineCompiler*> s_urgentCompileRequests;
+static MpmcQueue<PipelineCompiler*> s_pipelineCompileRequests;
+static MpmcQueue<PipelineCompiler*> s_aheadCompileRequests;
 
 static void compilePipeline_thread(sint32 threadIndex)
 {
@@ -1301,7 +1312,7 @@ static void compilePipeline_thread(sint32 threadIndex)
 #endif
 	while (!s_compileThreadsShutdownSignal)
 	{
-		PipelineCompiler* request = MpmcQueue_PopPreferring(s_urgentCompileRequests, s_pipelineCompileRequests);
+		PipelineCompiler* request = MpmcQueue_PopPreferring(s_urgentCompileRequests, s_pipelineCompileRequests, s_aheadCompileRequests);
 		if (!request)
 			continue; // an urgent one's wake (taken above, now or by another thread), or the end
 		if (request->m_preparedTicket)
@@ -1344,11 +1355,11 @@ void PipelineCompiler::CompileThreadPool_Stop()
 		// push one empty workload for each thread
 		// this way we can make sure that each waiting thread is woken up to see the shutdown signal
 		for (auto& thread : s_compileThreads)
-			s_pipelineCompileRequests.push(nullptr);
+			s_aheadCompileRequests.push(nullptr);
 	}
 	for (auto& thread : s_compileThreads)
 		thread.join();
-	for (MpmcQueue<PipelineCompiler*>* queue : {&s_urgentCompileRequests, &s_pipelineCompileRequests})
+	for (MpmcQueue<PipelineCompiler*>* queue : {&s_urgentCompileRequests, &s_pipelineCompileRequests, &s_aheadCompileRequests})
 	{
 		PipelineCompiler* pipelineCompiler;
 		while (queue->peek2(pipelineCompiler))
@@ -1359,19 +1370,26 @@ void PipelineCompiler::CompileThreadPool_Stop()
 
 void PipelineCompiler::CompileThreadPool_QueueCompilation(PipelineCompiler* v)
 {
-	s_pipelineCompileRequests.push(v);
+	s_aheadCompileRequests.push(v);
 }
 
 void PipelineCompiler::CompileThreadPool_QueuePrepared(PreparedPipeline& prepared)
 {
 	PipelineCompiler* job = new PipelineCompiler();
 	job->m_preparedTicket = prepared.Queue();
-	s_pipelineCompileRequests.push(job);
+	MpmcQueue_PushUrgent(s_pipelineCompileRequests, s_aheadCompileRequests, job);
+}
+
+void PipelineCompiler::CompileThreadPool_QueuePreparedAhead(PreparedPipeline& prepared)
+{
+	PipelineCompiler* job = new PipelineCompiler();
+	job->m_preparedTicket = prepared.Queue();
+	s_aheadCompileRequests.push(job);
 }
 
 void PipelineCompiler::CompileThreadPool_QueuePreparedUrgent(PreparedPipeline& prepared)
 {
 	PipelineCompiler* job = new PipelineCompiler();
 	job->m_preparedTicket = prepared.Queue();
-	MpmcQueue_PushUrgent(s_urgentCompileRequests, s_pipelineCompileRequests, job);
+	MpmcQueue_PushUrgent(s_urgentCompileRequests, s_aheadCompileRequests, job);
 }

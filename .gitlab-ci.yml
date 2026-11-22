@@ -1464,6 +1464,18 @@ test-draw-path-counts:
   script:
     - ./tools/check_draw_path_counts.sh
 
+# Parts and pipelines made ahead, and optimized links, in the compile
+# threads' last lane: before, a skipped draw's pipeline waited behind each
+# new shader's ahead parts.
+test-compile-lanes:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+  script:
+    - ./tools/check_compile_lanes.sh
+
 # No path make made absolute written into a file the compiler reads: MinGW's
 # g++ cannot open MSYS2's /c/... paths (the precompiled header's stub).
 test-build-paths:

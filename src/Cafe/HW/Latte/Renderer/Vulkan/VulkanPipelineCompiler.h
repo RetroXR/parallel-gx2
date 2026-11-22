@@ -69,9 +69,14 @@ public:
 	// API for thread pool
 	static void CompileThreadPool_Start();
 	static void CompileThreadPool_Stop();
+	// an optimized link, after anything a draw needs now
 	static void CompileThreadPool_QueueCompilation(PipelineCompiler* v);
-	// a pipeline made ahead, built by the compile threads (PreparedPipeline.h)
+	// a pipeline made ahead, built by the compile threads (PreparedPipeline.h),
+	// for a draw that needs it now: before anything queued ahead
 	static void CompileThreadPool_QueuePrepared(PreparedPipeline& prepared);
+	// the same, for one only a later draw may need (parts and pipelines made
+	// ahead): after everything a draw needs now
+	static void CompileThreadPool_QueuePreparedAhead(PreparedPipeline& prepared);
 	// the same, taken before anything queued without it, by the next compile
 	// thread free: for work worth nothing late and short (the reads ahead of
 	// the GPU thread, LatteShaderAhead.cpp), never a pipeline's compile

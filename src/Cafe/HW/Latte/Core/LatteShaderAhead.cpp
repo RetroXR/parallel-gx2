@@ -735,9 +735,9 @@ namespace
 			return (VkPipeline)VK_NULL_HANDLE;
 		}, slot);
 		slot->queued = true;
-		// behind the reads and their decompiles, and the compiles of the
-		// pipelines whose draws are skipped now: in the queue they are in
-		PipelineCompiler::CompileThreadPool_QueuePrepared(*prepared);
+		// behind the reads and their decompiles, and anything a draw needs
+		// now (the compiles of the pipelines whose draws are skipped)
+		PipelineCompiler::CompileThreadPool_QueuePreparedAhead(*prepared);
 		job->found++;
 	}
 #endif

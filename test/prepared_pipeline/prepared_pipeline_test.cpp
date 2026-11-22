@@ -18,7 +18,11 @@
 //  - an urgent lane (MpmcQueue_PushUrgent, _PopPreferring: the reads ahead of
 //    the GPU thread): queued after a backlog, taken before all of it; one
 //    pushed to an idle pool wakes a thread for it; the wake left behind
-//    when another thread took it is passed over;
+//    when another thread took it is passed over; and three lanes (the
+//    compile threads': reads, what a draw needs now, what is made ahead):
+//    each lane's items in order, every earlier lane's before a later one's,
+//    whatever order they were pushed in, the wakes passed over, and a
+//    thread waiting on the last lane woken by a push to the middle one;
 //  - built together (BuildTogether, a waiting draw's missing pipeline parts):
 //    each built once, the queued ones on the compile threads while the
 //    others are built here when threads are free - the builds overlapping -
@@ -357,6 +361,62 @@ static void Urgent()
 	CHECK(got == 11);
 }
 
+static void Lanes()
+{
+	struct Item
+	{
+		int id;
+	};
+	MpmcQueue<Item*> urgent, soon, later;
+	Item items[31];
+	for (int i = 0; i < 31; i++)
+		items[i].id = i;
+	// pushed interleaved: later 0-9, soon 10-19, urgent 20-29
+	for (int i = 0; i < 10; i++)
+	{
+		later.push(&items[i]);
+		MpmcQueue_PushUrgent(soon, later, &items[10 + i]);
+		MpmcQueue_PushUrgent(urgent, later, &items[20 + i]);
+	}
+	std::vector<int> order;
+	int wakes = 0;
+	while (order.size() < 30)
+	{
+		if (Item* it = MpmcQueue_PopPreferring(urgent, soon, later))
+			order.push_back(it->id);
+		else
+			wakes++;
+	}
+	bool inOrder = order.size() == 30;
+	for (int i = 0; inOrder && i < 10; i++)
+		inOrder = order[i] == 20 + i && order[10 + i] == 10 + i && order[20 + i] == i;
+	CHECK(inOrder);
+	// every wake taken came after the items it was for, nothing left
+	CHECK(urgent.empty() && soon.empty());
+	CHECK(wakes + (int)later.size() == 20);
+	while (!later.empty())
+	{
+		Item* wake = &items[0];
+		CHECK(later.peek2(wake) && wake == nullptr);
+	}
+	// an idle pool: the thread waiting on later wakes for one pushed to soon
+	std::atomic<int> got{-1};
+	std::thread worker([&] {
+		while (true)
+		{
+			if (Item* it = MpmcQueue_PopPreferring(urgent, soon, later))
+			{
+				got = it->id;
+				return;
+			}
+		}
+	});
+	std::this_thread::sleep_for(std::chrono::milliseconds(20)); // asleep on later by now
+	MpmcQueue_PushUrgent(soon, later, &items[30]);
+	worker.join();
+	CHECK(got == 30);
+}
+
 int main()
 {
 	MadeAhead();
@@ -366,6 +426,7 @@ int main()
 	Pooled();
 	Together();
 	Urgent();
+	Lanes();
 	if (s_failures)
 	{
 		std::printf("%d failed\n", s_failures);

@@ -95,6 +95,12 @@ jobs:
         # out of it reads as one that never happens
         run: ./tools/check_draw_path_counts.sh
 
+      - name: "Work made ahead queued after what a draw needs now"
+        # parts and pipelines made ahead, and optimized links, in the
+        # compile threads' last lane: before, a skipped draw's pipeline
+        # waited behind each new shader's ahead parts
+        run: ./tools/check_compile_lanes.sh
+
       - name: "No absolute paths written for the compiler"
         # MSYS2's make makes /c/... paths, which MinGW's g++ cannot open
         # inside a file (the precompiled header's stub broke the Windows build)
