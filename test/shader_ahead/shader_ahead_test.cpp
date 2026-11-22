@@ -62,6 +62,10 @@
 //    registered shaders only where unknown, for new ones only with the
 //    other shader there, and made only where nobody has them but their own
 //    key;
+//  - the pipelines made ahead the GPU thread keeps for their draws
+//    (KeptForDraws): taken once by key, a key kept already keeping its
+//    own, the oldest going for a newer one when full, all given up on
+//    clearing;
 //  - what new pipelines' first draws met, as logged at title stop
 //    (LatteDrawPathCounts.h): each outcome and those a read queued ahead
 //    counted apart, only waits timed, the longest kept, the line cut to
@@ -1011,6 +1015,35 @@ static void SeenKeysFill()
 	CHECK(zero.Contains(0));
 }
 
+// the GPU thread's pipelines made ahead, kept for their draws
+static void Kept()
+{
+	KeptForDraws<uint32, 4> kept;
+	uint32 gone = 0, v = 0;
+	CHECK(!kept.Take(1, &v));
+	for (uint32 k = 1; k <= 4; k++)
+		CHECK(!kept.Put(k, 100 + k, &gone)); // room for four
+	// a key kept already keeps its own: the newer one given back to go
+	CHECK(kept.Put(2, 999, &gone) && gone == 999);
+	CHECK(kept.Take(2, &v) && v == 102);
+	CHECK(!kept.Take(2, &v)); // taken once
+	// full: the oldest goes for a newer one (2's place stays free, the ring
+	// moving on past it)
+	CHECK(kept.Put(5, 105, &gone) && gone == 101);
+	CHECK(!kept.Take(1, &v));
+	CHECK(!kept.Put(6, 106, &gone)); // 2's old place, empty
+	CHECK(kept.Put(7, 107, &gone) && gone == 103);
+	CHECK(kept.Take(5, &v) && v == 105 && kept.Take(4, &v) && v == 104);
+	uint32 dropped = 0, sum = 0;
+	kept.Clear([&](uint32 x) {
+		dropped++;
+		sum += x;
+	});
+	CHECK(dropped == 2 && sum == 106 + 107);
+	CHECK(!kept.Take(6, &v) && !kept.Take(7, &v));
+	CHECK(!kept.Put(8, 108, &gone)); // empty again
+}
+
 static void AheadRules()
 {
 	constexpr uint32 kNoEnd = 0xFFFFFFFFu;
@@ -1073,6 +1106,7 @@ static void DrawPathCounts()
 	CHECK(!c.Any());
 	CHECK(!c.Describe(line, sizeof(line)));
 	c.NotePipeline(LatteDrawPathCounts::Ready, true, 999); // not a wait
+	c.NoteHandedOver();
 	c.NotePipeline(LatteDrawPathCounts::Ready, false, 0);
 	c.NotePipeline(LatteDrawPathCounts::Skipped, false, 0);
 	c.NotePipeline(LatteDrawPathCounts::Waited, true, 2500);
@@ -1086,7 +1120,8 @@ static void DrawPathCounts()
 	CHECK(c.skippedDraws == 3 && c.awaited == 1);
 	CHECK(c.waitedUs == 7200 && c.longestUs == 4000);
 	CHECK(c.Describe(line, sizeof(line)));
-	CHECK(std::strcmp(line, "new pipelines at their first draw: 2 ready (1 queued ahead), 1 skipped until made (0 queued ahead), "
+	CHECK(c.handedOver == 1);
+	CHECK(std::strcmp(line, "new pipelines at their first draw: 2 ready (1 queued ahead, 1 of them made by the read), 1 skipped until made (0 queued ahead), "
 		"2 made while their draw waited (1 queued ahead); 3 draws skipped, 1 waited for a compile thread; "
 		"7.200 ms waited, the longest 4.000 ms") == 0);
 	// cut to its room, nothing written past it
@@ -1102,7 +1137,7 @@ static void DrawPathCounts()
 	awaitOnly.NoteAwait(1);
 	CHECK(awaitOnly.Any() && awaitOnly.longestUs == 1);
 	c.Reset();
-	CHECK(!c.Any() && c.waitedUs == 0 && c.longestUs == 0);
+	CHECK(!c.Any() && c.waitedUs == 0 && c.longestUs == 0 && c.handedOver == 0);
 }
 
 int main()
@@ -1123,6 +1158,7 @@ int main()
 	SlotsOneThread();
 	SlotsRacing();
 	SeenKeysFill();
+	Kept();
 	AheadRules();
 	DrawPathCounts();
 	if (s_failures)

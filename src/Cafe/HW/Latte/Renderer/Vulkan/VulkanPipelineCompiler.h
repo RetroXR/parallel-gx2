@@ -89,10 +89,10 @@ public:
 	// alone; false without VK_EXT_pipeline_robustness (the device's then)
 	bool m_robustVertex{false};
 	bool m_robustPixel{false};
-	// with graphics pipeline libraries, its parts made and no pipeline
-	// linked: one made ahead of its draw, which links them (without, the
-	// pipeline is made as before)
-	bool m_partsOnly{false};
+	// made ahead of its draw by a read (LatteShaderAhead.cpp): the parts it
+	// makes together in the compile threads' lane of work made ahead, and the
+	// pipeline, linked optimized, handed to its draw (HandOverAhead)
+	bool m_madeAhead{false};
 
 	/* shader stages */
 	VkPipelineShaderStageCreateInfo shaderStages[3]{};
@@ -156,6 +156,17 @@ public:
 		VkPipeline pipeline;
 	};
 	static bool TakeOptimizedPipeline(OptimizedPipeline& result);
+
+	// A pipeline a read made ahead of its draw, with the layouts it was made
+	// with (a layout outlives its pipelines without VK_KHR_maintenance4), by
+	// the compile thread that made it: kept for the draw, which takes it
+	// whole (TakeAhead, the GPU thread) in place of its own, its layouts
+	// defined the same, rather than linking or compiling it there; given up
+	// unused once newer ones crowd it out, or as the title stops (DropAhead,
+	// the GPU thread, no read running)
+	static void HandOverAhead(uint64 pipelineHash, VKRObjectPipeline* pipeline);
+	static VKRObjectPipeline* TakeAhead(uint64 pipelineHash);
+	static void DropAhead();
 
 	// the compile threads' part of m_linkOptimizedOnly
 	bool LinkOptimized();

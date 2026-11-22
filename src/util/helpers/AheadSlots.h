@@ -263,3 +263,69 @@ private:
 	};
 	Entry m_entries[Capacity];
 };
+
+// What reads made ahead for draws to come, kept by key until a draw takes
+// it: one thread's alone (the GPU thread's), filled from what the others
+// hand it. Full, the oldest goes for a newer one; a key already kept keeps
+// the one there. No allocation: N entries, looked through whole.
+template<typename T, uint32_t N>
+class KeptForDraws
+{
+public:
+	// true with *gone set to what had to go: the oldest, or value itself
+	// where its key is kept already
+	bool Put(uint64_t key, T value, T* gone)
+	{
+		for (Entry& e : m_entries)
+		{
+			if (e.used && e.key == key)
+			{
+				*gone = value;
+				return true;
+			}
+		}
+		Entry& e = m_entries[m_next];
+		m_next = (m_next + 1) % N;
+		const bool evicted = e.used;
+		if (evicted)
+			*gone = e.value;
+		e = {key, value, true};
+		return evicted;
+	}
+	// what was kept for key, given up by the table
+	bool Take(uint64_t key, T* value)
+	{
+		for (Entry& e : m_entries)
+		{
+			if (e.used && e.key == key)
+			{
+				*value = e.value;
+				e.used = false;
+				return true;
+			}
+		}
+		return false;
+	}
+	// everything kept, each handed to drop and given up
+	template<typename F>
+	void Clear(F drop)
+	{
+		for (Entry& e : m_entries)
+		{
+			if (e.used)
+				drop(e.value);
+			e.used = false;
+		}
+		m_next = 0;
+	}
+
+private:
+	struct Entry
+	{
+		uint64_t key;
+		T value;
+		bool used;
+	};
+	Entry m_entries[N]{};
+	uint32_t m_next = 0;
+};

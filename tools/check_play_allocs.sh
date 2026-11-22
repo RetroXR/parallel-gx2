@@ -44,6 +44,8 @@ src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::P
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::BuildAheadParts
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::CompileThreadPool_QueuePrepared
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::CompileThreadPool_QueuePreparedAhead
+src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::HandOverAhead
+src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp PipelineCompiler::TakeAhead
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.cpp VulkanPipelineKey_DescriptorBindings
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.cpp VulkanPipelineKey_DynamicStates
 src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineLibrary.cpp VulkanPipelineLibrary_Key

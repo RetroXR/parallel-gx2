@@ -543,8 +543,9 @@ namespace
 		return nullptr;
 	}
 
-	// what the slot made goes: the pipeline (its parts kept by the cache of
-	// them), the compiler, the render pass
+	// what the slot made goes, the pipeline handed over with its layouts:
+	// the compiler, the pipeline's info, the render pass (its draw's is
+	// compatible)
 	void LetPipelineGo(PipelineSlot& slot)
 	{
 		delete slot.compiler;
@@ -661,9 +662,19 @@ namespace
 			s_pixel.Publish(psHeld);
 		if (ok)
 		{
-			slot->compiler->m_partsOnly = true; // with graphics pipeline libraries; the pipeline without
+			slot->compiler->m_madeAhead = true;
 			slot->compiler->Compile(true, false, false);
 			s_pipelinesMade.fetch_add(1, std::memory_order_relaxed);
+			// the pipeline, with its layouts, to its draw, which takes it
+			// whole; the rest goes. The compiler's hold on it let go first
+			delete slot->compiler;
+			slot->compiler = nullptr;
+			VKRObjectPipeline* made = slot->info->m_vkrObjPipeline;
+			if (made->GetPipeline() != VK_NULL_HANDLE)
+			{
+				slot->info->m_vkrObjPipeline = nullptr;
+				PipelineCompiler::HandOverAhead(slot->hash, made);
+			}
 		}
 		LetPipelineGo(*slot);
 		slot->busy.store(false, std::memory_order_release);
@@ -897,6 +908,8 @@ void LatteShaderAhead_Shutdown()
 		}
 		delete[] s_pipelineSlots;
 		s_pipelineSlots = nullptr;
+		// the pipelines handed over that no draw took
+		PipelineCompiler::DropAhead();
 	}
 	s_pipelinesKnown.Clear();
 	s_pipelinesAhead.Clear();

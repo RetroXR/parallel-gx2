@@ -477,9 +477,21 @@ its registers and the render pass they name (the pipeline cache's way,
 `VulkanPipelineStableCache_Attachments`, `VKRObjectRenderPass::
 HashForPipeline`), and where neither the GPU thread (`LatteShaderAhead_
 NotePipeline`, its own and the cache's) nor a read made it, makes it from
-the read's registers. With graphics pipeline libraries only its parts are
-made (`m_partsOnly`), into the cache of parts the draw's pipeline then
-links from; without, the pipeline, for the driver's cache. Four at a time,
+the read's registers. The pipeline - with graphics pipeline libraries its
+parts made into the cache of parts and linked optimized, without compiled
+whole - is handed to its draw (`PipelineCompiler::HandOverAhead`): the GPU
+thread keeps the last 64 handed over (`KeptForDraws`, its alone, filled
+from a lock-free queue) and a draw that would make its pipeline takes the
+one made for it first (`TakeAhead`), with no link, no compile and no ask
+of the driver's cache on the GPU thread, and no relink later. It comes
+with the layouts it was made with, which the draw's PipelineInfo takes in
+place of the ones it had just set up - defined the same, and a layout must
+outlive its pipelines without `VK_KHR_maintenance4` - and its render pass
+was compatible with the draw's. One crowded out unused, or left as the
+title stops, is destroyed, never bound (`tools/check_ahead_handover.sh`). Before, the slot made only the parts
+and let the pipeline go, and the draw linked it fast on the GPU thread,
+or - on a device without libraries and without cache control - was
+skipped until a compile thread made it again. Four at a time,
 from pools, in the compile threads' lane of work made ahead - behind the
 reads and everything a draw needs now (below). A geometry
 shader's draw has its geometry shader found by the key the draw takes

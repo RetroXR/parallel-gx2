@@ -15,6 +15,7 @@
 #include "Cafe/HW/Latte/Common/RegisterSerializer.h"
 #include "HW/Latte/Renderer/RendererCore.h"
 #include "util/helpers/ThreadOwned.h"
+#include "util/helpers/AheadSlots.h"
 
 // The source of the rect emulation geometry shader for a vertex shader and
 // the pixel shader's inputs, written into gsSrc (emptied first). The inputs
@@ -789,6 +790,51 @@ bool PipelineCompiler::Compile(bool forceCompile, bool isRenderThread, bool show
 // in the fast-linked ones' place
 static MpmcQueue<PipelineCompiler::OptimizedPipeline> s_optimizedPipelines;
 
+// pipelines made ahead: handed over by the compile threads, kept by the GPU
+// thread for their draws. Never bound until a draw takes one, so one given
+// up is destroyed at once, its layouts with it
+struct AheadPipeline
+{
+	uint64 hash;
+	VKRObjectPipeline* pipeline;
+};
+static MpmcQueue<AheadPipeline> s_aheadPipelines;
+// as many as the ring holds before it would allocate past it, with room
+static constexpr size_t kAheadHandedMax = 512;
+static KeptForDraws<VKRObjectPipeline*, 64> s_keptPipelines;
+
+void PipelineCompiler::HandOverAhead(uint64 pipelineHash, VKRObjectPipeline* pipeline)
+{
+	if (s_aheadPipelines.size() >= kAheadHandedMax)
+	{
+		delete pipeline;
+		return;
+	}
+	s_aheadPipelines.push({pipelineHash, pipeline});
+}
+
+VKRObjectPipeline* PipelineCompiler::TakeAhead(uint64 pipelineHash)
+{
+	AheadPipeline handed;
+	while (s_aheadPipelines.peek2(handed))
+	{
+		VKRObjectPipeline* gone;
+		if (s_keptPipelines.Put(handed.hash, handed.pipeline, &gone))
+			delete gone;
+	}
+	VKRObjectPipeline* pipeline = nullptr;
+	s_keptPipelines.Take(pipelineHash, &pipeline);
+	return pipeline;
+}
+
+void PipelineCompiler::DropAhead()
+{
+	AheadPipeline handed;
+	while (s_aheadPipelines.peek2(handed))
+		delete handed.pipeline;
+	s_keptPipelines.Clear([](VKRObjectPipeline* p) { delete p; });
+}
+
 bool PipelineCompiler::TakeOptimizedPipeline(OptimizedPipeline& result)
 {
 	return s_optimizedPipelines.peek2(result);
@@ -915,7 +961,7 @@ bool PipelineCompiler::GatherLibraryPartsTogether(const VkGraphicsPipelineCreate
 	}
 	// helpers in the lane of the pipeline they are for: a pipeline made
 	// ahead's never before a draw's (one no thread took is made here)
-	PreparedPipeline::BuildTogether(here, hereCount, queued, queuedCount, [ahead = m_partsOnly](PreparedPipeline& item) {
+	PreparedPipeline::BuildTogether(here, hereCount, queued, queuedCount, [ahead = m_madeAhead](PreparedPipeline& item) {
 		if (ahead)
 			CompileThreadPool_QueuePreparedAhead(item);
 		else
@@ -1030,8 +1076,6 @@ bool PipelineCompiler::CompileFromLibraries(const VkGraphicsPipelineCreateInfo& 
 		}
 		libraries[p] = library;
 	}
-	if (m_partsOnly)
-		return true;
 	VkPipeline pipeline = VK_NULL_HANDLE;
 	bool optimize = false, queueOptimized = false;
 	if (ok)

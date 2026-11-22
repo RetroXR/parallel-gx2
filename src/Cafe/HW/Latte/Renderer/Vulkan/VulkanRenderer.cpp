@@ -1369,6 +1369,8 @@ void VulkanRenderer::Shutdown()
 		vkDestroyPipeline(m_logicalDevice, optimized.pipeline, nullptr);
 		optimized.object->decRef();
 	}
+	// and those made ahead that no draw took
+	PipelineCompiler::DropAhead();
 
 	Renderer::Shutdown();
 	RendererShaderVk::Shutdown();

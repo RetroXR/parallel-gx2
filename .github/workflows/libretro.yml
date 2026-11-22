@@ -112,6 +112,11 @@ jobs:
         # LatteShaderAheadRules.h, which test/shader_ahead checks
         run: ./tools/check_ahead_rules.sh
 
+      - name: "A pipeline made ahead reaches its draw whole"
+        # handed over by the read, taken before any link or compile at the
+        # draw, the unused ones destroyed before the device goes
+        run: ./tools/check_ahead_handover.sh
+
       - name: "No absolute paths written for the compiler"
         # MSYS2's make makes /c/... paths, which MinGW's g++ cannot open
         # inside a file (the precompiled header's stub broke the Windows build)

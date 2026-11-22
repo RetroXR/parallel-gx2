@@ -146,12 +146,25 @@ PipelineInfo* VulkanRenderer::draw_createGraphicsPipeline(uint32 indexCount)
 	if (m_partTemplates && pipelineCompiler->m_renderPassObj)
 		pipelineCompiler->PrepareAheadParts(pipelineInfo);
 
+	LatteDrawPathCounts& counts = LatteShaderAhead_DrawPathCounts();
+	// made ahead of this draw by a read, linked optimized: taken whole, with
+	// the layouts it was made with (defined as this draw's), in place of the
+	// ones just set up, never used
+	if (VKRObjectPipeline* ahead = PipelineCompiler::TakeAhead(pipelineHash))
+	{
+		delete pipelineCompiler;
+		ReleaseDestructibleObject(pipelineInfo->m_vkrObjPipeline);
+		pipelineInfo->m_vkrObjPipeline = ahead;
+		counts.NotePipeline(LatteDrawPathCounts::Ready, true, 0);
+		counts.NoteHandedOver();
+		return pipelineInfo;
+	}
+
 	// use heuristics based on parameter patterns to determine if the current drawcall is essential (non-skipable)
 	bool allowAsyncCompile = false;
 	if (GetConfig().async_compile)
 		allowAsyncCompile = IsAsyncPipelineAllowed(indexCount);
 
-	LatteDrawPathCounts& counts = LatteShaderAhead_DrawPathCounts();
 	if (allowAsyncCompile)
 	{
 		// even when async is allowed, attempt synchronous creation first (which will immediately fail if the pipeline is not cached)
