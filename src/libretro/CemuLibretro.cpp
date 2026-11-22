@@ -2353,6 +2353,11 @@ static void libretro_create_default_mlc_files(const fs::path& mlc)
 	}
 }
 
+// The Wii U Menu's men.rpx in mlc01 (libretro_wiiu_menu_path), or empty;
+// found as the paths are, at init.
+static fs::path libretro_wiiu_menu_path();
+static std::string s_wiiu_menu_path;
+
 static void libretro_init_paths()
 {
 	const char* system_dir = nullptr;
@@ -2396,6 +2401,8 @@ static void libretro_init_paths()
 	// It used to land in system/Cemu/mlc01, because that is what Cemu derives
 	// from the user data path when no mlc path is configured.
 	s_mlc_path = savePath / "mlc01";
+	// What a load with no content boots, found now: retro_load_game allocates nothing
+	s_wiiu_menu_path = _pathToUtf8(libretro_wiiu_menu_path());
 	FileStream::CreateDirectories(s_mlc_path);
 
 	// The cache path is the directory the shader cache lives *in*, not the
@@ -6306,21 +6313,14 @@ static fs::path libretro_wiiu_menu_path()
 RETRO_API bool retro_load_game(const struct retro_game_info* game)
 {
 	// No content: the Wii U Menu, the way the console boots with no disc in it.
-	std::string content_path;
-	if (game && game->path && *game->path)
-		content_path = game->path;
-	else
+	const char* content_path = game && game->path && *game->path ? game->path : s_wiiu_menu_path.c_str();
+	if (!*content_path)
 	{
-		const fs::path menu = libretro_wiiu_menu_path();
-		if (menu.empty())
-		{
-			libretro_log(RETRO_LOG_ERROR, "no content, and no Wii U Menu installed in %s (sys/title/00050010/1004x100) to boot instead\n",
-				_pathToUtf8(s_mlc_path).c_str());
-			return false;
-		}
-		content_path = _pathToUtf8(menu);
-		libretro_log(RETRO_LOG_WARN, "no content: booting the Wii U Menu, %s\n", content_path.c_str());
+		libretro_log(RETRO_LOG_ERROR, "no content, and no Wii U Menu installed in mlc01 (sys/title/00050010/1004x100) to boot instead\n");
+		return false;
 	}
+	if (content_path == s_wiiu_menu_path.c_str())
+		libretro_log(RETRO_LOG_WARN, "no content: booting the Wii U Menu, %s\n", content_path);
 
 	// Before the renderer, the context and the title: a load that cannot
 	// possibly succeed should fail while the frontend is still in a position to
