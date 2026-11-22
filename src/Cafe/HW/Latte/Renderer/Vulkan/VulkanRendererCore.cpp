@@ -1,4 +1,6 @@
 #include "Cafe/HW/Latte/Core/LatteShaderAhead.h"
+#include "Cafe/HW/Latte/Core/LatteDrawPathCounts.h"
+#include <chrono>
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/LatteTextureVk.h"
@@ -107,6 +109,11 @@ bool VulkanRenderer::IsAsyncPipelineAllowed(uint32 numIndices)
 	return true;
 }
 
+static uint64 MicrosecondsSince(std::chrono::steady_clock::time_point start)
+{
+	return (uint64)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count();
+}
+
 // create graphics pipeline for current state
 PipelineInfo* VulkanRenderer::draw_createGraphicsPipeline(uint32 indexCount)
 {
@@ -125,6 +132,7 @@ PipelineInfo* VulkanRenderer::draw_createGraphicsPipeline(uint32 indexCount)
 
 	// register pipeline
 	uint64 vsBaseHash = vertexShader->baseHash;
+	const bool queuedAhead = LatteShaderAhead_PipelineQueuedAhead(pipelineHash);
 	m_pipeline_info_cache.Put(pipelineHash, pipelineInfo);
 	pipelineInfo->registered = true;
 	LatteShaderAhead_NotePipeline(pipelineHash);
@@ -143,6 +151,7 @@ PipelineInfo* VulkanRenderer::draw_createGraphicsPipeline(uint32 indexCount)
 	if (GetConfig().async_compile)
 		allowAsyncCompile = IsAsyncPipelineAllowed(indexCount);
 
+	LatteDrawPathCounts& counts = LatteShaderAhead_DrawPathCounts();
 	if (allowAsyncCompile)
 	{
 		// even when async is allowed, attempt synchronous creation first (which will immediately fail if the pipeline is not cached)
@@ -150,11 +159,13 @@ PipelineInfo* VulkanRenderer::draw_createGraphicsPipeline(uint32 indexCount)
 		{
 			// shaders or pipeline not cached -> asynchronous compilation
 			PSO_TRACE_EVENT("pipeline async, draws skipped until it lands", pipelineHash);
+			counts.NotePipeline(LatteDrawPathCounts::Skipped, queuedAhead, 0);
 			pipelineInfo->m_asyncCompile = new AsyncPipelineCompile(pipelineCompiler);
 			PipelineCompiler::CompileThreadPool_QueuePrepared(pipelineInfo->m_asyncCompile->prepared);
 		}
 		else
 		{
+			counts.NotePipeline(LatteDrawPathCounts::Ready, queuedAhead, 0);
 			delete pipelineCompiler;
 		}
 	}
@@ -162,7 +173,9 @@ PipelineInfo* VulkanRenderer::draw_createGraphicsPipeline(uint32 indexCount)
 	{
 		// synchronous compilation
 		PSO_TRACE_SCOPE(allowAsyncCompile ? "pipeline sync" : GetConfig().async_compile ? "pipeline sync (essential draw)" : "pipeline sync (async off)", pipelineHash);
+		const auto start = std::chrono::steady_clock::now();
 		pipelineCompiler->Compile(true, true, true);
+		counts.NotePipeline(LatteDrawPathCounts::Waited, queuedAhead, MicrosecondsSince(start));
 		delete pipelineCompiler;
 	}
 
@@ -176,17 +189,26 @@ PipelineInfo* VulkanRenderer::draw_createGraphicsPipeline(uint32 indexCount)
 // leave the result wrong for good, and compiling it twice gains nothing
 bool VulkanRenderer::draw_awaitAsyncPipeline(PipelineInfo* pipelineInfo, uint32 indexCount)
 {
+	LatteDrawPathCounts& counts = LatteShaderAhead_DrawPathCounts();
 	AsyncPipelineCompile* async = pipelineInfo->m_asyncCompile;
-	if (!async)
-		return false;
-	if (!async->prepared.IsBuilt())
+	if (async && !async->prepared.IsBuilt())
 	{
 		if (GetConfig().async_compile && IsAsyncPipelineAllowed(indexCount))
+		{
+			counts.NoteSkippedDraw();
 			return false;
+		}
 		PSO_TRACE_SCOPE("pipeline async, taken by an essential draw", pipelineInfo->stateHash);
+		const auto start = std::chrono::steady_clock::now();
 		async->prepared.Take();
+		counts.NoteAwait(MicrosecondsSince(start));
 	}
-	return pipelineInfo->m_vkrObjPipeline->GetPipeline() != VK_NULL_HANDLE;
+	if (!async || pipelineInfo->m_vkrObjPipeline->GetPipeline() == VK_NULL_HANDLE)
+	{
+		counts.NoteSkippedDraw(); // a pipeline whose compile failed
+		return false;
+	}
+	return true;
 }
 
 PipelineInfo* VulkanRenderer::draw_getOrCreateGraphicsPipeline(uint32 indexCount)

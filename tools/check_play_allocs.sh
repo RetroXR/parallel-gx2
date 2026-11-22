@@ -137,6 +137,8 @@ src/Cafe/OS/libs/TCL/TCL.cpp TCLRingWriteIndex
 src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp LatteShaderAhead_OnIdle
 src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp LatteShaderAhead_OnGuestCommands
 src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp LatteShaderAhead_NotePipeline
+src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp LatteShaderAhead_PipelineQueuedAhead
+src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp LatteShaderAhead_DrawPathCounts
 src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp PipelineAhead
 src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp TakePipelineSlot
 src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp LetPipelineGo

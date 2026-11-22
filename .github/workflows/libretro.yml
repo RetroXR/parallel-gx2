@@ -90,6 +90,11 @@ jobs:
         # stencil and clip state the GPU thread was drawing with
         run: ./tools/check_pipeline_registers.sh
 
+      - name: "Every new pipeline's first draw counted"
+        # the per-title line M2 is judged by on real games: an outcome left
+        # out of it reads as one that never happens
+        run: ./tools/check_draw_path_counts.sh
+
       - name: "No absolute paths written for the compiler"
         # MSYS2's make makes /c/... paths, which MinGW's g++ cannot open
         # inside a file (the precompiled header's stub broke the Windows build)

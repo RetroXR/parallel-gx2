@@ -1452,6 +1452,18 @@ test-pipeline-registers:
   script:
     - ./tools/check_pipeline_registers.sh
 
+# Every new pipeline's first draw and every skipped draw counted: the
+# per-title line M2 is judged by on real games, where an outcome left out
+# reads as one that never happens.
+test-draw-path-counts:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+  script:
+    - ./tools/check_draw_path_counts.sh
+
 # No path make made absolute written into a file the compiler reads: MinGW's
 # g++ cannot open MSYS2's /c/... paths (the precompiled header's stub).
 test-build-paths:

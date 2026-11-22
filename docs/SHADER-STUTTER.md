@@ -486,7 +486,15 @@ busiest, and a read queued behind them is late for the draws it reads.
 As a title stops, the log has, for vertex, pixel and geometry shaders, how many were
 made ahead, taken by their draw, not usable there, drawn while still being
 made, drawn with none made, and let go unused (`[ShaderAhead]`): the
-numbers to judge this by on real games.
+numbers to judge this by on real games. Then what the first draw of each
+new pipeline met, in any build (`LatteDrawPathCounts.h`): linked or loaded
+from what was ready, skipped until a compile thread made it, or made while
+it waited - each with how many of those a read had queued ahead - the
+draws skipped for a pipeline not made yet, the draws that may not be
+skipped and waited for the compile thread making theirs, and the time
+waited in all and the longest wait. M2 is done when nothing is made while
+a draw waits and no draw is skipped; `tools/check_draw_path_counts.sh`
+fails where a way the draw path goes is not counted.
 
 Next: the draws async skips while the parts are made.
 

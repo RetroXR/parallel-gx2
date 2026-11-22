@@ -1,4 +1,5 @@
 #include "Cafe/HW/Latte/Core/LatteShaderAhead.h"
+#include "Cafe/HW/Latte/Core/LatteDrawPathCounts.h"
 #include "Cafe/HW/Latte/Core/LattePM4Scan.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
 #include "Cafe/HW/Latte/Core/LatteShaderKeys.h"
@@ -52,6 +53,7 @@ namespace
 		std::atomic<uint64> made{0}, taken{0}, unusable{0}, late{0}, none{0}, letGo{0};
 	};
 	Counts s_countsVertex{"vertex"}, s_countsPixel{"pixel"}, s_countsGeometry{"geometry"};
+	LatteDrawPathCounts s_drawPath;
 
 	// the slots whose shader waits for the GPU thread to queue its parts
 	// (LatteShaderAhead_Poll), a bit each
@@ -913,8 +915,12 @@ void LatteShaderAhead_Shutdown()
 		cemuLog_log(LogType::Force, "[ShaderAhead] {} reads of command buffers before their submission", reads);
 #ifdef ENABLE_VULKAN
 	if (const uint64 made = s_pipelinesMade.exchange(0, std::memory_order_relaxed))
-		cemuLog_log(LogType::Force, "[ShaderAhead] {} pipelines made ahead of their draw for shaders already known", made);
+		cemuLog_log(LogType::Force, "[ShaderAhead] {} pipelines made ahead of their draw", made);
 #endif
+	char line[512];
+	if (s_drawPath.Describe(line, sizeof(line)))
+		cemuLog_log(LogType::Force, "[ShaderAhead] {}", line);
+	s_drawPath.Reset();
 	for (Slots* slots : {&s_pixel, &s_vertex, &s_geometry})
 	{
 		slots->DrainPublished([](AheadShader& p) {
@@ -1122,6 +1128,20 @@ void LatteShaderAhead_NotePipeline(uint64 pipelineHash)
 #ifdef ENABLE_VULKAN
 	s_pipelinesKnown.Insert(pipelineHash);
 #endif
+}
+
+bool LatteShaderAhead_PipelineQueuedAhead(uint64 pipelineHash)
+{
+#ifdef ENABLE_VULKAN
+	return s_pipelinesAhead.Contains(pipelineHash);
+#else
+	return false;
+#endif
+}
+
+LatteDrawPathCounts& LatteShaderAhead_DrawPathCounts()
+{
+	return s_drawPath;
 }
 
 void LatteShaderAhead_NoteGeometryShader(uint64 baseHash)

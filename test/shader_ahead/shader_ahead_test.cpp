@@ -43,7 +43,11 @@
 //    added or past the table's room, one thread adding while three find -
 //    never a value another key's, every key found once added (TSan in CI);
 //    and a payload never claimed back while a pipeline is made from it
-//    (AheadSlotStale).
+//    (AheadSlotStale);
+//  - what new pipelines' first draws met, as logged at title stop
+//    (LatteDrawPathCounts.h): each outcome and those a read queued ahead
+//    counted apart, only waits timed, the longest kept, the line cut to
+//    its room and nothing logged with nothing counted.
 #include <atomic>
 #include <cstdio>
 #include <cstring>
@@ -55,6 +59,7 @@
 #include "Cafe/HW/Latte/Core/LattePM4.h"
 #include "Cafe/HW/Latte/Core/LatteConst.h"
 #include "Cafe/HW/Latte/Core/LatteShaderKeys.h"
+#include "Cafe/HW/Latte/Core/LatteDrawPathCounts.h"
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
 #include "util/helpers/AheadSlots.h"
 
@@ -857,6 +862,45 @@ static void SeenKeysFill()
 	CHECK(zero.Contains(0));
 }
 
+static void DrawPathCounts()
+{
+	LatteDrawPathCounts c;
+	char line[512];
+	CHECK(!c.Any());
+	CHECK(!c.Describe(line, sizeof(line)));
+	c.NotePipeline(LatteDrawPathCounts::Ready, true, 999); // not a wait
+	c.NotePipeline(LatteDrawPathCounts::Ready, false, 0);
+	c.NotePipeline(LatteDrawPathCounts::Skipped, false, 0);
+	c.NotePipeline(LatteDrawPathCounts::Waited, true, 2500);
+	c.NoteAwait(4000);
+	c.NotePipeline(LatteDrawPathCounts::Waited, false, 700); // shorter, after
+	for (int i = 0; i < 3; i++)
+		c.NoteSkippedDraw();
+	CHECK(c.pipelines[LatteDrawPathCounts::Ready] == 2 && c.ahead[LatteDrawPathCounts::Ready] == 1);
+	CHECK(c.pipelines[LatteDrawPathCounts::Skipped] == 1 && c.ahead[LatteDrawPathCounts::Skipped] == 0);
+	CHECK(c.pipelines[LatteDrawPathCounts::Waited] == 2 && c.ahead[LatteDrawPathCounts::Waited] == 1);
+	CHECK(c.skippedDraws == 3 && c.awaited == 1);
+	CHECK(c.waitedUs == 7200 && c.longestUs == 4000);
+	CHECK(c.Describe(line, sizeof(line)));
+	CHECK(std::strcmp(line, "new pipelines at their first draw: 2 ready (1 queued ahead), 1 skipped until made (0 queued ahead), "
+		"2 made while their draw waited (1 queued ahead); 3 draws skipped, 1 waited for a compile thread; "
+		"7.200 ms waited, the longest 4.000 ms") == 0);
+	// cut to its room, nothing written past it
+	char small[24];
+	std::memset(small, 'x', sizeof(small));
+	CHECK(c.Describe(small, 16));
+	CHECK(std::strlen(small) == 15 && small[16] == 'x');
+	// anything counted alone is told
+	LatteDrawPathCounts only;
+	only.NoteSkippedDraw();
+	CHECK(only.Any());
+	LatteDrawPathCounts awaitOnly;
+	awaitOnly.NoteAwait(1);
+	CHECK(awaitOnly.Any() && awaitOnly.longestUs == 1);
+	c.Reset();
+	CHECK(!c.Any() && c.waitedUs == 0 && c.longestUs == 0);
+}
+
 int main()
 {
 	Registers();
@@ -874,6 +918,7 @@ int main()
 	SlotsOneThread();
 	SlotsRacing();
 	SeenKeysFill();
+	DrawPathCounts();
 	if (s_failures)
 	{
 		std::printf("shader_ahead_test: %d failure(s)\n", s_failures);

@@ -72,3 +72,10 @@ void LatteShaderAhead_NoteGeometryShader(uint64 baseHash);
 // GPU thread: a pipeline it has (VulkanRenderer::draw_calculateGraphicsPipelineHash),
 // made or loaded from the cache: never made ahead
 void LatteShaderAhead_NotePipeline(uint64 pipelineHash);
+
+// GPU thread: whether a read queued the pipeline ahead of its draw
+bool LatteShaderAhead_PipelineQueuedAhead(uint64 pipelineHash);
+
+// GPU thread: what new pipelines' draws met, logged and reset as the title
+// stops (LatteShaderAhead_Shutdown)
+struct LatteDrawPathCounts& LatteShaderAhead_DrawPathCounts();
