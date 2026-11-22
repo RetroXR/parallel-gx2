@@ -89,7 +89,7 @@ namespace TCL
 			tclRingBufferA_writeIndex.load(std::memory_order::acquire);
 	}
 
-	uint32 TCLGPUPeekRB(uint32be* out, uint32 max)
+	uint32 TCLGPUPeekRB(uint32be* out, uint32 max, uint32* endAt)
 	{
 		uint32 readIndex = tclRingBufferA_readIndex.load(std::memory_order::relaxed);
 		const uint32 writeIndex = tclRingBufferA_writeIndex.load(std::memory_order::acquire);
@@ -99,6 +99,8 @@ namespace TCL
 			out[n++] = tclRingBufferA[readIndex].load(std::memory_order::relaxed);
 			readIndex = (readIndex + 1) % TCL_RING_BUFFER_SIZE;
 		}
+		if (endAt)
+			*endAt = readIndex == writeIndex ? writeIndex : kRingNoEnd;
 		return n;
 	}
 

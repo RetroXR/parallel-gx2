@@ -22,8 +22,11 @@ namespace TCL
 	bool TCLGPUReadRBWord(uint32& cmdWord);
 	bool TCLGPUHasRBWord();
 	// the GPU thread's: up to max of the words written past those it read,
-	// as the guest wrote them, without taking them
-	uint32 TCLGPUPeekRB(uint32be* out, uint32 max);
+	// as the guest wrote them, without taking them; endAt, where given, the
+	// write index they end at where they are all it had written, else
+	// kRingNoEnd
+	constexpr uint32 kRingNoEnd = 0xFFFFFFFFu;
+	uint32 TCLGPUPeekRB(uint32be* out, uint32 max, uint32* endAt = nullptr);
 	// the ring's read index (the GPU thread's) and write index (the
 	// submitting thread's): equal where the GPU thread read all written
 	uint32 TCLGPURingReadIndex();

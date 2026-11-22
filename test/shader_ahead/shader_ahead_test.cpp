@@ -15,11 +15,13 @@
 //    stops part-way; and where a read starts (LattePM4ReadTo): not at a
 //    buffer a read got through, nor one a read under way may get to, at one
 //    a read stopped short of; the furthest of four threads' reads kept;
-//  - the idle GPU thread's registers handed to the guest's thread
-//    (LattePM4IdleSnapshot): taken only as offered and with nothing
+//  - the registers the guest's buffer starts from handed to the guest's
+//    thread (LattePM4IdleSnapshot): taken only as offered and with nothing
 //    submitted since, never while filled, withdrawn once there is work, not
-//    filled again while being read; raced by two threads, every snapshot
-//    taken read whole (TSan in CI);
+//    filled again while being read, given back offered to be read again,
+//    an offer not taken replaced by a newer one; the GPU thread and a read
+//    offering while the guest's thread takes, every snapshot taken read
+//    whole (TSan in CI);
 //  - the registers a pixel, vertex or geometry shader's decompile reads,
 //    as one value (LattePM4_PixelShaderInputs, LattePM4_VertexShaderInputs,
 //    LattePM4_GeometryShaderInputs): moved by each of them, not by the
@@ -377,12 +379,31 @@ static void IdleSnapshot()
 	CHECK(!s.BeginFill()); // not filled while read
 	s.Withdraw(); // nothing to withdraw while read
 	CHECK(!s.BeginFill());
+	CHECK(!s.Take(8)); // read once at a time
 	s.Release();
+	// given back offered: the buffer read again once more is written
+	CHECK(s.Take(8));
+	s.Release();
+	CHECK(s.Take(8));
+	s.Release();
+	s.Withdraw();
+	CHECK(!s.Take(8));
+	// an offer not taken replaced by a newer one (the idle GPU thread's, or
+	// a read's through to the ring's end)
 	CHECK(s.BeginFill());
 	s.Offer(9);
+	CHECK(s.BeginFill());
+	CHECK(!s.BeginFill()); // not by two at once
+	s.Offer(10);
+	CHECK(!s.Take(9)); // the older's ring: stale, let go
+	CHECK(!s.Take(10));
+	CHECK(s.BeginFill());
+	s.Offer(10);
+	CHECK(s.Take(10));
+	s.Release();
 
-	// the GPU thread filling and withdrawing, the guest's thread taking:
-	// every snapshot read whole
+	// the GPU thread and a read filling, the GPU thread withdrawing, the
+	// guest's thread taking each again and again: every snapshot read whole
 	LattePM4IdleSnapshot shared;
 	std::vector<uint32> words(4096, 0);
 	std::atomic<bool> done{false};
@@ -400,6 +421,17 @@ static void IdleSnapshot()
 				shared.Withdraw();
 		}
 		done.store(true);
+	});
+	std::thread read([&] {
+		for (uint32 n = 1u << 27; !done.load(); n++)
+		{
+			if (!shared.BeginFill())
+				continue;
+			for (uint32& w : words)
+				w = n;
+			shared.Offer(n & 1);
+			std::this_thread::yield(); // a read's next offer is a read later
+		}
 	});
 	std::thread guest([&] {
 		uint32 ring = 0;
@@ -419,6 +451,7 @@ static void IdleSnapshot()
 		}
 	});
 	gpu.join();
+	read.join();
 	guest.join();
 	std::printf("idle snapshot: %u taken by the guest's thread, %u torn\n", taken.load(), torn.load());
 	CHECK(torn.load() == 0 && taken.load() > 0);

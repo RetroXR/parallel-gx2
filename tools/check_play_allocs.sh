@@ -127,6 +127,7 @@ src/Cafe/HW/Latte/Core/FetchShader.cpp Reset
 src/Cafe/HW/Latte/Core/FetchShader.cpp Fingerprint
 src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp OnDraw
 src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp RunJob
+src/Cafe/HW/Latte/Core/LatteShaderAhead.cpp OfferRingEnd
 src/Cafe/HW/Latte/Core/LattePM4Scan.cpp LattePM4_Scan
 src/Cafe/HW/Latte/Core/LattePM4Scan.cpp LattePM4_PixelShaderInputs
 src/Cafe/HW/Latte/Core/LattePM4Scan.cpp LattePM4_GeometryShaderInputs

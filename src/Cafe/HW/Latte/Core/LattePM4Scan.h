@@ -76,20 +76,29 @@ private:
 	std::atomic<uint32> m_readTo{0};
 };
 
-// The GPU thread's registers handed to the guest's thread for a read of the
-// buffer the guest is still writing: the GPU thread fills a snapshot as it
-// goes idle with nothing in the ring - its registers then are what that
-// buffer starts from - and offers it, and withdraws it as it gets work; the
-// guest's thread takes it only while it has submitted nothing since (the
-// ring's write index where the GPU thread found it empty), reads it and
-// gives it back. Lock-free; neither ever waits for the other.
+// The registers the buffer the guest is still writing starts from, handed
+// to the guest's thread for a read of it: filled and offered by the GPU
+// thread as it goes idle with nothing in the ring (its registers then), or
+// by a read ahead that got through to the end of what the ring held (its
+// registers there, where the GPU thread is still behind), the newer
+// replacing an offer not taken; withdrawn by the GPU thread as it gets
+// work. The guest's thread takes it only while it has submitted nothing
+// since (the ring's write index the snapshot is for), reads it and gives it
+// back offered, to read its buffer again once it has written more.
+// Lock-free; nobody ever waits for anybody.
 struct LattePM4IdleSnapshot
 {
-	// GPU thread, idle: true where the snapshot is its to fill (then Offer)
+	// GPU thread or a read: true where the snapshot is its to fill (then
+	// Offer): one not offered, or offered and not taken
 	bool BeginFill()
 	{
-		uint32 expected = kFree;
-		return m_state.compare_exchange_strong(expected, kFilling, std::memory_order_acquire, std::memory_order_relaxed);
+		uint32 cur = m_state.load(std::memory_order_relaxed);
+		while (cur == kFree || cur == kOffered)
+		{
+			if (m_state.compare_exchange_weak(cur, kFilling, std::memory_order_acquire, std::memory_order_relaxed))
+				return true;
+		}
+		return false;
 	}
 	void Offer(uint32 ringAt)
 	{
@@ -116,7 +125,8 @@ struct LattePM4IdleSnapshot
 		}
 		return true;
 	}
-	void Release() { m_state.store(kFree, std::memory_order_release); }
+	// read: offered again, for the next read of the same buffer
+	void Release() { m_state.store(kOffered, std::memory_order_release); }
 
 private:
 	static constexpr uint32 kFree = 0, kFilling = 1, kOffered = 2, kTaken = 3;

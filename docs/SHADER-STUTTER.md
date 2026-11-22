@@ -440,6 +440,15 @@ since and queues a read of what it has written (`GX2Command_ReadAhead`,
 `LatteShaderAhead_OnGuestCommands`). Neither thread waits for the other;
 a read of the guest's still under way is never waited for either.
 `test/shader_ahead` races the hand-over, every copy taken read whole.
+The copy is given back offered after each read, so the buffer is read
+again as it doubles (it had been read once, at 512 words, and the rest of
+the frame not at all). And a read of the ring that gets through to the end
+of what the ring held offers its registers there too - what the buffer the
+guest submits next starts from - so a GPU thread that is behind, and never
+goes idle, has the frame being written read ahead as well, not only what
+was submitted (`TCL::TCLGPUPeekRB`'s end index, `LattePM4IdleSnapshot`:
+the newer offer replaces one not taken). Reads of the guest's buffer, read
+again from its start, do not move the ring's reads' backoff.
 
 A draw whose shaders the GPU thread has, but whose pipeline it has never
 made - a render pass or state no pipeline had - has its pipeline made by

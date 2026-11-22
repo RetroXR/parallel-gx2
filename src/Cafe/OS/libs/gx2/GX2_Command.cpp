@@ -146,10 +146,10 @@ namespace GX2
 	}
 
 	// The commands the main core has written to its buffer so far, read ahead
-	// of their submission where the GPU thread is idle and its registers are
-	// what the buffer starts from (LatteShaderAhead_OnGuestCommands); read
-	// again once as many more are written, so a buffer is read a few times
-	// at most
+	// of their submission where the registers the buffer starts from are
+	// offered - by the idle GPU thread, or a read through to the ring's end
+	// (LatteShaderAhead_OnGuestCommands); read again once as many more are
+	// written, so a buffer is read a few times at most
 	void GX2Command_ReadAhead(uint32 coreIndex)
 	{
 		auto& coreCBState = s_perCoreCBState[coreIndex];

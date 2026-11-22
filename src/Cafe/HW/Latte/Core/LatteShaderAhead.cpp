@@ -98,6 +98,9 @@ namespace
 		uint32be ringWords[kRingWords];
 		uint32 ringCount;
 		uint32 ringCalls;
+		// the ring's write index those end at, where they are all it held
+		// (TCL::kRingNoEnd otherwise, and for a read of the guest's buffer)
+		uint32 ringEnd;
 		uint32 seq;
 		uint32 scan;
 		uint32 found;
@@ -128,6 +131,7 @@ namespace
 	struct Idle;
 	std::atomic<Idle*> s_idle{nullptr};
 	std::atomic<uint64> s_guestReads{0};
+	std::atomic<uint64> s_ringEndOffers{0};
 
 	const uint32be* MapGuest(void*, uint32 physAddr, uint32 count)
 	{
@@ -769,6 +773,22 @@ namespace
 		return job->found < kMaxPerScan;
 	}
 
+	// A read through to the end of what the ring held: its registers there
+	// are what the buffer the guest submits next starts from, offered to the
+	// guest's thread to read that buffer as it writes it (where it has
+	// submitted nothing since), as the idle GPU thread offers its own - for
+	// a GPU thread that is behind, which never goes idle
+	void OfferRingEnd(const uint32* regs, uint32 ringEnd)
+	{
+		Idle* state = s_idle.load(std::memory_order_acquire);
+		if (!state || TCL::TCLRingWriteIndex() != ringEnd || !state->snapshot.BeginFill())
+			return;
+		for (const auto& r : kCopied)
+			memcpy(state->regs + r.start, regs + r.start, r.count * sizeof(uint32));
+		state->snapshot.Offer(ringEnd);
+		s_ringEndOffers.fetch_add(1, std::memory_order_relaxed);
+	}
+
 	void RunJob(Job* job)
 	{
 		job->found = 0;
@@ -793,7 +813,13 @@ namespace
 				}
 			}
 			s_readTo.ReadTo(readTo);
+			if (scan.end == LattePM4Scan::End::Done && job->ringEnd != TCL::kRingNoEnd)
+				OfferRingEnd(job->regs, job->ringEnd);
 		}
+		// the ring's reads passed over by what they find: not by a read of
+		// the guest's buffer, read again from its start as it grows
+		if (job->seq == 0)
+			return;
 		const uint32 backoff = s_backoff.load(std::memory_order_relaxed);
 		s_backoff.store(job->found ? 0 : (backoff < 6 ? backoff + 1 : 6), std::memory_order_relaxed);
 	}
@@ -913,6 +939,8 @@ void LatteShaderAhead_Shutdown()
 	}
 	if (const uint64 reads = s_guestReads.exchange(0, std::memory_order_relaxed))
 		cemuLog_log(LogType::Force, "[ShaderAhead] {} reads of command buffers before their submission", reads);
+	if (const uint64 offers = s_ringEndOffers.exchange(0, std::memory_order_relaxed))
+		cemuLog_log(LogType::Force, "[ShaderAhead] {} reads through to the ring's end offered their registers for the guest's buffer", offers);
 #ifdef ENABLE_VULKAN
 	if (const uint64 made = s_pipelinesMade.exchange(0, std::memory_order_relaxed))
 		cemuLog_log(LogType::Force, "[ShaderAhead] {} pipelines made ahead of their draw", made);
@@ -967,7 +995,10 @@ void LatteShaderAhead_OnCommandBuffer(uint32 physAddr, uint32 words)
 	job->physAddr = physAddr;
 	job->words = words;
 	job->seq = seq;
-	job->ringCount = LattePM4_WholePackets(job->ringWords, TCL::TCLGPUPeekRB(job->ringWords, kRingWords), &job->ringCalls);
+	uint32 ringEnd;
+	const uint32 peeked = TCL::TCLGPUPeekRB(job->ringWords, kRingWords, &ringEnd);
+	job->ringCount = LattePM4_WholePackets(job->ringWords, peeked, &job->ringCalls);
+	job->ringEnd = job->ringCount == peeked ? ringEnd : TCL::kRingNoEnd;
 	s_readTo.Planned(seq, job->ringCalls);
 	s_plannedJob = job;
 	job->scan = s_scans.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -993,7 +1024,7 @@ void LatteShaderAhead_OnIdle(bool idle, uint32 ringAt)
 		return;
 	}
 	if (!state->snapshot.BeginFill())
-		return; // the guest's thread reading the last one
+		return; // the guest's thread reading one, or a read offering one
 	for (const auto& r : kCopied)
 		memcpy(state->regs + r.start, LatteGPUState.contextRegister + r.start, r.count * sizeof(uint32));
 	state->snapshot.Offer(ringAt);
@@ -1024,6 +1055,7 @@ void LatteShaderAhead_OnGuestCommands(uint32 physAddr, uint32 words, uint32 ring
 	job.seq = 0; // not one of the ring's: it counts nothing read
 	job.ringCount = 0;
 	job.ringCalls = 0;
+	job.ringEnd = TCL::kRingNoEnd; // the guest's buffer, not submitted
 	job.scan = s_scans.fetch_add(1, std::memory_order_relaxed) + 1;
 	PreparedPipeline* prepared = new (job.prepared) PreparedPipeline([](void* ctx, bool) {
 		RunJob(static_cast<Job*>(ctx));
