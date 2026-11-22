@@ -1,5 +1,6 @@
 #include "Cafe/HW/Latte/Core/LatteShaderAhead.h"
 #include "Cafe/HW/Latte/Core/LatteDrawPathCounts.h"
+#include "Cafe/HW/Latte/Core/LatteShaderAheadRules.h"
 #include "Cafe/HW/Latte/Core/LattePM4Scan.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
 #include "Cafe/HW/Latte/Core/LatteShaderKeys.h"
@@ -636,7 +637,7 @@ namespace
 			// (VulkanRenderer::draw_calculateGraphicsPipelineHash)
 			const uint64 hash = VulkanPipelineKey_Graphics(&slot->fetchShader, slot->vsBase, geometry ? geometry->baseHash : 0, slot->psBase + psAux,
 				VKRObjectRenderPass::HashForPipeline(attachments), lcr, VulkanRenderer::draw_pipelineKeyDynamicFlags());
-			if (slot->hash != hash && (s_pipelinesKnown.Contains(hash) || s_pipelinesAhead.Contains(hash)))
+			if (!LatteAhead_MakePipeline(slot->hash, hash, s_pipelinesKnown.Contains(hash), s_pipelinesAhead.Contains(hash)))
 				ok = false;
 			else
 			{
@@ -703,14 +704,15 @@ namespace
 			VulkanPipelineStableCache_Attachments(ps, lcr, attachments);
 			hash = VulkanPipelineKey_Graphics(&job->fetchShader, vs->baseHash, geometry ? geometry->baseHash : 0, ps->baseHash + ps->auxHash,
 				VKRObjectRenderPass::HashForPipeline(attachments), lcr, VulkanRenderer::draw_pipelineKeyDynamicFlags());
-			if (s_pipelinesKnown.Contains(hash) || s_pipelinesAhead.Contains(hash))
+			if (!LatteAhead_QueuePipeline(false, false, true, true, s_pipelinesKnown.Contains(hash), s_pipelinesAhead.Contains(hash)))
 				return;
 		}
 		else
 		{
 			// the other shader there by the time: registered, or new too
-			if ((!vsNew && !LatteSHRC_FindRegisteredBase(LatteConst::ShaderType::Vertex, vsBase)) ||
-				(!psNew && !LatteSHRC_FindRegisteredBase(LatteConst::ShaderType::Pixel, psBase)))
+			const bool vsThere = vsNew || LatteSHRC_FindRegisteredBase(LatteConst::ShaderType::Vertex, vsBase);
+			const bool psThere = psNew || LatteSHRC_FindRegisteredBase(LatteConst::ShaderType::Pixel, psBase);
+			if (!LatteAhead_QueuePipeline(vsNew, psNew, vsThere, psThere, false, false))
 				return;
 		}
 		PipelineSlot* slot = TakePipelineSlot();
@@ -781,7 +783,7 @@ namespace
 	void OfferRingEnd(const uint32* regs, uint32 ringEnd)
 	{
 		Idle* state = s_idle.load(std::memory_order_acquire);
-		if (!state || TCL::TCLRingWriteIndex() != ringEnd || !state->snapshot.BeginFill())
+		if (!state || !LatteAhead_OfferRingEnd(true, ringEnd, TCL::TCLRingWriteIndex(), TCL::kRingNoEnd) || !state->snapshot.BeginFill())
 			return;
 		for (const auto& r : kCopied)
 			memcpy(state->regs + r.start, regs + r.start, r.count * sizeof(uint32));
@@ -802,26 +804,16 @@ namespace
 			LattePM4_Scan(scan, buf, job->words);
 			// on through the buffers submitted since, the registers as this
 			// one left them
-			uint32 readTo = 0;
-			if (scan.end == LattePM4Scan::End::Done)
-			{
-				readTo = job->seq;
-				if (job->ringCount)
-				{
-					LattePM4_Scan(scan, job->ringWords, job->ringCount);
-					readTo += scan.end == LattePM4Scan::End::Done ? job->ringCalls : scan.called;
-				}
-			}
-			s_readTo.ReadTo(readTo);
-			if (scan.end == LattePM4Scan::End::Done && job->ringEnd != TCL::kRingNoEnd)
+			const bool bufferDone = scan.end == LattePM4Scan::End::Done;
+			if (bufferDone && job->ringCount)
+				LattePM4_Scan(scan, job->ringWords, job->ringCount);
+			const LatteAheadReadEnd end = LatteAhead_ReadEnd(job->seq, bufferDone, job->ringCount,
+				scan.end == LattePM4Scan::End::Done, job->ringCalls, scan.called);
+			s_readTo.ReadTo(end.readTo);
+			if (end.reachedEnd && job->ringEnd != TCL::kRingNoEnd)
 				OfferRingEnd(job->regs, job->ringEnd);
 		}
-		// the ring's reads passed over by what they find: not by a read of
-		// the guest's buffer, read again from its start as it grows
-		if (job->seq == 0)
-			return;
-		const uint32 backoff = s_backoff.load(std::memory_order_relaxed);
-		s_backoff.store(job->found ? 0 : (backoff < 6 ? backoff + 1 : 6), std::memory_order_relaxed);
+		s_backoff.store(LatteAhead_Backoff(s_backoff.load(std::memory_order_relaxed), job->seq, job->found), std::memory_order_relaxed);
 	}
 }
 
@@ -998,7 +990,7 @@ void LatteShaderAhead_OnCommandBuffer(uint32 physAddr, uint32 words)
 	uint32 ringEnd;
 	const uint32 peeked = TCL::TCLGPUPeekRB(job->ringWords, kRingWords, &ringEnd);
 	job->ringCount = LattePM4_WholePackets(job->ringWords, peeked, &job->ringCalls);
-	job->ringEnd = job->ringCount == peeked ? ringEnd : TCL::kRingNoEnd;
+	job->ringEnd = LatteAhead_RingEnd(peeked, job->ringCount, ringEnd, TCL::kRingNoEnd);
 	s_readTo.Planned(seq, job->ringCalls);
 	s_plannedJob = job;
 	job->scan = s_scans.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -1008,7 +1000,7 @@ void LatteShaderAhead_OnCommandBuffer(uint32 physAddr, uint32 words)
 	}, job);
 	job->queued = true;
 	PipelineCompiler::CompileThreadPool_QueuePreparedUrgent(*prepared);
-	s_skip = (1u << s_backoff.load(std::memory_order_relaxed)) - 1;
+	s_skip = LatteAhead_Skip(s_backoff.load(std::memory_order_relaxed));
 #endif
 }
 

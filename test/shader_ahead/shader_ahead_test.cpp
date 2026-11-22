@@ -52,6 +52,16 @@
 //    never a value another key's, every key found once added (TSan in CI);
 //    and a payload never claimed back while a pipeline is made from it
 //    (AheadSlotStale);
+//  - the read ahead's own decisions (LatteShaderAheadRules.h): the ring's
+//    end only where whole packets took every word peeked; where a read got
+//    to - nothing where its buffer stopped short, the ring's buffers counted
+//    to where it stopped - and its registers offered only read through and
+//    with nothing submitted since; the ring's reads passed over doubling up
+//    to 63 buffers while they find nothing, at once none after a find, and
+//    never moved by a read of the guest's buffer; pipelines queued ahead for
+//    registered shaders only where unknown, for new ones only with the
+//    other shader there, and made only where nobody has them but their own
+//    key;
 //  - what new pipelines' first draws met, as logged at title stop
 //    (LatteDrawPathCounts.h): each outcome and those a read queued ahead
 //    counted apart, only waits timed, the longest kept, the line cut to
@@ -68,6 +78,7 @@
 #include "Cafe/HW/Latte/Core/LatteConst.h"
 #include "Cafe/HW/Latte/Core/LatteShaderKeys.h"
 #include "Cafe/HW/Latte/Core/LatteDrawPathCounts.h"
+#include "Cafe/HW/Latte/Core/LatteShaderAheadRules.h"
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
 #include "util/helpers/AheadSlots.h"
 
@@ -1000,6 +1011,61 @@ static void SeenKeysFill()
 	CHECK(zero.Contains(0));
 }
 
+static void AheadRules()
+{
+	constexpr uint32 kNoEnd = 0xFFFFFFFFu;
+	// the ring's end: only where whole packets took everything peeked
+	CHECK(LatteAhead_RingEnd(40, 40, 100, kNoEnd) == 100);
+	CHECK(LatteAhead_RingEnd(40, 37, 100, kNoEnd) == kNoEnd); // a packet cut off
+	CHECK(LatteAhead_RingEnd(0, 0, 7, kNoEnd) == 7); // nothing after it
+	CHECK(LatteAhead_RingEnd(40, 40, kNoEnd, kNoEnd) == kNoEnd); // the peek stopped short
+
+	// where a read got to
+	LatteAheadReadEnd e = LatteAhead_ReadEnd(5, false, 30, true, 4, 4);
+	CHECK(e.readTo == 0 && !e.reachedEnd); // its own buffer stopped short
+	e = LatteAhead_ReadEnd(5, true, 0, false, 0, 0);
+	CHECK(e.readTo == 5 && e.reachedEnd); // nothing after it in the ring
+	e = LatteAhead_ReadEnd(5, true, 30, true, 4, 1);
+	CHECK(e.readTo == 9 && e.reachedEnd); // the ring's four buffers too
+	e = LatteAhead_ReadEnd(5, true, 30, false, 4, 2);
+	CHECK(e.readTo == 7 && !e.reachedEnd); // two of them, then stopped
+	e = LatteAhead_ReadEnd(0, true, 0, false, 0, 0);
+	CHECK(e.readTo == 0 && e.reachedEnd); // the guest's: no buffer of the ring's
+
+	// its registers offered for the guest's buffer
+	CHECK(LatteAhead_OfferRingEnd(true, 100, 100, kNoEnd));
+	CHECK(!LatteAhead_OfferRingEnd(false, 100, 100, kNoEnd)); // stopped short
+	CHECK(!LatteAhead_OfferRingEnd(true, 100, 104, kNoEnd)); // submitted since
+	CHECK(!LatteAhead_OfferRingEnd(true, kNoEnd, kNoEnd, kNoEnd)); // not the ring's end
+
+	// the ring's reads passed over
+	uint32 b = 0;
+	for (int i = 0; i < 10; i++)
+		b = LatteAhead_Backoff(b, 1 + i, 0);
+	CHECK(b == kLatteAheadMaxBackoff && LatteAhead_Skip(b) == 63);
+	CHECK(LatteAhead_Backoff(3, 9, 0) == 4 && LatteAhead_Skip(4) == 15);
+	CHECK(LatteAhead_Backoff(5, 9, 2) == 0 && LatteAhead_Skip(0) == 0);
+	CHECK(LatteAhead_Backoff(5, 0, 0) == 5 && LatteAhead_Backoff(5, 0, 3) == 5); // the guest's read
+
+	// pipelines queued ahead
+	CHECK(LatteAhead_QueuePipeline(false, false, true, true, false, false));
+	CHECK(!LatteAhead_QueuePipeline(false, false, true, true, true, false)); // the GPU thread's
+	CHECK(!LatteAhead_QueuePipeline(false, false, true, true, false, true)); // a read's
+	CHECK(!LatteAhead_QueuePipeline(false, false, false, true, false, false)); // a shader missing
+	CHECK(!LatteAhead_QueuePipeline(false, false, true, false, false, false));
+	CHECK(LatteAhead_QueuePipeline(true, false, false, true, false, false)); // new with registered
+	CHECK(LatteAhead_QueuePipeline(false, true, true, false, false, false));
+	CHECK(LatteAhead_QueuePipeline(true, true, false, false, false, false)); // both new
+	CHECK(!LatteAhead_QueuePipeline(true, false, false, false, false, false)); // the other nowhere
+	CHECK(!LatteAhead_QueuePipeline(false, true, false, false, false, false));
+	// made: its own key, or one nobody has
+	CHECK(LatteAhead_MakePipeline(0, 77, false, false));
+	CHECK(!LatteAhead_MakePipeline(0, 77, true, false));
+	CHECK(!LatteAhead_MakePipeline(0, 77, false, true));
+	CHECK(LatteAhead_MakePipeline(77, 77, true, true)); // queued with it (and so noted ahead)
+	CHECK(!LatteAhead_MakePipeline(76, 77, false, true));
+}
+
 static void DrawPathCounts()
 {
 	LatteDrawPathCounts c;
@@ -1057,6 +1123,7 @@ int main()
 	SlotsOneThread();
 	SlotsRacing();
 	SeenKeysFill();
+	AheadRules();
 	DrawPathCounts();
 	if (s_failures)
 	{

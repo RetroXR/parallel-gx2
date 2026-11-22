@@ -1488,6 +1488,18 @@ test-compile-try:
   script:
     - ./tools/check_compile_try.sh
 
+# The read ahead decides by the rules test/shader_ahead checks:
+# LatteShaderAhead.cpp is linked by no test, its decisions are in
+# LatteShaderAheadRules.h.
+test-ahead-rules:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+  script:
+    - ./tools/check_ahead_rules.sh
+
 # No path make made absolute written into a file the compiler reads: MinGW's
 # g++ cannot open MSYS2's /c/... paths (the precompiled header's stub).
 test-build-paths:

@@ -519,6 +519,12 @@ ahead hands its parts to that lane too when it makes them together (one
 no compile thread has taken it makes itself). `test/prepared_pipeline`
 checks the three lanes taken in order, and `tools/check_compile_lanes.sh`
 fails where ahead work is queued with what a draw needs now.
+The read ahead's own decisions - where a read got to, when its registers
+are offered for the guest's buffer, how many buffers the ring's reads pass
+over, which pipelines are made ahead - are in `LatteShaderAheadRules.h`,
+apart from the reads and the GPU, and `test/shader_ahead` checks each
+(`tools/check_ahead_rules.sh`: `LatteShaderAhead.cpp`, which no test links,
+decides by every one).
 As a title stops, the log has, for vertex, pixel and geometry shaders, how many were
 made ahead, taken by their draw, not usable there, drawn while still being
 made, drawn with none made, and let go unused (`[ShaderAhead]`): the

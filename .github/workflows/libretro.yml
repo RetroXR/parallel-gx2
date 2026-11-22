@@ -107,6 +107,11 @@ jobs:
         # on the draw path there
         run: ./tools/check_compile_try.sh
 
+      - name: "The read ahead decides by the rules its test checks"
+        # LatteShaderAhead.cpp is linked by no test; its decisions are in
+        # LatteShaderAheadRules.h, which test/shader_ahead checks
+        run: ./tools/check_ahead_rules.sh
+
       - name: "No absolute paths written for the compiler"
         # MSYS2's make makes /c/... paths, which MinGW's g++ cannot open
         # inside a file (the precompiled header's stub broke the Windows build)
