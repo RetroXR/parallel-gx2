@@ -133,6 +133,9 @@ src/Cafe/HW/Latte/Core/LattePM4Scan.cpp LattePM4_PixelShaderInputs
 src/Cafe/HW/Latte/Core/LattePM4Scan.cpp LattePM4_GeometryShaderInputs
 src/Cafe/HW/Latte/Core/LattePM4Scan.cpp LattePM4_WholePackets
 src/Cafe/HW/Latte/Core/LattePM4Scan.cpp LattePM4_CopyShaderInputs
+src/Cafe/HW/Latte/Core/LattePM4Scan.cpp LattePM4_WaitPasses
+src/Cafe/HW/Latte/Core/LattePM4Scan.cpp WaitPassed
+src/Cafe/HW/Latte/Core/LattePM4Scan.cpp SemaphoreCount
 src/Cafe/OS/libs/TCL/TCL.cpp TCLGPUPeekRB
 src/Cafe/OS/libs/TCL/TCL.cpp TCLGPURingReadIndex
 src/Cafe/OS/libs/TCL/TCL.cpp TCLRingWriteIndex

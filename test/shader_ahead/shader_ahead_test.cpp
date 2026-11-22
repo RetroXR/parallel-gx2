@@ -5,8 +5,14 @@
 //    sampler, ALU and control constants, the semantic table clear - loads
 //    registers from guest memory, follows the buffers it calls (to the
 //    depth limit), calls back at each draw with the registers as they are
-//    there, and stops at a wait on memory, at a packet it cannot read, at a
-//    buffer it cannot map, at the packet limit and where the reader asks;
+//    there, and stops at a wait the command processor would wait at now -
+//    on memory whose test fails (LattePM4_WaitPasses, the compare functions
+//    the command processor uses, checked against their definitions), one it
+//    cannot read, a semaphore wait with no count left past the waits read
+//    before it, a flip, a sync - reading past those it would pass, a wait on
+//    a register and a semaphore's signal, writing nothing; at a packet it
+//    cannot read, at a buffer it cannot map, at the packet limit and where
+//    the reader asks;
 //    random buffers of noise end the read without reading out of bounds;
 //  - the ring read on past the buffer the GPU thread starts
 //    (LattePM4_WholePackets, LattePM4Scan::called): whole packets only, the
@@ -83,6 +89,23 @@ static const uint32be* MapGuest(void*, uint32 addr, uint32 count)
 		return nullptr;
 	return s_guest.data() + first;
 }
+
+// a fence and a semaphore, out of the way of the buffers placed
+static constexpr uint32 kFence = kGuestBase + 0xFF00 * 4;
+static constexpr uint32 kSemaphore = kGuestBase + 0xFF10 * 4;
+static void SetFence(uint32 v)
+{
+	s_guest[0xFF00] = v;
+}
+// little-endian, 64 bits, as the command processor keeps it
+static void SetSemaphore(uint64 v)
+{
+	uint8* bytes = reinterpret_cast<uint8*>(&s_guest[0xFF10]);
+	for (int i = 0; i < 8; i++)
+		bytes[i] = (uint8)(v >> (8 * i));
+}
+// IT_WAIT_REG_MEM on memory: fence & mask compared with reference
+static constexpr uint32 kWaitMem = 0x10;
 
 struct Buf
 {
@@ -184,6 +207,24 @@ static void Registers()
 	}
 }
 
+// the compare functions, as the command processor had them spelled out
+static void WaitPasses()
+{
+	const uint32 values[] = {0, 1, 2, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF};
+	for (uint32 v : values)
+		for (uint32 r : values)
+		{
+			CHECK(LattePM4_WaitPasses(0, v, r)); // always
+			CHECK(LattePM4_WaitPasses(1, v, r) == (v < r));
+			CHECK(LattePM4_WaitPasses(2, v, r) == (v <= r));
+			CHECK(LattePM4_WaitPasses(3, v, r) == (v == r));
+			CHECK(LattePM4_WaitPasses(4, v, r) == (v != r));
+			CHECK(LattePM4_WaitPasses(5, v, r) == (v >= r));
+			CHECK(LattePM4_WaitPasses(6, v, r) == (v > r));
+			CHECK(LattePM4_WaitPasses(7, v, r)); // never: passed, as the command processor does
+		}
+}
+
 static void Ends()
 {
 	// stopped by the reader
@@ -197,15 +238,78 @@ static void Ends()
 		CHECK(Scan(b, seen) == LattePM4Scan::End::Stopped);
 		CHECK(seen.at.size() == 2);
 	}
-	// a wait on memory: nothing after it read
+	// a wait on memory the command processor would wait at: nothing after
+	// it read
 	{
+		SetFence(0);
 		Buf b;
 		b.Draw();
-		b.Packet(IT_WAIT_REG_MEM, {0, 0, 0, 0, 0, 0});
+		b.Packet(IT_WAIT_REG_MEM, {kWaitMem | 3, kFence, 0, 1, 0xFFFFFFFF, 0}); // equal to 1
 		b.Draw();
 		Seen seen;
 		CHECK(Scan(b, seen) == LattePM4Scan::End::Waited);
 		CHECK(seen.at.size() == 1);
+		// passed now: read on
+		SetFence(1);
+		Seen seen2;
+		CHECK(Scan(b, seen2) == LattePM4Scan::End::Done && seen2.at.size() == 2);
+		// the mask applied: 0x101 & 0xFF is 1
+		SetFence(0x101);
+		Buf m;
+		m.Packet(IT_WAIT_REG_MEM, {kWaitMem | 3, kFence, 0, 1, 0xFF, 0});
+		m.Draw();
+		Seen seen3;
+		CHECK(Scan(m, seen3) == LattePM4Scan::End::Done && seen3.at.size() == 1);
+		// a fence that cannot be read: waited
+		Buf u;
+		u.Packet(IT_WAIT_REG_MEM, {kWaitMem | 0, 0x1000, 0, 0, 0, 0});
+		u.Draw();
+		Seen seen4;
+		CHECK(Scan(u, seen4) == LattePM4Scan::End::Waited && seen4.at.empty());
+		SetFence(0);
+	}
+	// a wait on a register, which the command processor passes: read on
+	{
+		Buf b;
+		b.Packet(IT_WAIT_REG_MEM, {3, 0, 0, 1, 0xFFFFFFFF, 0});
+		b.Draw();
+		Seen seen;
+		CHECK(Scan(b, seen) == LattePM4Scan::End::Done && seen.at.size() == 1);
+	}
+	// semaphores: a signal read past (nothing written), a wait only while
+	// its count is above the waits read past before it
+	{
+		SetSemaphore(2);
+		Buf b;
+		b.Packet(IT_MEM_SEMAPHORE, {kSemaphore, 6u << 29}); // signal
+		b.Draw();
+		for (int i = 0; i < 3; i++)
+		{
+			b.Packet(IT_MEM_SEMAPHORE, {kSemaphore, 7u << 29}); // wait
+			b.Draw();
+		}
+		Seen seen;
+		CHECK(Scan(b, seen) == LattePM4Scan::End::Waited && seen.at.size() == 3);
+		uint64 left = 0;
+		for (int i = 7; i >= 0; i--)
+			left = (left << 8) | reinterpret_cast<const uint8*>(&s_guest[0xFF10])[i];
+		CHECK(left == 2); // read, never written
+		// a count past 32 bits
+		SetSemaphore(1ull << 40);
+		Seen seen2;
+		CHECK(Scan(b, seen2) == LattePM4Scan::End::Done && seen2.at.size() == 4);
+		SetSemaphore(0);
+		Seen seen3;
+		CHECK(Scan(b, seen3) == LattePM4Scan::End::Waited && seen3.at.size() == 1);
+	}
+	// a flip and a sync with the asynchronous commands: always waited
+	for (uint32 it : {(uint32)IT_HLE_WAIT_FOR_FLIP, (uint32)IT_HLE_SYNC_ASYNC_OPERATIONS})
+	{
+		Buf b;
+		b.Packet(it, {0});
+		b.Draw();
+		Seen seen;
+		CHECK(Scan(b, seen) == LattePM4Scan::End::Waited && seen.at.empty());
 	}
 	// a buffer that cannot be mapped, a packet past the end, a type 1 header
 	{
@@ -299,8 +403,9 @@ static void Ring()
 	CHECK(seen.at.size() == 3 && seen.at[1] == (std::vector<uint32>{0xF, 0x111}) && seen.at[2] == (std::vector<uint32>{0xF, 0x111}));
 
 	// c waits on memory: only b read to its end
+	SetFence(0);
 	Buf cw;
-	cw.Packet(IT_WAIT_REG_MEM, {0, 0, 0, 0, 0, 0});
+	cw.Packet(IT_WAIT_REG_MEM, {kWaitMem | 3, kFence, 0, 1, 0xFFFFFFFF, 0});
 	cw.Draw();
 	Place(cw, 0x700);
 	Buf ring2;
@@ -937,6 +1042,7 @@ static void DrawPathCounts()
 int main()
 {
 	Registers();
+	WaitPasses();
 	Ends();
 	Ring();
 	ReadTo();

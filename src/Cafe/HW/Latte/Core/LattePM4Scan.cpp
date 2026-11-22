@@ -47,11 +47,68 @@ namespace
 		return true;
 	}
 
+	// a 64-bit little-endian semaphore count in guest memory, as
+	// LatteCP_itMemSemaphore reads it; false where it cannot be read
+	bool SemaphoreCount(LattePM4Scan& scan, uint32 addr, uint64& count)
+	{
+		const uint32be* at = scan.map(scan.ctx, addr, 2);
+		if (!at)
+			return false;
+		const uint8* bytes = reinterpret_cast<const uint8*>(at);
+		count = 0;
+		for (int i = 7; i >= 0; i--)
+			count = (count << 8) | bytes[i];
+		return true;
+	}
+
+	// whether the command processor would pass this wait now
+	bool WaitPassed(LattePM4Scan& scan, uint32 it, const uint32be* data, uint32 nWords)
+	{
+		if (it == IT_WAIT_REG_MEM)
+		{
+			if (nWords < 5)
+				return false;
+			const uint32 word0 = (uint32)data[0];
+			if ((word0 & 0x10) == 0)
+				return true; // a register's: not waited on
+			const uint32be* fence = scan.map(scan.ctx, (uint32)data[1] & ~3u, 1);
+			return fence && LattePM4_WaitPasses(word0 & 7, (uint32)fence[0] & (uint32)data[4], (uint32)data[3]);
+		}
+		if (it == IT_MEM_SEMAPHORE)
+		{
+			if (nWords < 2)
+				return false;
+			const uint32 signal = ((uint32)data[1] >> 29) & 7;
+			if (signal == 6)
+				return true; // a signal: never waits (and the read writes nothing)
+			uint64 count;
+			if (signal != 7 || !SemaphoreCount(scan, (uint32)data[0], count) || count <= scan.semaphoreWaits)
+				return false;
+			scan.semaphoreWaits++;
+			return true;
+		}
+		return false; // a flip, a sync with the asynchronous commands
+	}
+
 	struct Frame
 	{
 		const uint32be* cmd;
 		const uint32be* end;
 	};
+}
+
+bool LattePM4_WaitPasses(uint32 compareOp, uint32 value, uint32 reference)
+{
+	switch (compareOp & 7)
+	{
+	case 1: return value < reference;
+	case 2: return value <= reference;
+	case 3: return value == reference;
+	case 4: return value != reference;
+	case 5: return value >= reference;
+	case 6: return value > reference;
+	default: return true; // always, and never (which the command processor passes too)
+	}
 }
 
 void LattePM4_Scan(LattePM4Scan& scan, const uint32be* words, uint32 count)
@@ -188,7 +245,10 @@ void LattePM4_Scan(LattePM4Scan& scan, const uint32be* words, uint32 count)
 		case IT_MEM_SEMAPHORE:
 		case IT_HLE_WAIT_FOR_FLIP:
 		case IT_HLE_SYNC_ASYNC_OPERATIONS:
-			// what follows may be written only once this is passed
+			// what follows may be written only once this is passed: read on
+			// only where the command processor would pass it now
+			if (WaitPassed(scan, it, data, nWords))
+				break;
 			scan.end = LattePM4Scan::End::Waited;
 			return;
 		default:

@@ -357,7 +357,8 @@ Pixel shaders are decompiled ahead of the draw that first uses them. As
 the GPU thread starts a command buffer from the ring, a compile thread
 reads it ahead (`LattePM4Scan.cpp`) from a copy of the registers as they
 are then - its register writes applied as the command processor applies
-them, the buffers it calls followed, stopping at a wait on memory - and
+them, the buffers it calls followed, stopping at a wait the command
+processor would wait at - and
 at each draw whose pixel shader the GPU thread has never seen it
 decompiles that shader from the copy (`LatteShaderAhead.cpp`). The draw
 takes it only where the base and aux hashes and every register a pixel
@@ -449,6 +450,16 @@ goes idle, has the frame being written read ahead as well, not only what
 was submitted (`TCL::TCLGPUPeekRB`'s end index, `LattePM4IdleSnapshot`:
 the newer offer replaces one not taken). Reads of the guest's buffer, read
 again from its start, do not move the ring's reads' backoff.
+A read stops at a wait only where the command processor would wait there
+now: a wait on memory whose test fails on what memory holds (the compare
+functions are one, `LattePM4_WaitPasses`, the command processor's and the
+read's), a semaphore wait with no count left past the waits the read went
+past, a flip or a sync with the asynchronous commands. A fence already
+written, a semaphore already signalled, a wait on a register (which the
+command processor passes) and a semaphore's signal are read past - before,
+every one of them ended the read, and with it the lead past the first
+sync of a frame. `test/shader_ahead` checks each, the compare functions
+against their definitions.
 
 A draw whose shaders the GPU thread has, but whose pipeline it has never
 made - a render pass or state no pipeline had - has its pipeline made by

@@ -9,8 +9,13 @@
 // registers as they are at it. Nothing in it waits, writes guest memory or
 // touches the GPU's state: a buffer is read until its end, a draw the reader
 // stops at, or the first point where what follows may not have been written
-// yet (a wait on memory, a semaphore) or cannot be read (a packet header it
-// does not know).
+// yet or cannot be read (a packet header it does not know). A wait is such a
+// point only where the command processor would wait there now: a wait on
+// memory whose test fails on what memory holds (LattePM4_WaitPasses), a
+// semaphore wait with no count left past the waits read before it in the
+// scan, a flip or a sync with the asynchronous commands. A wait on a
+// register, which the command processor passes, and a semaphore's signal
+// are read past.
 struct LattePM4Scan
 {
 	// a whole register file (LATTE_MAX_REGISTER), the reader's
@@ -23,6 +28,9 @@ struct LattePM4Scan
 	void* ctx;
 	// buffers called from buffers, at most
 	uint32 maxDepth = 4;
+	// semaphore waits read past, all semaphores together: carried from one
+	// scan to the next with the same registers, as the reads of the ring do
+	uint32 semaphoreWaits = 0;
 	// packets read, all buffers together, at most
 	uint32 maxPackets = 1u << 20;
 
@@ -34,6 +42,11 @@ struct LattePM4Scan
 };
 
 void LattePM4_Scan(LattePM4Scan& scan, const uint32be* words, uint32 count);
+
+// Whether a wait on memory (IT_WAIT_REG_MEM) is passed with value, already
+// masked, against reference, by its compare function (the packet's low three
+// bits): the command processor's test, and the read ahead's
+bool LattePM4_WaitPasses(uint32 compareOp, uint32 value, uint32 reference);
 
 // Of count words of a command stream (the ring's, LatteShaderAhead.cpp),
 // how many make whole packets from the start, the buffers those call

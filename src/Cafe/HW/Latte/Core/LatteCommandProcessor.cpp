@@ -5,6 +5,7 @@
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
 #include "Cafe/HW/Latte/Core/LatteShaderAhead.h"
+#include "Cafe/HW/Latte/Core/LattePM4Scan.h"
 #include "Cafe/HW/Latte/Core/LatteAsyncCommands.h"
 #include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
 #include "Cafe/HW/Latte/Core/LatteIndices.h"
@@ -533,14 +534,10 @@ LatteCMDPtr LatteCP_itWaitRegMem(LatteCMDPtr cmd, uint32 nWords)
 
 	uint32* fencePtr = (uint32*)memory_getPointerFromPhysicalOffset(physAddr);
 
-	const uint32 GPU7_WAIT_MEM_OP_ALWAYS = 0;
-	const uint32 GPU7_WAIT_MEM_OP_LESS = 1;
-	const uint32 GPU7_WAIT_MEM_OP_LEQUAL = 2;
-	const uint32 GPU7_WAIT_MEM_OP_EQUAL = 3;
-	const uint32 GPU7_WAIT_MEM_OP_NOTEQUAL = 4;
-	const uint32 GPU7_WAIT_MEM_OP_GEQUAL = 5;
-	const uint32 GPU7_WAIT_MEM_OP_GREATER = 6;
+	// the test the read ahead makes too (LattePM4Scan.h), which never waits
 	const uint32 GPU7_WAIT_MEM_OP_NEVER = 7;
+	if ((word0 & 0x10) != 0 && compareOp == GPU7_WAIT_MEM_OP_NEVER)
+		cemuLog_logOnce(LogType::Force, "Latte: WAIT_MEM_OP_NEVER encountered");
 
 	LatteCP_signalEnterWait();
 
@@ -551,49 +548,9 @@ LatteCMDPtr LatteCP_itWaitRegMem(LatteCMDPtr cmd, uint32 nWords)
 		performanceMonitor.gpuTime_fenceTime.beginMeasuring();
 		while (true)
 		{
-			uint32 fenceMemValue = _swapEndianU32(*fencePtr);
-			fenceMemValue &= fenceMask;
-			if (compareOp == GPU7_WAIT_MEM_OP_LESS)
-			{
-				if (fenceMemValue < fenceValue)
-					break;
-			}
-			else if (compareOp == GPU7_WAIT_MEM_OP_LEQUAL)
-			{
-				if (fenceMemValue <= fenceValue)
-					break;
-			}
-			else if (compareOp == GPU7_WAIT_MEM_OP_EQUAL)
-			{
-				if (fenceMemValue == fenceValue)
-					break;
-			}
-			else if (compareOp == GPU7_WAIT_MEM_OP_NOTEQUAL)
-			{
-				if (fenceMemValue != fenceValue)
-					break;
-			}
-			else if (compareOp == GPU7_WAIT_MEM_OP_GEQUAL)
-			{
-				if (fenceMemValue >= fenceValue)
-					break;
-			}
-			else if (compareOp == GPU7_WAIT_MEM_OP_GREATER)
-			{
-				if (fenceMemValue > fenceValue)
-					break;
-			}
-			else if (compareOp == GPU7_WAIT_MEM_OP_ALWAYS)
-			{
+			const uint32 fenceMemValue = _swapEndianU32(*fencePtr) & fenceMask;
+			if (LattePM4_WaitPasses(compareOp, fenceMemValue, fenceValue))
 				break;
-			}
-			else if (compareOp == GPU7_WAIT_MEM_OP_NEVER)
-			{
-				cemuLog_logOnce(LogType::Force, "Latte: WAIT_MEM_OP_NEVER encountered");
-				break;
-			}
-			else
-				assert_dbg();
 			if (!stalls)
 			{
 				g_renderer->NotifyLatteCommandProcessorIdle();
