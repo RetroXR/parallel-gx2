@@ -3719,8 +3719,10 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
 	// after a local open fails).
 	vfs_hybrid_init(cb, log_cb);
 
-	// Declare that we need a game file
-	bool no_game = false;
+	// Started with no content, the console boots its Wii U Menu, as a Wii U
+	// switched on with no disc does - when a system dump has put one in mlc01
+	// (libretro_wiiu_menu_path); without one the load is refused.
+	bool no_game = true;
 	cb(RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME, &no_game);
 
 	// What each port can be, for the frontend's own device menu (RetroArch:
@@ -6285,15 +6287,45 @@ static bool libretro_disc_key_available(const fs::path& gamePath)
 
 static void RETRO_CALLCONV libretro_keyboard_event(bool down, unsigned keycode, uint32_t character, uint16_t modifiers);
 
+// The Wii U Menu installed in mlc01 by a system dump: its executable, the
+// region's own title (US 10040100, EU 10040200, JP 10040000, the first found),
+// or empty when there is none. Cemu boots it as any title from its .rpx.
+static fs::path libretro_wiiu_menu_path()
+{
+	static constexpr const char* kMenus[] = {"10040100", "10040200", "10040000"};
+	std::error_code ec;
+	for (const char* id : kMenus)
+	{
+		fs::path rpx = s_mlc_path / "sys" / "title" / "00050010" / id / "code" / "men.rpx";
+		if (fs::is_regular_file(rpx, ec))
+			return rpx;
+	}
+	return {};
+}
+
 RETRO_API bool retro_load_game(const struct retro_game_info* game)
 {
-	if (!game || !game->path)
-		return false;
+	// No content: the Wii U Menu, the way the console boots with no disc in it.
+	std::string content_path;
+	if (game && game->path && *game->path)
+		content_path = game->path;
+	else
+	{
+		const fs::path menu = libretro_wiiu_menu_path();
+		if (menu.empty())
+		{
+			libretro_log(RETRO_LOG_ERROR, "no content, and no Wii U Menu installed in %s (sys/title/00050010/1004x100) to boot instead\n",
+				_pathToUtf8(s_mlc_path).c_str());
+			return false;
+		}
+		content_path = _pathToUtf8(menu);
+		libretro_log(RETRO_LOG_WARN, "no content: booting the Wii U Menu, %s\n", content_path.c_str());
+	}
 
 	// Before the renderer, the context and the title: a load that cannot
 	// possibly succeed should fail while the frontend is still in a position to
 	// say so and stay in its menu.
-	if (!libretro_disc_key_available(_utf8ToPath(game->path)))
+	if (!libretro_disc_key_available(_utf8ToPath(content_path)))
 		return false;
 
 	libretro_reset_install_switches();
@@ -6513,7 +6545,7 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game)
 
 	// Store the path. The title itself starts in the first retro_run, once
 	// context_reset has built a renderer for it to run on.
-	s_game_path = game->path;
+	s_game_path = content_path;
 
 	// An update's or DLC's title.tmd is content to install, not to boot.
 	// Reading it decrypts it, and the crypto is otherwise set up only by
