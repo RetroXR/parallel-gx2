@@ -66,6 +66,20 @@ public:
 
 	static void Reset();
 
+	// The GamePad's speaker on its own (ControllerAudioInterface.h, controller 0
+	// index 0), for a frontend that plays it from the GamePad. `push` is the
+	// interface's; null, or the frontend declining a block, mixes the GamePad
+	// into the TV.
+	using ControllerAudioPush = bool(*)(void* frontend_data, unsigned location, unsigned port,
+		unsigned index, const int16_t* data, size_t frames);
+	static void SetGamePadAudio(ControllerAudioPush push, void* frontend_data);
+	// Whether the GamePad's group goes to its own stream: an interface, and a
+	// GamePad on port 1 (not a Pro Controller in its place)
+	static void SetGamePadPresent(bool present);
+	static bool GamePadAudioSeparate();
+	// One GamePad group of interleaved stereo (AX's thread), when separate
+	static void FeedGamePadBlock(const int16_t* data, size_t frames);
+
 	// Once a second, report what AX produced, what the ring had to drop and
 	// what the frontend took (cemu_log_audio). Audio going missing has three
 	// possible ends - AX not producing, the ring overflowing, the frontend
@@ -80,7 +94,15 @@ private:
 	static void AccountFlush(size_t read, size_t sent);
 	static void ReportStats();
 
+	// The GamePad's frames covering the main frames about to go out, pushed
+	// before them; silence where the GamePad made none
+	static void PushGamePad(size_t frames);
+
 	static AudioCallback s_audio_callback;
+	static std::atomic<ControllerAudioPush> s_gamepad_push;
+	static void* s_gamepad_frontend_data;
+	static std::atomic_bool s_gamepad_present;
+	static LibretroAudioRingBuffer s_gamepad_ring;
 	static MultiAudioCallback s_multi_callback;
 	static unsigned s_out_channels;
 	static LibretroAudioRingBuffer s_ring_buffer;

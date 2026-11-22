@@ -90,6 +90,7 @@
 #include "util/helpers/helpers.h"
 #include "util/helpers/SeqlockValue.h"
 #include "util/helpers/mailbox.h"
+#include "ControllerAudioInterface.h"
 
 #include "Cafe/Filesystem/FST/FST.h"
 #include "Cafe/Filesystem/FST/KeyCache.h"
@@ -4553,6 +4554,8 @@ RETRO_API void retro_set_controller_port_device(unsigned port, unsigned device)
 	if (s_port_device[port] == device)
 		return;
 	s_port_device[port] = device;
+	if (port == 0)
+		LibretroAudioAPI::SetGamePadPresent(libretro_gamepad_on_port1());
 
 	// Before a title is loaded this is just recorded: libretro_setup_controllers
 	// runs as part of the launch and will read it then. Changing a port while a
@@ -6535,6 +6538,20 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game)
 	if (!s_install_content)
 		libretro_nfc_attach();
 
+	// The GamePad's speaker on its own, for a frontend that can play it from
+	// the GamePad (ControllerAudioInterface.h); otherwise it is mixed into the TV.
+	{
+		static retro_controller_audio_interface s_controller_audio{};
+		s_controller_audio = {};
+		const bool got = !s_install_content && environ_cb &&
+			environ_cb(RETRO_ENVIRONMENT_GET_CONTROLLER_AUDIO_INTERFACE, &s_controller_audio) &&
+			s_controller_audio.interface_version >= RETRO_CONTROLLER_AUDIO_INTERFACE_VERSION && s_controller_audio.push;
+		LibretroAudioAPI::SetGamePadAudio(got ? s_controller_audio.push : nullptr, got ? s_controller_audio.frontend_data : nullptr);
+		LibretroAudioAPI::SetGamePadPresent(libretro_gamepad_on_port1());
+		libretro_log(RETRO_LOG_INFO, "GamePad speaker: %s\n", got
+			? "played from the GamePad (controller audio interface)" : "mixed into the TV");
+	}
+
 	// Vulkan: context_reset is called by RetroArch after RETRO_HW_CONTEXT_VULKAN is set up
 
 	return true;
@@ -6625,6 +6642,7 @@ static void libretro_stop_system_services()
 
 RETRO_API void retro_unload_game()
 {
+	LibretroAudioAPI::SetGamePadAudio(nullptr, nullptr);
 	libretro_nfc_detach();
 	libretro_set_motion(false);
 	// Every remote's sensors off; the ports' devices stay as the frontend set them.

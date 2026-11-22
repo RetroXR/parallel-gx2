@@ -338,7 +338,11 @@ namespace snd_core
 		tempDRCAudioBlockCounter++;
 		if (tempDRCAudioBlockCounter == AX_FRAMES_PER_GROUP)
 		{
-			s_tvPadMixer.PadGroup(tempDRCChannelData, (size_t)AX_SAMPLES_PER_3MS_48KHZ * AX_FRAMES_PER_GROUP, FeedTV);
+			if (LibretroAudioAPI::GamePadAudioSeparate())
+				s_tvPadMixer.PadGroupApart(tempDRCChannelData, (size_t)AX_SAMPLES_PER_3MS_48KHZ * AX_FRAMES_PER_GROUP, FeedTV,
+					[](const sint16* pad, size_t frames) { LibretroAudioAPI::FeedGamePadBlock(pad, frames); });
+			else
+				s_tvPadMixer.PadGroup(tempDRCChannelData, (size_t)AX_SAMPLES_PER_3MS_48KHZ * AX_FRAMES_PER_GROUP, FeedTV);
 
 			tempDRCAudioBlockCounter = 0;
 		}

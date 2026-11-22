@@ -60,6 +60,20 @@ namespace AudioMix
 
 		// The GamePad's group for the same frames, stereo: onto the TV's front
 		// pair (both on a mono TV), which then goes to @feed
+		// The GamePad's group for the same frames, kept apart for a frontend that
+		// plays the GamePad from the GamePad (ControllerAudioInterface.h): the
+		// TV's group goes to @feed unmixed and the GamePad's to @feedPad, in the
+		// same order as when mixed, so the two streams stay frame for frame.
+		template<typename TFeed, typename TFeedPad>
+		void PadGroupApart(const int16_t* pad, size_t frames, TFeed&& feed, TFeedPad&& feedPad)
+		{
+			if (m_waiting)
+			{
+				m_waiting = false;
+				feed(m_tv);
+			}
+			feedPad(pad, frames);
+		}
 		template<typename TFeed>
 		void PadGroup(const int16_t* pad, size_t frames, TFeed&& feed)
 		{
