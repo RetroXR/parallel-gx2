@@ -19,6 +19,7 @@
 #define TRAP_HWBKPT 4
 #endif
 #include <string.h>
+#include <unistd.h>
 #include <string>
 #include "config/CemuConfig.h"
 #include "util/helpers/StringHelpers.h"
