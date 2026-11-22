@@ -470,12 +470,14 @@ claimed back for another key while a pipeline is made from its module
 (`RendererShaderVk::InPipelines`, `AheadSlotStale`), so the module
 outlives the compile; one a draw takes the GPU thread keeps for good. So
 a new shader in new state - an effect with a blend no pipeline had - is
-ready before its first draw too. `test/shader_
+ready before its first draw too, a new geometry shader as well: decompiled
+with its new vertex (export) shader, it is held the same way, found by the
+key its draw takes with that shader's ring and checked made for the
+draw's copy shader. `test/shader_
 ahead` checks the table, one thread adding while three find. What is left: shaders
 whose first draw comes before any read reaches it (an idle GPU thread
 starts each buffer as it is submitted), and the render passes and states
-no pipeline had before where no read got to them, and a new geometry
-shader's first draw.
+no pipeline had before where no read got to them.
 
 The reads ahead go to the compile threads in a lane of their own, taken
 before any pipeline compile queued (`CompileThreadPool_QueuePreparedUrgent`,

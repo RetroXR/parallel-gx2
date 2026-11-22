@@ -495,6 +495,8 @@ namespace
 		uint64 vsBase, psBase, gsHash1, gsHash2;
 		bool vsAhead, psAhead, gs;
 		uint64 hash; // the pipeline's, where known when queued
+		uint8 copyProgram[kMaxProgram]; // a geometry shader's draw's copy shader
+		uint32 copySize;
 		VKRObjectRenderPass* renderPass;
 		PipelineInfo* info;
 		PipelineCompiler* compiler;
@@ -605,11 +607,18 @@ namespace
 		if (ps && !psHeld)
 			psAux = ps->auxHash;
 		LatteDecompilerShader* geometry = nullptr;
+		Slots::Held gsHeld{};
 		bool ok = vs && ps && !vs->hasError && !ps->hasError && vs->shader && ps->shader;
 		if (ok && slot->gs)
 		{
-			geometry = LatteSHRC_FindRegistered(LatteConst::ShaderType::Geometry,
-				LatteSHRC_GeometryBaseHash(slot->gsHash1, slot->gsHash2, vs->ringParameterCount, regs[mmVGT_STRMOUT_EN] != 0), 0);
+			// by the key its draw takes, with the ring of the vertex shader
+			// found: registered, or made ahead with it for this copy shader
+			const uint64 gsBase = LatteSHRC_GeometryBaseHash(slot->gsHash1, slot->gsHash2, vs->ringParameterCount, regs[mmVGT_STRMOUT_EN] != 0);
+			geometry = LatteSHRC_FindRegistered(LatteConst::ShaderType::Geometry, gsBase, 0);
+			uint64 gsAux = 0;
+			if (!geometry && slot->vsAhead)
+				geometry = HoldAhead(s_geometry, gsHeld, gsBase, LattePM4_GeometryShaderInputs(regs),
+					CopyShaderHash(slot->copyProgram, slot->copySize), gsAux);
 			ok = geometry && !geometry->hasError && geometry->shader;
 		}
 		const LatteContextRegister& lcr = *reinterpret_cast<const LatteContextRegister*>(regs);
@@ -637,6 +646,8 @@ namespace
 			ok = slot->compiler->InitFromCurrentGPUState(slot->info, lcr, slot->renderPass, PipelineCompiler::CalcRobustBufferAccessRequirement(vs, ps, geometry));
 		}
 		// set up: what was held, for its draw again
+		if (gsHeld)
+			s_geometry.Publish(gsHeld);
 		if (vsHeld)
 			s_vertex.Publish(vsHeld);
 		if (psHeld)
@@ -660,7 +671,7 @@ namespace
 	// links; otherwise the pipeline, for the driver's cache to give the
 	// draw's. A geometry shader's draw has its geometry shader found by the
 	// key its draw takes: its program's and the ring of the vertex shader
-	// found (registered ones only).
+	// found - registered, or made ahead with a new vertex shader.
 	void PipelineAhead(Job* job, uint32* regs, uint64 vsBase, bool vsNew, uint64 psBase, bool psNew, bool gs, uint64 gsHash1, uint64 gsHash2)
 	{
 		if (!vsBase || !psBase)
@@ -692,7 +703,7 @@ namespace
 		else
 		{
 			// the other shader there by the time: registered, or new too
-			if (gs || (!vsNew && !LatteSHRC_FindRegisteredBase(LatteConst::ShaderType::Vertex, vsBase)) ||
+			if ((!vsNew && !LatteSHRC_FindRegisteredBase(LatteConst::ShaderType::Vertex, vsBase)) ||
 				(!psNew && !LatteSHRC_FindRegisteredBase(LatteConst::ShaderType::Pixel, psBase)))
 				return;
 		}
@@ -710,6 +721,9 @@ namespace
 		slot->vsAhead = vsNew;
 		slot->psAhead = psNew;
 		slot->gs = gs;
+		slot->copySize = gs ? regs[mmSQ_PGM_START_VS + 1] << 3 : 0;
+		if (gs)
+			memcpy(slot->copyProgram, job->copyProgram, slot->copySize);
 		slot->gsHash1 = gsHash1;
 		slot->gsHash2 = gsHash2;
 		slot->hash = hash;
