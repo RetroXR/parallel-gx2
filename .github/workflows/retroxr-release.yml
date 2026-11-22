@@ -4,9 +4,11 @@
 #   Windows  parallel_gx2_libretro.dll.zip          containing parallel_gx2_libretro.dll
 #   Linux    parallel_gx2_libretro.so.zip           containing parallel_gx2_libretro.so
 #   Android  parallel_gx2_libretro_android.so.zip   containing parallel_gx2_libretro_android.so
+#   macOS    parallel_gx2_libretro_arm64.dylib.zip and parallel_gx2_libretro_x86_64.dylib.zip,
+#            each containing parallel_gx2_libretro.dylib
 #
 # The build steps are libretro.yml's (the Makefile, MSYS2 MinGW on Windows).
-# Windows must succeed; the others publish what built. Over libretro's branch
+# Every platform must build before anything is published. Over libretro's branch
 # this one adds what RetroXR's room uses: the GamePad's speaker through the
 # controller audio interface, Wii Remote motion and IR, amiibo through the
 # frontend's NFC reader, HOME (joypad id 16, asked for), the Exact Sensors
@@ -90,7 +92,6 @@ jobs:
     name: Android arm64
     runs-on: ubuntu-22.04
     timeout-minutes: 120
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v6
         with:
@@ -109,10 +110,35 @@ jobs:
           name: android
           path: parallel_gx2_libretro_android.so.zip
 
+  macos:
+    name: macOS ${{ matrix.arch }}
+    runs-on: macos-14
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x86_64]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.ref || github.ref }}
+      - name: Build
+        run: make -j $(sysctl -n hw.ncpu) platform=osx arch=${{ matrix.arch }}
+      - name: Package
+        run: |
+          mkdir -p stage && cp parallel_gx2_libretro.dylib stage/
+          (cd stage && zip -q -X ../parallel_gx2_libretro_${{ matrix.arch }}.dylib.zip parallel_gx2_libretro.dylib)
+      - uses: actions/upload-artifact@v6
+        with:
+          name: macos-${{ matrix.arch }}
+          path: parallel_gx2_libretro_${{ matrix.arch }}.dylib.zip
+
   publish:
     name: Publish release
-    needs: [windows, linux, android]
-    if: always() && needs.windows.result == 'success' && (github.event_name == 'push' || github.event.inputs.tag != '')
+    needs: [windows, linux, android, macos]
+    if: github.event_name == 'push' || github.event.inputs.tag != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -129,8 +155,8 @@ jobs:
           ls -lh dist
           cat > notes.md <<'NOTES'
           parallel-gx2 (libretro's Cemu core) built from RetroXR's branch for
-          RetroXR. Windows x64 always; Linux x64 and Android arm64 when they
-          built. The source is this tag. Cemu is MPL-2.0.
+          RetroXR: Windows x64, Linux x64, Android arm64, and macOS arm64 and
+          x86_64. The source is this tag. Cemu is MPL-2.0.
 
           Over libretro's branch: the GamePad's speaker through the controller
           audio interface, Wii Remote motion and IR, amiibo through the
