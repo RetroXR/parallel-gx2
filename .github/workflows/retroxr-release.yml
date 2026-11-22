@@ -1,0 +1,146 @@
+# Build RetroXR's branch of parallel-gx2 and publish it as a release, so
+# RetroXR's CoreDownloadManager can fetch it (CoreSources row `parallel_gx2`).
+#
+#   Windows  parallel_gx2_libretro.dll.zip          containing parallel_gx2_libretro.dll
+#   Linux    parallel_gx2_libretro.so.zip           containing parallel_gx2_libretro.so
+#   Android  parallel_gx2_libretro_android.so.zip   containing parallel_gx2_libretro_android.so
+#
+# The build steps are libretro.yml's (the Makefile, MSYS2 MinGW on Windows).
+# Windows must succeed; the others publish what built. Over libretro's branch
+# this one adds what RetroXR's room uses: the GamePad's speaker through the
+# controller audio interface, Wii Remote motion and IR, amiibo through the
+# frontend's NFC reader, HOME (joypad id 16, asked for), the Exact Sensors
+# motion filter, VPADSetGyroDirection applied and the Wii U Menu with no
+# content (CHANGELOG.md, Unreleased).
+#
+# The release must NOT be a prerelease: RetroXR fetches /releases/latest/.
+name: RetroXR core release
+
+on:
+  push:
+    tags:
+      - 'retroxr-parallel-gx2-v*'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag or SHA to build'
+        required: true
+        default: 'retroxr'
+      tag:
+        description: 'Release tag to publish as (leave blank to build without publishing)'
+        required: false
+        default: ''
+
+jobs:
+  windows:
+    name: Windows x64
+    runs-on: windows-2022
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.ref || github.ref }}
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: make git zip mingw-w64-x86_64-gcc
+      - name: Build
+        run: make -j $(nproc)
+      - name: Package
+        run: |
+          mkdir -p stage && cp parallel_gx2_libretro.dll stage/
+          (cd stage && zip -q -X ../parallel_gx2_libretro.dll.zip parallel_gx2_libretro.dll)
+      - uses: actions/upload-artifact@v6
+        with:
+          name: windows
+          path: parallel_gx2_libretro.dll.zip
+
+  linux:
+    name: Linux x64
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.ref || github.ref }}
+      - name: Install the compiler
+        run: |
+          sudo apt update -qq
+          sudo apt install -y --no-install-recommends g++-12 zip
+      - name: Build
+        run: make -j $(nproc) CC=gcc-12 CXX=g++-12
+      - name: Package
+        run: |
+          mkdir -p stage && cp parallel_gx2_libretro.so stage/
+          (cd stage && zip -q -X ../parallel_gx2_libretro.so.zip parallel_gx2_libretro.so)
+      - uses: actions/upload-artifact@v6
+        with:
+          name: linux
+          path: parallel_gx2_libretro.so.zip
+
+  android:
+    name: Android arm64
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.ref || github.ref }}
+      - name: Build
+        # API level 28: bionic has aligned_alloc there, and C++20 wants it
+        run: make -j $(nproc) platform=android-arm64 ANDROID_API=28 NDK_ROOT=$ANDROID_NDK_LATEST_HOME
+      - name: Package
+        run: |
+          mkdir -p stage && cp parallel_gx2_libretro_android.so stage/
+          (cd stage && zip -q -X ../parallel_gx2_libretro_android.so.zip parallel_gx2_libretro_android.so)
+      - uses: actions/upload-artifact@v6
+        with:
+          name: android
+          path: parallel_gx2_libretro_android.so.zip
+
+  publish:
+    name: Publish release
+    needs: [windows, linux, android]
+    if: always() && needs.windows.result == 'success' && (github.event_name == 'push' || github.event.inputs.tag != '')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          ls -lh dist
+          cat > notes.md <<'NOTES'
+          parallel-gx2 (libretro's Cemu core) built from RetroXR's branch for
+          RetroXR. Windows x64 always; Linux x64 and Android arm64 when they
+          built. The source is this tag. Cemu is MPL-2.0.
+
+          Over libretro's branch: the GamePad's speaker through the controller
+          audio interface, Wii Remote motion and IR, amiibo through the
+          frontend's NFC reader, HOME (joypad id 16, read only from a frontend
+          that answers RETRO_ENVIRONMENT_GET_JOYPAD_ID_COUNT), the Exact Sensors
+          motion filter, VPADSetGyroDirection applied, and the Wii U Menu with
+          no content.
+          NOTES
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "ParaLLEl GX2 (retroXR build) $TAG" --notes-file notes.md
+          fi
+          gh release upload "$TAG" dist/*.zip --repo "$GITHUB_REPOSITORY" --clobber
