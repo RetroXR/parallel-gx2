@@ -73,6 +73,19 @@ bool hid_portal_submit(hid_portal_t *p, const unsigned char *cmd,
    return true;
 }
 
+bool hid_portal_submit_host(hid_portal_t *p, unsigned char arg)
+{
+   hid_portal_cmd_t c;
+   memset(&c, 0, sizeof(c));
+   c.data[0] = arg;
+   c.len = HID_PORTAL_HOST;
+   if (!lf_ring_push(&p->cmds, &c))
+      return false;
+   if (retro_atomic_fetch_add_int(&p->pending, 1) == 0)
+      hid_portal_drain(p);
+   return true;
+}
+
 bool hid_portal_report(hid_portal_t *p,
       const unsigned char report[HID_PORTAL_REPORT])
 {

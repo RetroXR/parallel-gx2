@@ -6,6 +6,7 @@
 #include "Backend.h"
 
 #include "hid_portal.h"
+#include "FigureMail.h"
 
 namespace nsyshid
 {
@@ -49,7 +50,9 @@ namespace nsyshid
 	// The emulated base. Commands run one at a time on whichever transfer
 	// worker hid_portal hands them to, so the state below is the runner's
 	// alone; each answer is queued for an interrupt read, which waits for one.
-	// No figure is placed on it in this core.
+	// A frontend puts figures on its nine positions through FigureMail (0-2 the
+	// hexagon, 3-5 player one and its abilities, 6-8 player two and theirs),
+	// and takes a title's writes to a figure back the same way.
 	class InfinityUSB {
 	  public:
 		struct InfinityFigure final
@@ -70,8 +73,25 @@ namespace nsyshid
 		// false once closed
 		bool GetStatus(std::array<uint8, 32>& response);
 
+		// The frontend's thread. `spot` is a position on the base (see the
+		// class comment); a figure is its dump. False only while that spot is
+		// being applied.
+		bool PlaceFigure(uint8 spot, const uint8* figure);
+		bool RemoveFigure(uint8 spot);
+		// a figure on the spot the title wrote to since the last take, to save
+		bool TakeSave(uint8 spot, uint8* figure);
+		// what is waiting and not applied yet, dropped (at unload)
+		void DropPending();
+
 	  private:
 		static void RunCommand(void* ctx, const unsigned char* cmd, unsigned len);
+		// the runner: what the frontend put on or took off, and saves handed back
+		void ApplyMail();
+		void Place(uint8 spot, const uint8* figure);
+		void Remove(uint8 spot);
+		void FlushSaves();
+		void Kick();
+		void FigureChanged(uint8 spot, bool removed);
 		void SendCommand(uint8* buf, uint32 length);
 		void GetBlankResponse(uint8 sequence, std::array<uint8, 32>& replyBuf);
 		void DescrambleAndSeed(uint8* buf, uint8 sequence,
@@ -95,6 +115,11 @@ namespace nsyshid
 		hid_portal_t m_portal;
 		bool m_started = false;
 		std::array<InfinityFigure, MAX_FIGURES> m_figures;
+		std::array<bool, MAX_FIGURES> m_dirty{};
+		// the order the next new figure is given
+		uint8 m_figureOrder = 0;
+		// the frontend's mailboxes, by position; outlive a title
+		std::array<FigureMail<INF_FIGURE_SIZE>, MAX_FIGURES> m_mail;
 		uint32 m_randomA = 0;
 		uint32 m_randomB = 0;
 		uint32 m_randomC = 0;

@@ -7,6 +7,10 @@
 
 namespace nsyshid
 {
+	// the figure key's (GenerateFigureKey), upstream's
+	static constexpr std::array<uint8, 17> CHAR_CONSTANT = {0xB7, 0xD5, 0xD7, 0xE6, 0xE7, 0xBA, 0x3C, 0xA8,
+															0xD8, 0x75, 0x47, 0x68, 0xCF, 0x23, 0xE9, 0xFE, 0xAA};
+
 	static constexpr std::array<uint8, 16> COMMAND_KEY = {0x55, 0xFE, 0xF6, 0xB0, 0x62, 0xBF, 0x0B, 0x41,
 														  0xC9, 0xB3, 0x7C, 0xB4, 0x97, 0x3E, 0x29, 0x7B};
 
@@ -150,8 +154,11 @@ namespace nsyshid
 		Stop();
 		for (auto& f : m_figures)
 			f = {};
+		m_dirty.fill(false);
 		m_randomA = m_randomB = m_randomC = m_randomD = 0;
 		m_started = hid_portal_init(&m_portal, &DimensionsUSB::RunCommand, this);
+		// figures put on before the title started; no transfer runs yet
+		ApplyMail();
 	}
 
 	void DimensionsUSB::Close()
@@ -175,9 +182,178 @@ namespace nsyshid
 
 	void DimensionsUSB::RunCommand(void* ctx, const unsigned char* cmd, unsigned len)
 	{
+		DimensionsUSB* self = static_cast<DimensionsUSB*>(ctx);
+		// every command takes what the frontend put on or took off first
+		self->ApplyMail();
+		if (len == HID_PORTAL_HOST)
+			return;
 		std::array<uint8, 32> buf = {};
 		memcpy(buf.data(), cmd, std::min<unsigned>(len, 32));
-		static_cast<DimensionsUSB*>(ctx)->SendCommand(buf);
+		self->SendCommand(buf);
+		self->FlushSaves();
+	}
+
+	uint8 DimensionsUSB::PadOf(uint8 spot)
+	{
+		if (spot == 1)
+			return 1;
+		return (spot == 0 || spot == 3 || spot == 4) ? 2 : 3;
+	}
+
+	bool DimensionsUSB::PlaceFigure(uint8 spot, const uint8* figure)
+	{
+		if (spot >= DIM_SPOTS || !m_mail[spot].Put(FigureMail<DIM_FIGURE_SIZE>::PLACE, figure))
+			return false;
+		Kick();
+		return true;
+	}
+
+	bool DimensionsUSB::RemoveFigure(uint8 spot)
+	{
+		if (spot >= DIM_SPOTS || !m_mail[spot].Put(FigureMail<DIM_FIGURE_SIZE>::REMOVE, nullptr))
+			return false;
+		Kick();
+		return true;
+	}
+
+	bool DimensionsUSB::TakeSave(uint8 spot, uint8* figure)
+	{
+		return spot < DIM_SPOTS && m_mail[spot].TakeSave(figure);
+	}
+
+	void DimensionsUSB::DropPending()
+	{
+		for (auto& mail : m_mail)
+			mail.Put(FigureMail<DIM_FIGURE_SIZE>::NONE, nullptr);
+	}
+
+	void DimensionsUSB::Kick()
+	{
+		if (m_started)
+			hid_portal_submit_host(&m_portal, 0);
+	}
+
+	void DimensionsUSB::ApplyMail()
+	{
+		for (uint8 spot = 0; spot < DIM_SPOTS; spot++)
+		{
+			m_mail[spot].Take([&](uint8 op, const uint8* figure) {
+				if (op == FigureMail<DIM_FIGURE_SIZE>::PLACE)
+					Place(spot, figure);
+				else if (op == FigureMail<DIM_FIGURE_SIZE>::REMOVE)
+					Remove(spot);
+			});
+		}
+	}
+
+	// LoadFigure upstream
+	void DimensionsUSB::Place(uint8 spot, const uint8* figure)
+	{
+		Remove(spot);
+		DimensionsMini& f = m_figures[spot];
+		memcpy(f.data.data(), figure, f.data.size());
+		f.id = GetFigureId(f.data);
+		f.pad = PadOf(spot);
+		f.index = spot + 1;
+		m_dirty[spot] = false;
+		FigureChanged(f, false);
+		cemuLog_log(LogType::Force, "Dimensions toypad: figure {} placed on pad {}, spot {}", f.id, f.pad, spot);
+	}
+
+	// RemoveFigure upstream, a full removal
+	void DimensionsUSB::Remove(uint8 spot)
+	{
+		DimensionsMini& f = m_figures[spot];
+		if (f.index == 255)
+			return;
+		FlushSaves();
+		FigureChanged(f, true);
+		f.index = 255;
+		f.pad = 255;
+		f.id = 0;
+		m_dirty[spot] = false;
+		cemuLog_log(LogType::Force, "Dimensions toypad: spot {} emptied", spot);
+	}
+
+	// What the title is told of a figure arriving or leaving: its pad, its
+	// index, the way (0 added, 1 removed) and its UID
+	void DimensionsUSB::FigureChanged(const DimensionsMini& f, bool removed)
+	{
+		std::array<uint8, 32> response = {0x56, 0x0b, f.pad, 0x00, f.index, uint8(removed ? 0x01 : 0x00),
+										  f.data[0], f.data[1], f.data[2], f.data[4], f.data[5], f.data[6], f.data[7]};
+		response[13] = GenerateChecksum(response, 13);
+		uint8 report[HID_PORTAL_REPORT] = {};
+		memcpy(report, response.data(), response.size());
+		if (m_started)
+			hid_portal_report(&m_portal, report);
+	}
+
+	void DimensionsUSB::FlushSaves()
+	{
+		for (uint8 spot = 0; spot < DIM_SPOTS; spot++)
+		{
+			if (m_dirty[spot] && m_figures[spot].index != 255 && m_mail[spot].Saved(m_figures[spot].data.data()))
+				m_dirty[spot] = false;
+		}
+	}
+
+	// upstream's DimensionsRandomize, over a key held in place
+	static uint32 DimensionsScrambled(const uint8* key, uint8 count)
+	{
+		uint32 scrambled = 0;
+		for (uint8 i = 0; i < count; i++)
+		{
+			const uint32 v4 = std::rotr(scrambled, 25);
+			const uint32 v5 = std::rotr(scrambled, 10);
+			uint32 b;
+			memcpy(&b, key + i * 4, 4);
+			scrambled = b + v4 + v5 - scrambled;
+		}
+		return scrambled;
+	}
+
+	// upstream's Scramble: the UID, then CHAR_CONSTANT, its count-th word's
+	// last byte 0xaa; the randomized word read big endian
+	static uint32 DimensionsScrambleUid(const std::array<uint8, 7>& uid, uint8 count)
+	{
+		std::array<uint8, 7 + CHAR_CONSTANT.size()> toScramble{};
+		std::copy(uid.begin(), uid.end(), toScramble.begin());
+		std::copy(CHAR_CONSTANT.begin(), CHAR_CONSTANT.end(), toScramble.begin() + uid.size());
+		toScramble[(count * 4) - 1] = 0xaa;
+		const uint32 s = DimensionsScrambled(toScramble.data(), count);
+		// the 4 little-endian bytes upstream returned, read as big endian
+		return ((s & 0xFF) << 24) | (((s >> 8) & 0xFF) << 16) | (((s >> 16) & 0xFF) << 8) | ((s >> 24) & 0xFF);
+	}
+
+	std::array<uint8, 16> DimensionsUSB::GenerateFigureKey(const std::array<uint8, DIM_FIGURE_SIZE>& buf)
+	{
+		const std::array<uint8, 7> uid = {buf[0], buf[1], buf[2], buf[4], buf[5], buf[6], buf[7]};
+		std::array<uint8, 16> key{};
+		for (uint8 i = 0; i < 4; i++)
+		{
+			const uint32 s = DimensionsScrambleUid(uid, uint8(3 + i));
+			key[i * 4 + 0] = uint8((s >> 24) & 0xFF);
+			key[i * 4 + 1] = uint8((s >> 16) & 0xFF);
+			key[i * 4 + 2] = uint8((s >> 8) & 0xFF);
+			key[i * 4 + 3] = uint8(s & 0xFF);
+		}
+		return key;
+	}
+
+	// Characters have their model number encrypted in page 36; vehicles and
+	// gadgets have it there as is, little endian
+	uint32 DimensionsUSB::GetFigureId(const std::array<uint8, DIM_FIGURE_SIZE>& buf)
+	{
+		const std::array<uint8, 16> figureKey = GenerateFigureKey(buf);
+		const std::span<const uint8, 8> modelNumber{buf.data() + (36 * 4), 8};
+		const std::array<uint8, 8> decrypted = Decrypt(modelNumber, figureKey);
+		uint32 figNum;
+		memcpy(&figNum, decrypted.data(), 4);
+		if (figNum < 1000)
+			return figNum;
+		uint32 raw;
+		memcpy(&raw, modelNumber.data(), 4);
+		return raw;
 	}
 
 	// the toypad answers an interrupt read only once it has something to say
@@ -482,6 +658,7 @@ namespace nsyshid
 					figure.id = (uint32&)toWriteBuf[0];
 				}
 				std::memcpy(figure.data.data() + (page * 4), toWriteBuf.data(), 4);
+				m_dirty[figureIndex] = true;
 			}
 		}
 		replyBuf[4] = GenerateChecksum(replyBuf, 4);

@@ -172,6 +172,10 @@ namespace nsyshid
 		Stop();
 		for (auto& s : m_skylanders)
 			s = {};
+		m_spotOfSlot.fill(0xFF);
+		m_slotOfSpot.fill(0xFF);
+		m_lastSerial.fill(0);
+		m_dirty.fill(false);
 		m_activated = true;
 		m_colorRight = {};
 		m_colorLeft = {};
@@ -180,6 +184,9 @@ namespace nsyshid
 		retro_atomic_int_init(&m_active, 1);
 		retro_atomic_int_init(&m_interruptCounter, 0);
 		m_started = hid_portal_init(&m_portal, &SkylanderUSB::RunCommand, this);
+		// figures the frontend put on before the title started; no transfer
+		// runs yet, so this thread is the runner
+		ApplyMail();
 	}
 
 	void SkylanderUSB::Close()
@@ -203,9 +210,135 @@ namespace nsyshid
 
 	void SkylanderUSB::RunCommand(void* ctx, const unsigned char* cmd, unsigned len)
 	{
+		SkylanderUSB* self = static_cast<SkylanderUSB*>(ctx);
+		// every command takes what the frontend put on or took off first
+		self->ApplyMail();
+		if (len == HID_PORTAL_HOST)
+		{
+			self->PublishStatus();
+			return;
+		}
 		uint8 buf[HID_PORTAL_REPORT] = {};
 		memcpy(buf, cmd, len);
-		static_cast<SkylanderUSB*>(ctx)->ControlTransfer(buf, len);
+		self->ControlTransfer(buf, len);
+		self->FlushSaves();
+	}
+
+	bool SkylanderUSB::PlaceFigure(uint8 spot, const uint8* figure)
+	{
+		if (spot >= MAX_SKYLANDERS || !m_mail[spot].Put(FigureMail<SKY_FIGURE_SIZE>::PLACE, figure))
+			return false;
+		Kick();
+		return true;
+	}
+
+	bool SkylanderUSB::RemoveFigure(uint8 spot)
+	{
+		if (spot >= MAX_SKYLANDERS || !m_mail[spot].Put(FigureMail<SKY_FIGURE_SIZE>::REMOVE, nullptr))
+			return false;
+		Kick();
+		return true;
+	}
+
+	bool SkylanderUSB::TakeSave(uint8 spot, uint8* figure)
+	{
+		return spot < MAX_SKYLANDERS && m_mail[spot].TakeSave(figure);
+	}
+
+	void SkylanderUSB::DropPending()
+	{
+		for (auto& mail : m_mail)
+			mail.Put(FigureMail<SKY_FIGURE_SIZE>::NONE, nullptr);
+	}
+
+	// a command of our own, so the change is applied now, not at the title's next
+	void SkylanderUSB::Kick()
+	{
+		if (m_started)
+			hid_portal_submit_host(&m_portal, 0);
+	}
+
+	void SkylanderUSB::ApplyMail()
+	{
+		for (uint8 spot = 0; spot < MAX_SKYLANDERS; spot++)
+		{
+			m_mail[spot].Take([&](uint8 op, const uint8* figure) {
+				if (op == FigureMail<SKY_FIGURE_SIZE>::PLACE)
+					Place(spot, figure);
+				else if (op == FigureMail<SKY_FIGURE_SIZE>::REMOVE)
+					Remove(spot);
+			});
+		}
+	}
+
+	// LoadSkylander upstream: the slot this figure had if it is free, else the
+	// first free one; reported ADDED, then READY
+	void SkylanderUSB::Place(uint8 spot, const uint8* figure)
+	{
+		Remove(spot);
+		uint32 serial = 0;
+		for (int i = 3; i >= 0; i--)
+			serial = (serial << 8) | figure[i];
+		uint8 slot = 0xFF;
+		for (uint8 i = 0; i < MAX_SKYLANDERS; i++)
+		{
+			if (m_skylanders[i].status & 1)
+				continue;
+			if (m_lastSerial[i] == serial)
+			{
+				slot = i;
+				break;
+			}
+			if (slot == 0xFF)
+				slot = i;
+		}
+		if (slot == 0xFF)
+		{
+			cemuLog_log(LogType::Force, "Skylander portal: full, figure {:08x} not placed", serial);
+			return;
+		}
+		auto& sky = m_skylanders[slot];
+		memcpy(sky.data.data(), figure, sky.data.size());
+		sky.status = Skylander::ADDED;
+		m_lastSerial[slot] = serial;
+		m_dirty[slot] = false;
+		m_spotOfSlot[slot] = spot;
+		m_slotOfSpot[spot] = slot;
+		retro_atomic_fetch_or_int(&m_statusWord, (int)((uint32)Skylander::ADDED << (slot * 2)));
+		cemuLog_log(LogType::Force, "Skylander portal: figure {:08x} placed in slot {}", serial, slot);
+	}
+
+	// RemoveSkylander upstream: reported REMOVING, then REMOVED
+	void SkylanderUSB::Remove(uint8 spot)
+	{
+		const uint8 slot = m_slotOfSpot[spot];
+		if (slot >= MAX_SKYLANDERS)
+			return;
+		FlushSaves();
+		m_skylanders[slot].status = Skylander::REMOVED;
+		m_dirty[slot] = false;
+		m_spotOfSlot[slot] = 0xFF;
+		m_slotOfSpot[spot] = 0xFF;
+		// ADDED (3) or READY (1) to REMOVING (2): clear the low bit, and set the
+		// high one where a status report had already moved ADDED on to READY
+		const int shift = slot * 2;
+		const uint32 old = (uint32)retro_atomic_fetch_and_int(&m_statusWord, (int)~(1u << shift));
+		if (((old >> shift) & 3) == Skylander::READY)
+			retro_atomic_fetch_or_int(&m_statusWord, (int)((uint32)Skylander::REMOVING << shift));
+		cemuLog_log(LogType::Force, "Skylander portal: slot {} emptied", slot);
+	}
+
+	// figures the title wrote to, back to the frontend; one still being taken
+	// stays dirty for the next command
+	void SkylanderUSB::FlushSaves()
+	{
+		for (uint8 slot = 0; slot < MAX_SKYLANDERS; slot++)
+		{
+			if (!m_dirty[slot] || m_spotOfSlot[slot] >= MAX_SKYLANDERS)
+				continue;
+			if (m_mail[m_spotOfSlot[slot]].Saved(m_skylanders[slot].data.data()))
+				m_dirty[slot] = false;
+		}
 	}
 
 	void SkylanderUSB::ControlTransfer(uint8* buf, uint32 length)
@@ -279,17 +412,10 @@ namespace nsyshid
 		PublishStatus();
 	}
 
-	// what an interrupt read with no answer queued reports, from the state
-	// only the command runner touches
+	// what an interrupt read with no answer queued reports besides the
+	// figures' status, which Place, Remove and GetStatus keep in m_statusWord
 	void SkylanderUSB::PublishStatus()
 	{
-		uint32 status = 0;
-		for (int i = MAX_SKYLANDERS - 1; i >= 0; i--)
-		{
-			status <<= 2;
-			status |= m_skylanders[i].status & 3;
-		}
-		retro_atomic_store_release_int(&m_statusWord, (int)status);
 		retro_atomic_store_release_int(&m_active, m_activated ? 1 : 0);
 	}
 
@@ -359,6 +485,7 @@ namespace nsyshid
 		{
 			replyBuf[1] = (0x10 | skyNum);
 			memcpy(skylander.data.data() + (block * 16), toWriteBuf, 16);
+			m_dirty[skyNum] = true;
 		}
 		else
 		{
@@ -372,7 +499,9 @@ namespace nsyshid
 		if (m_started && hid_portal_try_read(&m_portal, interruptResponse.data()))
 			return interruptResponse;
 
-		const uint32 status = (uint32)retro_atomic_load_acquire_int(&m_statusWord);
+		// this report's status; ADDED moves on to READY and REMOVING to
+		// REMOVED for the next (every odd bit cleared, in one step)
+		const uint32 status = (uint32)retro_atomic_fetch_and_int(&m_statusWord, 0x55555555);
 		const uint8 active = retro_atomic_load_acquire_int(&m_active) ? 0x01 : 0x00;
 		const uint8 counter = (uint8)retro_atomic_fetch_add_int(&m_interruptCounter, 1);
 		interruptResponse[0] = 0x53;

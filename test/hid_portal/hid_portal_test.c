@@ -2,7 +2,8 @@
  * (src/Cafe/OS/libs/nsyshid/hid_portal.c): commands run one at a time, each
  * once, in each submitter's order, whoever runs them; a command run before
  * its submit counts it in is not run again and does not stop the next one;
- * reads take reports in order, sleep for one, and are woken by close. C89. */
+ * reads take reports in order, sleep for one, and are woken by close; a
+ * host's own commands run as the title's do. C89. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -79,6 +80,63 @@ static void test_one_runner(void)
    CHECK(s_order_ok);
    CHECK(s_ran == THREADS * PER_THREAD);
    for (i = 0; i < THREADS; i++)
+      CHECK(s_last[i] == PER_THREAD);
+   CHECK(retro_atomic_load_acquire_int(&s_portal.pending) == 0);
+   hid_portal_free(&s_portal);
+}
+
+/* host commands (hid_portal_submit_host, a frontend putting a figure on a
+ * base) among the title's: run as host commands, once each, in order, by the
+ * one runner, the title's commands unaffected */
+#define HOSTS 20000
+static int s_host_ran;                /* plain: only ever one runner */
+static int s_host_order_ok;
+
+static void run_mixed(void *ctx, const unsigned char *cmd, unsigned len)
+{
+   if (len == HID_PORTAL_HOST)
+   {
+      if (retro_atomic_exchange_int(&s_inside, 1) != 0)
+         s_host_order_ok = 0;
+      if (cmd[0] != (unsigned char)(s_host_ran + 1))
+         s_host_order_ok = 0;
+      s_host_ran++;
+      retro_atomic_store_release_int(&s_inside, 0);
+      return;
+   }
+   run_stress(ctx, cmd, len);
+}
+
+static void host_submitter(void *arg)
+{
+   int seq;
+   (void)arg;
+   for (seq = 1; seq <= HOSTS; seq++)
+      while (!hid_portal_submit_host(&s_portal, (unsigned char)seq))
+         ;
+}
+
+static void test_host_commands(void)
+{
+   sthread_t *t[THREADS];
+   int i;
+   CHECK(hid_portal_init(&s_portal, run_mixed, NULL));
+   retro_atomic_int_init(&s_inside, 0);
+   s_ran = 0;
+   s_host_ran = 0;
+   s_order_ok = 1;
+   s_host_order_ok = 1;
+   memset(s_last, 0, sizeof(s_last));
+   for (i = 0; i < THREADS - 1; i++)
+      t[i] = sthread_create(submitter, (void *)(size_t)i);
+   t[THREADS - 1] = sthread_create(host_submitter, NULL);
+   for (i = 0; i < THREADS; i++)
+      sthread_join(t[i]);
+   CHECK(s_order_ok);
+   CHECK(s_host_order_ok);
+   CHECK(s_host_ran == HOSTS);
+   CHECK(s_ran == (THREADS - 1) * PER_THREAD);
+   for (i = 0; i < THREADS - 1; i++)
       CHECK(s_last[i] == PER_THREAD);
    CHECK(retro_atomic_load_acquire_int(&s_portal.pending) == 0);
    hid_portal_free(&s_portal);
@@ -359,6 +417,7 @@ int main(void)
    test_nested_submit();
    test_overtaken_submit();
    test_one_runner();
+   test_host_commands();
    test_read_wakes();
    test_close_wakes();
    if (!litmus(0) || !litmus(1))

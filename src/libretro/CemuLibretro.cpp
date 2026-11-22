@@ -92,6 +92,10 @@
 #include "util/helpers/mailbox.h"
 #include "ControllerAudioInterface.h"
 #include "JoypadIdCount.h"
+#include "AccessoryInterface.h"
+#include "Cafe/OS/libs/nsyshid/Skylander.h"
+#include "Cafe/OS/libs/nsyshid/Infinity.h"
+#include "Cafe/OS/libs/nsyshid/Dimensions.h"
 
 #include "Cafe/Filesystem/FST/FST.h"
 #include "Cafe/Filesystem/FST/KeyCache.h"
@@ -2221,6 +2225,259 @@ static void libretro_nfc_detach()
 	s_nfc = {};
 	s_nfc_have = false;
 	s_nfc_scanning = false;
+}
+
+// ---- Toy bases: the Portal of Power, the Infinity Base, the Toy Pad --------
+//
+// The emulated USB bases (cemu_emulate_*) have figures put on them by the
+// frontend through the accessory interface (AccessoryInterface.h): each spot
+// on a base is a reader, and a figure is a dump file handed to one. Standalone
+// did this from its Emulated USB Devices window.
+//
+//   Portal of Power   16 readers, one per figure on it; the portal picks the
+//                     slot itself, keeping a returning figure's.
+//   Infinity Base     9 readers, its positions in order: 0-2 the hexagon,
+//                     3-5 player one, 6-8 player two.
+//   Toy Pad           7 readers, its spots in order: 1 the centre pad,
+//                     0, 3, 4 the left, 2, 5, 6 the right.
+//
+// Only the bases switched on are published, as the title sees them when it
+// starts. A figure's bytes go to the base through its FigureMail
+// (nsyshid/FigureMail.h): the base's command runner puts it on, so its state
+// is still only ever touched by one thread. A title's write to a figure comes
+// back the same way and is saved to the dump in the next retro_run. insert,
+// remove and the saves run on retro_run's thread; a spot keeps its dump's path
+// in place, and nothing is allocated in play but the file opened for a save.
+enum class LibretroToyBase : uint8 { Portal, Infinity, ToyPad };
+
+struct LibretroToySpot
+{
+	LibretroToyBase base;
+	uint8 spot;
+	bool present = false;
+	char path[1024] = {};
+};
+
+static std::vector<LibretroToySpot> s_toy_spots;
+static std::vector<retro_accessory_reader> s_toy_readers;
+static retro_accessory_interface s_toy_iface{};
+static bool s_toy_published = false;
+// a figure read from its dump, and one coming back: the largest is a Skylander
+static uint8 s_toy_buffer[nsyshid::SKY_FIGURE_SIZE];
+
+static const char* const kInfinityPositionNames[nsyshid::MAX_FIGURES] = {
+	"Infinity Base hexagon", "Infinity Base hexagon, second disc", "Infinity Base hexagon, third disc",
+	"Infinity Base player one", "Infinity Base player one, first ability", "Infinity Base player one, second ability",
+	"Infinity Base player two", "Infinity Base player two, first ability", "Infinity Base player two, second ability",
+};
+static const char* const kToyPadSpotNames[nsyshid::DIM_SPOTS] = {
+	"Toy Pad left", "Toy Pad centre", "Toy Pad right",
+	"Toy Pad left", "Toy Pad left", "Toy Pad right", "Toy Pad right",
+};
+
+static unsigned libretro_toy_kind(LibretroToyBase base)
+{
+	switch (base)
+	{
+	case LibretroToyBase::Portal: return RETRO_ACCESSORY_SKYLANDER;
+	case LibretroToyBase::Infinity: return RETRO_ACCESSORY_INFINITY_FIGURE;
+	default: return RETRO_ACCESSORY_DIMENSIONS_TAG;
+	}
+}
+
+static size_t libretro_toy_size(LibretroToyBase base)
+{
+	switch (base)
+	{
+	case LibretroToyBase::Portal: return nsyshid::SKY_FIGURE_SIZE;
+	case LibretroToyBase::Infinity: return nsyshid::INF_FIGURE_SIZE;
+	default: return nsyshid::DIM_FIGURE_SIZE;
+	}
+}
+
+static bool libretro_toy_place(const LibretroToySpot& spot, const uint8* figure)
+{
+	switch (spot.base)
+	{
+	case LibretroToyBase::Portal: return nsyshid::g_skyportal.PlaceFigure(spot.spot, figure);
+	case LibretroToyBase::Infinity: return nsyshid::g_infinitybase.PlaceFigure(spot.spot, figure);
+	default: return nsyshid::g_dimensionstoypad.PlaceFigure(spot.spot, figure);
+	}
+}
+
+static bool libretro_toy_take_save(const LibretroToySpot& spot, uint8* figure)
+{
+	switch (spot.base)
+	{
+	case LibretroToyBase::Portal: return nsyshid::g_skyportal.TakeSave(spot.spot, figure);
+	case LibretroToyBase::Infinity: return nsyshid::g_infinitybase.TakeSave(spot.spot, figure);
+	default: return nsyshid::g_dimensionstoypad.TakeSave(spot.spot, figure);
+	}
+}
+
+// A title's latest write to the spot's figure, into its dump.
+static void libretro_toy_save(const LibretroToySpot& spot, const char* name)
+{
+	if (!spot.path[0] || !libretro_toy_take_save(spot, s_toy_buffer))
+		return;
+	const size_t size = libretro_toy_size(spot.base);
+	FileStream* file = FileStream::openFile2(_utf8ToPath(spot.path), true);
+	if (!file)
+	{
+		libretro_log(RETRO_LOG_WARN, "toy bases: %s: the title wrote to the figure, but %s cannot be written: the save is lost\n", name, spot.path);
+		return;
+	}
+	file->SetPosition(0);
+	file->writeData(s_toy_buffer, (uint32)size);
+	delete file;
+}
+
+static bool libretro_toy_remove(unsigned reader)
+{
+	if (reader >= s_toy_spots.size())
+		return false;
+	LibretroToySpot& spot = s_toy_spots[reader];
+	if (!spot.present)
+		return true;
+	libretro_toy_save(spot, s_toy_readers[reader].name);
+	bool ok;
+	switch (spot.base)
+	{
+	case LibretroToyBase::Portal: ok = nsyshid::g_skyportal.RemoveFigure(spot.spot); break;
+	case LibretroToyBase::Infinity: ok = nsyshid::g_infinitybase.RemoveFigure(spot.spot); break;
+	default: ok = nsyshid::g_dimensionstoypad.RemoveFigure(spot.spot); break;
+	}
+	if (!ok)
+	{
+		libretro_log(RETRO_LOG_WARN, "toy bases: %s is busy, the figure stays on (reader %u)\n", s_toy_readers[reader].name, reader);
+		return false;
+	}
+	spot.present = false;
+	libretro_log(RETRO_LOG_INFO, "toy bases: %s emptied (reader %u)\n", s_toy_readers[reader].name, reader);
+	return true;
+}
+
+static bool libretro_toy_insert(unsigned reader, const char* path)
+{
+	if (reader >= s_toy_spots.size() || !path || !*path)
+		return false;
+	LibretroToySpot& spot = s_toy_spots[reader];
+	const char* name = s_toy_readers[reader].name;
+	const size_t size = libretro_toy_size(spot.base);
+	if (strlen(path) >= sizeof(spot.path))
+	{
+		libretro_log(RETRO_LOG_WARN, "toy bases: %s refused %s: the path is too long\n", name, path);
+		return false;
+	}
+	FileStream* file = FileStream::openFile2(_utf8ToPath(path), false);
+	if (!file || file->GetSize() < size)
+	{
+		libretro_log(RETRO_LOG_WARN, "toy bases: %s refused %s: %s\n", name, path,
+			file ? "the file is smaller than a figure of this kind" : "the file cannot be opened");
+		delete file;
+		return false;
+	}
+	file->SetPosition(0);
+	const bool read = file->readData(s_toy_buffer, (uint32)size) == size;
+	delete file;
+	if (!read)
+	{
+		libretro_log(RETRO_LOG_WARN, "toy bases: %s could not read %s\n", name, path);
+		return false;
+	}
+	// what the last figure here left unsaved, to its own dump first
+	if (spot.present)
+		libretro_toy_save(spot, name);
+	if (!libretro_toy_place(spot, s_toy_buffer))
+	{
+		libretro_log(RETRO_LOG_WARN, "toy bases: %s is busy, %s not placed\n", name, path);
+		return false;
+	}
+	strcpy(spot.path, path);
+	spot.present = true;
+	libretro_log(RETRO_LOG_INFO, "toy bases: %s on %s (reader %u)\n", path, name, reader);
+	return true;
+}
+
+static bool libretro_toy_is_present(unsigned reader)
+{
+	return reader < s_toy_spots.size() && s_toy_spots[reader].present;
+}
+
+// From retro_run: each figure a title wrote to, into its dump.
+static void libretro_toys_poll()
+{
+	for (size_t i = 0; i < s_toy_spots.size(); ++i)
+		if (s_toy_spots[i].present)
+			libretro_toy_save(s_toy_spots[i], s_toy_readers[i].name);
+}
+
+// Every figure off, its last write saved; and what had not reached a base yet dropped.
+static void libretro_toys_clear()
+{
+	for (unsigned i = 0; i < s_toy_spots.size(); ++i)
+	{
+		LibretroToySpot& spot = s_toy_spots[i];
+		if (spot.present)
+			libretro_toy_save(spot, s_toy_readers[i].name);
+		spot.present = false;
+		spot.path[0] = 0;
+	}
+	nsyshid::g_skyportal.DropPending();
+	nsyshid::g_infinitybase.DropPending();
+	nsyshid::g_dimensionstoypad.DropPending();
+}
+
+// The spots of the bases switched on, to the frontend. At a title's start, and
+// again after a reset, which may have switched a base on or off.
+static void libretro_toys_publish()
+{
+	libretro_toys_clear();
+	s_toy_spots.clear();
+	s_toy_readers.clear();
+	const auto& usb = GetConfig().emulated_usb_devices;
+	auto add = [](LibretroToyBase base, uint8 spot, const char* name) {
+		s_toy_spots.push_back({base, spot});
+		s_toy_readers.push_back({libretro_toy_kind(base), RETRO_ACCESSORY_PORT_CONSOLE, 0u, name});
+	};
+	if (usb.emulate_skylander_portal)
+		for (uint8 i = 0; i < nsyshid::MAX_SKYLANDERS; ++i)
+			add(LibretroToyBase::Portal, i, "Portal of Power");
+	if (usb.emulate_infinity_base)
+		for (uint8 i = 0; i < nsyshid::MAX_FIGURES; ++i)
+			add(LibretroToyBase::Infinity, i, kInfinityPositionNames[i]);
+	if (usb.emulate_dimensions_toypad)
+		for (uint8 i = 0; i < nsyshid::DIM_SPOTS; ++i)
+			add(LibretroToyBase::ToyPad, i, kToyPadSpotNames[i]);
+	if (!environ_cb || (s_toy_readers.empty() && !s_toy_published))
+		return;
+	s_toy_iface = {};
+	s_toy_iface.interface_version = RETRO_ACCESSORY_INTERFACE_VERSION;
+	s_toy_iface.num_readers = (unsigned)s_toy_readers.size();
+	s_toy_iface.readers = s_toy_readers.empty() ? nullptr : s_toy_readers.data();
+	s_toy_iface.insert = libretro_toy_insert;
+	s_toy_iface.remove = libretro_toy_remove;
+	s_toy_iface.is_present = libretro_toy_is_present;
+	s_toy_published = environ_cb(RETRO_ENVIRONMENT_SET_ACCESSORY_INTERFACE, &s_toy_iface);
+	if (s_toy_published)
+		libretro_log(RETRO_LOG_INFO, "toy bases: %u spot(s) handed to the frontend\n", (unsigned)s_toy_readers.size());
+	else
+		libretro_log(RETRO_LOG_INFO, "toy bases: the frontend has no accessory interface, so no figure can be put on a base\n");
+}
+
+// At unload: the figures off, their writes saved, and the readers withdrawn.
+static void libretro_toys_detach()
+{
+	libretro_toys_clear();
+	s_toy_spots.clear();
+	s_toy_readers.clear();
+	if (s_toy_published && environ_cb)
+	{
+		s_toy_iface.num_readers = 0;
+		s_toy_iface.readers = nullptr;
+		environ_cb(RETRO_ENVIRONMENT_SET_ACCESSORY_INTERFACE, &s_toy_iface);
+	}
+	s_toy_published = false;
 }
 
 // Defined below, next to the mappings it applies; called from
@@ -5960,6 +6217,10 @@ static void libretro_launch_game()
 
 	// Prepare the game
 	libretro_prepare_and_launch_title();
+
+	// The toy bases' spots, now that the options say which bases are on.
+	if (!s_install_content)
+		libretro_toys_publish();
 }
 
 
@@ -6696,6 +6957,7 @@ static void libretro_stop_system_services()
 
 RETRO_API void retro_unload_game()
 {
+	libretro_toys_detach();
 	LibretroAudioAPI::SetGamePadAudio(nullptr, nullptr);
 	libretro_nfc_detach();
 	libretro_set_motion(false);
@@ -7282,6 +7544,7 @@ static void libretro_poll_input()
 
 	libretro_poll_remotes(s_polled_ports);
 	libretro_nfc_poll();
+	libretro_toys_poll();
 
 	auto& state = s_input_state;
 	const auto& pad0 = s_port_state[0];
@@ -8133,6 +8396,7 @@ RETRO_API void retro_run()
 			libretro_create_renderer();
 			libretro_setup_graphic_packs(); // pack options changed since are taken now
 			libretro_prepare_and_launch_title();
+			libretro_toys_publish(); // a base switched on or off is the new start's
 		}
 		video_cb(NULL, libretro_out_width(), libretro_out_height(), 0);
 		return;

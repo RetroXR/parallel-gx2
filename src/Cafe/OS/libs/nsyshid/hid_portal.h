@@ -63,6 +63,13 @@ void hid_portal_free(hid_portal_t *p);
  * queued; len is cut to HID_PORTAL_REPORT */
 bool hid_portal_submit(hid_portal_t *p, const unsigned char *cmd,
       unsigned len);
+/* A command of the host's own, not the title's: run like one, in order with
+ * the title's and on whichever thread runs them, so what it changes is the
+ * runner's state like theirs. The run callback sees it as len ==
+ * HID_PORTAL_HOST, and cmd[0] == arg. A toy base takes a figure the frontend
+ * puts on it this way (FigureMail.h). */
+#define HID_PORTAL_HOST 0x80000000u
+bool hid_portal_submit_host(hid_portal_t *p, unsigned char arg);
 /* from a command's run: false (and the report dropped) when full */
 bool hid_portal_report(hid_portal_t *p,
       const unsigned char report[HID_PORTAL_REPORT]);

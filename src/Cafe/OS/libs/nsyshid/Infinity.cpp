@@ -141,8 +141,12 @@ namespace nsyshid
 		Stop();
 		for (auto& f : m_figures)
 			f = {};
+		m_dirty.fill(false);
+		m_figureOrder = 0;
 		m_randomA = m_randomB = m_randomC = m_randomD = 0;
 		m_started = hid_portal_init(&m_portal, &InfinityUSB::RunCommand, this);
+		// figures put on before the title started; no transfer runs yet
+		ApplyMail();
 	}
 
 	void InfinityUSB::Close()
@@ -166,9 +170,111 @@ namespace nsyshid
 
 	void InfinityUSB::RunCommand(void* ctx, const unsigned char* cmd, unsigned len)
 	{
+		InfinityUSB* self = static_cast<InfinityUSB*>(ctx);
+		// every command takes what the frontend put on or took off first
+		self->ApplyMail();
+		if (len == HID_PORTAL_HOST)
+			return;
 		uint8 buf[HID_PORTAL_REPORT] = {};
 		memcpy(buf, cmd, len);
-		static_cast<InfinityUSB*>(ctx)->SendCommand(buf, len);
+		self->SendCommand(buf, len);
+		self->FlushSaves();
+	}
+
+	bool InfinityUSB::PlaceFigure(uint8 spot, const uint8* figure)
+	{
+		if (spot >= MAX_FIGURES || !m_mail[spot].Put(FigureMail<INF_FIGURE_SIZE>::PLACE, figure))
+			return false;
+		Kick();
+		return true;
+	}
+
+	bool InfinityUSB::RemoveFigure(uint8 spot)
+	{
+		if (spot >= MAX_FIGURES || !m_mail[spot].Put(FigureMail<INF_FIGURE_SIZE>::REMOVE, nullptr))
+			return false;
+		Kick();
+		return true;
+	}
+
+	bool InfinityUSB::TakeSave(uint8 spot, uint8* figure)
+	{
+		return spot < MAX_FIGURES && m_mail[spot].TakeSave(figure);
+	}
+
+	void InfinityUSB::DropPending()
+	{
+		for (auto& mail : m_mail)
+			mail.Put(FigureMail<INF_FIGURE_SIZE>::NONE, nullptr);
+	}
+
+	void InfinityUSB::Kick()
+	{
+		if (m_started)
+			hid_portal_submit_host(&m_portal, 0);
+	}
+
+	void InfinityUSB::ApplyMail()
+	{
+		for (uint8 spot = 0; spot < MAX_FIGURES; spot++)
+		{
+			m_mail[spot].Take([&](uint8 op, const uint8* figure) {
+				if (op == FigureMail<INF_FIGURE_SIZE>::PLACE)
+					Place(spot, figure);
+				else if (op == FigureMail<INF_FIGURE_SIZE>::REMOVE)
+					Remove(spot);
+			});
+		}
+	}
+
+	// LoadFigure upstream: a figure keeps the order it was first given
+	void InfinityUSB::Place(uint8 spot, const uint8* figure)
+	{
+		Remove(spot);
+		InfinityFigure& f = m_figures[spot];
+		memcpy(f.data.data(), figure, f.data.size());
+		f.present = true;
+		if (f.orderAdded == 255)
+			f.orderAdded = m_figureOrder++;
+		m_dirty[spot] = false;
+		FigureChanged(spot, false);
+		cemuLog_log(LogType::Force, "Infinity base: figure placed at position {} (order {})", spot, f.orderAdded);
+	}
+
+	// RemoveFigure upstream
+	void InfinityUSB::Remove(uint8 spot)
+	{
+		InfinityFigure& f = m_figures[spot];
+		if (!f.present)
+			return;
+		FlushSaves();
+		f.present = false;
+		m_dirty[spot] = false;
+		FigureChanged(spot, true);
+		cemuLog_log(LogType::Force, "Infinity base: figure taken off position {}", spot);
+	}
+
+	// What the title is told of a figure arriving or leaving: the pad (1 the
+	// hexagon, 2 player one, 3 player two), the figure's order and the way
+	void InfinityUSB::FigureChanged(uint8 spot, bool removed)
+	{
+		const uint8 pad = spot < 3 ? 1 : spot < 6 ? 2 : 3;
+		std::array<uint8, 32> response = {0xab, 0x04, pad, 0x09, m_figures[spot].orderAdded,
+										  uint8(removed ? 0x01 : 0x00)};
+		response[6] = GenerateChecksum(response, 6);
+		uint8 report[HID_PORTAL_REPORT] = {};
+		memcpy(report, response.data(), response.size());
+		if (m_started)
+			hid_portal_report(&m_portal, report);
+	}
+
+	void InfinityUSB::FlushSaves()
+	{
+		for (uint8 spot = 0; spot < MAX_FIGURES; spot++)
+		{
+			if (m_dirty[spot] && m_mail[spot].Saved(m_figures[spot].data.data()))
+				m_dirty[spot] = false;
+		}
 	}
 
 	// the base answers an interrupt read only once it has something to say
@@ -455,6 +561,7 @@ namespace nsyshid
 		if (figure.present && file_block < 20)
 		{
 			memcpy(figure.data.data() + (file_block * 16), to_write_buf, 16);
+			m_dirty[&figure - m_figures.data()] = true;
 		}
 		replyBuf[4] = GenerateChecksum(replyBuf, 4);
 	}
